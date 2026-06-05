@@ -14,11 +14,17 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Load .env.local (Next.js convention) so the Python API sees the same
+# SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY / ANTHROPIC_API_KEY as the frontend.
+_ROOT = Path(__file__).parent.parent
+load_dotenv(_ROOT / ".env.local")
+
+sys.path.insert(0, str(_ROOT))
 
 from src.concepts import MissingDataError
 from src.extract import RatioResult, _get_available_periods, extract_all
