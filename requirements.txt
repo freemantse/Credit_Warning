@@ -1,0 +1,7 @@
+requests
+pandas
+anthropic
+pytest
+fastapi
+uvicorn[standard]
+supabase

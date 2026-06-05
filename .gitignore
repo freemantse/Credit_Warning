@@ -1,0 +1,14 @@
+cache/
+*.pyc
+__pycache__/
+data/store.db
+data/backtest_report.txt
+.env
+.env.local
+
+# Next.js
+.next/
+node_modules/
+
+# Vercel
+.vercel/

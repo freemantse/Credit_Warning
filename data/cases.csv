@@ -1,0 +1,8 @@
+ticker,label,event_date,notes
+JCP,distressed,2020-05-15,JCPenney bankruptcy filing
+HTZ,distressed,2020-05-22,Hertz bankruptcy filing
+CHK,distressed,2020-06-28,Chesapeake Energy bankruptcy
+BBBY,distressed,2023-04-23,Bed Bath & Beyond bankruptcy
+AAPL,healthy,,Healthy control
+MSFT,healthy,,Healthy control
+JNJ,healthy,,Healthy control
