@@ -55,7 +55,7 @@ from src.store import (
     get_periods,
     save_company,
     save_findings,
-    save_ratios,
+    save_ratios_bulk,
 )
 
 app = FastAPI(title="Credit Warning API", version="1.0")
@@ -81,8 +81,8 @@ _backtest_status: dict[str, Any] = {
 
 class TrackRequest(BaseModel):
     ticker: str
-    no_llm: bool = True  # LLM pass is slow (~30 s/filing); UI always omits it for responsiveness
-    periods: int = 15    # how many annual fiscal-year periods to fetch and store
+    no_llm: bool = True       # LLM pass is slow (~30 s/filing); UI always omits it for responsiveness
+    periods: int | None = None  # cap on annual periods to fetch; None = full available history
 
 
 # ── Helper: reconstruct typed objects from raw Supabase rows ────────────────
@@ -234,19 +234,23 @@ def track_issuer(req: TrackRequest):
     except Exception as e:
         raise HTTPException(500, f"Failed to fetch company facts: {e}")
 
-    # Step 4: Determine which annual periods are available and take the most recent N.
+    # Step 4: Determine which annual periods are available. Fetch the full
+    # history by default (req.periods=None); a caller may still cap it to the
+    # most recent N. XBRL data only goes back to ~2009, so "full" is ~15 years.
     available = _get_available_periods(facts)
-    periods = available[: req.periods]
+    periods = available if req.periods is None else available[: req.periods]
     if not periods:
         raise HTTPException(404, f"No annual XBRL periods found for {identifier}")
 
-    # Step 5: Extract ratios and optionally run LLM review for each period.
-    saved = 0
-    for period in periods:
-        results = extract_all(facts, period)
-        save_ratios(cik, period, results)
+    # Step 5: Extract ratios for every period (pure compute, instant) and persist
+    # them in a SINGLE bulk upsert. Writing one period at a time was ~18 separate
+    # DB round-trips — the dominant cost of a track — so we batch them all here.
+    results_by_period = {period: extract_all(facts, period) for period in periods}
+    save_ratios_bulk(cik, results_by_period)
 
-        if not req.no_llm:
+    # Step 6: Optional LLM qualitative review per period (slow; disabled by default).
+    if not req.no_llm:
+        for period in periods:
             try:
                 filings = get_filings(cik, ["10-K"])
                 # Match by year only — filing dates don't align exactly with period_end.
@@ -263,13 +267,12 @@ def track_issuer(req: TrackRequest):
             except Exception:
                 # LLM review is best-effort; ratio data has already been saved.
                 pass
-        saved += 1
 
     return {
         "cik": cik,
         "ticker": info["tickers"][0] if info.get("tickers") else identifier,
         "name": info.get("name", ""),
-        "periods_saved": saved,
+        "periods_saved": len(periods),
         "periods": periods,
     }
 

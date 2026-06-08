@@ -11,7 +11,7 @@
 // The ticker comes from the dynamic route segment: useParams<{ ticker: string }>().
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import {
@@ -22,6 +22,9 @@ import {
   fetchIssuer, trackIssuer,
   fmtRatio, fmtFCF, fmtPct, scoreBg, scoreLabel, severityDot,
 } from '@/lib/api'
+
+// How many period rows to show per page in the Ratio History table.
+const PAGE_SIZE = 10
 
 export default function IssuerPage() {
 
@@ -38,6 +41,9 @@ export default function IssuerPage() {
   // null = no row is expanded.
   const [openAudit, setOpenAudit] = useState<string | null>(null)
 
+  // Zero-based page index for the Ratio History table (full history can be ~15 rows).
+  const [page, setPage] = useState(0)
+
 
   // ── Data loading ────────────────────────────────────────────────────────────
 
@@ -49,6 +55,7 @@ export default function IssuerPage() {
     setError('')
     try {
       setData(await fetchIssuer(ticker))
+      setPage(0)  // jump back to the newest periods whenever data (re)loads
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Failed to load')
     }
@@ -78,6 +85,12 @@ export default function IssuerPage() {
   const chartData = data
     ? [...data.periods].reverse().map(p => ({ date: p.period_end, score: p.score }))
     : []
+
+  // ── Ratio-history pagination ──────────────────────────────────────────────
+  // The chart above shows the full history; the table is paged at PAGE_SIZE rows.
+  const allPeriods = data?.periods ?? []
+  const totalPages = Math.max(1, Math.ceil(allPeriods.length / PAGE_SIZE))
+  const pagedPeriods = allPeriods.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE)
 
 
   // ── Render ──────────────────────────────────────────────────────────────────
@@ -189,15 +202,16 @@ export default function IssuerPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {data.periods.map(p => (
-                    <>
+                  {pagedPeriods.map(p => (
+                    // Keyed Fragment: the map's list item needs the key, not the
+                    // inner <tr> — a shorthand <> fragment can't carry one.
+                    <Fragment key={p.period_end}>
                       {/*
                         Data row — clicking toggles the inline audit panel.
                         openAudit holds the period_end of the currently-open row.
                         Clicking the open row again collapses it (toggles to null).
                       */}
                       <tr
-                        key={p.period_end}
                         onClick={() => setOpenAudit(openAudit === p.period_end ? null : p.period_end)}
                         className="hover:bg-gray-50 cursor-pointer transition-colors"
                       >
@@ -226,17 +240,45 @@ export default function IssuerPage() {
                         The AuditPanel component handles the detailed display.
                       */}
                       {openAudit === p.period_end && (
-                        <tr key={`${p.period_end}-audit`}>
+                        <tr>
                           <td colSpan={8} className="bg-slate-50 px-6 py-4 border-t border-slate-100">
                             <AuditPanel period={p} />
                           </td>
                         </tr>
                       )}
-                    </>
+                    </Fragment>
                   ))}
                 </tbody>
               </table>
             </div>
+
+            {/* Pager — only shown when history exceeds one page. */}
+            {totalPages > 1 && (
+              <div className="flex items-center justify-between px-6 py-3 border-t border-gray-100 text-sm">
+                <span className="text-xs text-slate-400">
+                  Showing {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, allPeriods.length)} of {allPeriods.length} periods
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setPage(p => Math.max(0, p - 1))}
+                    disabled={page === 0}
+                    className="px-3 py-1 rounded-md text-slate-600 bg-slate-100 hover:bg-slate-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  >
+                    ← Prev
+                  </button>
+                  <span className="text-xs text-slate-500 font-mono">
+                    {page + 1} / {totalPages}
+                  </span>
+                  <button
+                    onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
+                    disabled={page >= totalPages - 1}
+                    className="px-3 py-1 rounded-md text-slate-600 bg-slate-100 hover:bg-slate-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  >
+                    Next →
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Qualitative findings section — only rendered if findings exist. */}

@@ -37,7 +37,7 @@ from src.ingest import (
     resolve_identifier,
 )
 from src.extract import extract_all, RatioResult, _get_available_periods
-from src.store import save_company, save_ratios, save_findings, get_periods
+from src.store import save_company, save_ratios_bulk, save_findings, get_periods
 from src.score import compute_score, STRESS_THRESHOLD
 from src.concepts import MissingDataError
 
@@ -118,13 +118,15 @@ def _display_table(
 
 # ── Main tracking function ───────────────────────────────────────────────────
 
-def track(ticker: str, n_periods: int = 8, include_llm: bool = True) -> None:
+def track(ticker: str, n_periods: int | None = None, include_llm: bool = True) -> None:
     """
     Fetch, extract, store, and display credit ratios for a ticker.
 
     Args:
         ticker:      Stock ticker symbol (case-insensitive).
         n_periods:   Number of most recent annual periods to process.
+                     None (the default) processes the full available history
+                     (~15 years — XBRL data only goes back to ~2009).
         include_llm: If True, attempt an LLM qualitative review for each period.
                      Set False (--no-llm) to skip and run faster.
     """
@@ -142,9 +144,10 @@ def track(ticker: str, n_periods: int = 8, include_llm: bool = True) -> None:
     # Step 3: Fetch the full XBRL companyfacts JSON from EDGAR (cached after first fetch).
     facts = get_company_facts(cik)
 
-    # Step 3: Find available annual periods and take the N most recent.
+    # Step 3: Find available annual periods. Process the full history by default
+    # (n_periods=None); a caller may still cap it to the N most recent.
     available = _get_available_periods(facts)
-    periods = available[:n_periods]
+    periods = available if n_periods is None else available[:n_periods]
 
     if not periods:
         print("  No annual periods found in XBRL data.")
@@ -155,13 +158,15 @@ def track(ticker: str, n_periods: int = 8, include_llm: bool = True) -> None:
     all_results = []   # one dict of {ratio_name: RatioResult} per period
     all_scores = []    # one ScoreResult per period
 
+    # Step 4a: Extract every period (pure compute) and persist them in ONE bulk
+    # upsert. Writing per-period was ~18 DB round-trips — the slowest part of a
+    # track. Findings (below) still save per-period since each needs its own LLM call.
+    results_by_period = {period: extract_all(facts, period) for period in periods}
+    save_ratios_bulk(cik, results_by_period)
+
     for period in periods:
 
-        # Step 4a: Extract all five ratios from the XBRL data for this period.
-        results = extract_all(facts, period)
-
-        # Step 4b: Persist ratios to Supabase, keyed on CIK. Upsert — safe to re-run.
-        save_ratios(cik, period, results)
+        results = results_by_period[period]
 
         findings = []
         if include_llm:
@@ -227,8 +232,8 @@ if __name__ == "__main__":
         help="Skip LLM qualitative review (faster)"
     )
     parser.add_argument(
-        "--periods", type=int, default=8,
-        help="Number of most recent annual periods to show"
+        "--periods", type=int, default=None,
+        help="Number of most recent annual periods to show (default: full history)"
     )
     args = parser.parse_args()
 
