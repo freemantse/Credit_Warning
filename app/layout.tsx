@@ -1,3 +1,6 @@
+// Root layout: wraps every page with the global nav bar and page container.
+// Metadata here sets the browser tab title and meta description for all routes.
+
 import type { Metadata } from 'next'
 import Link from 'next/link'
 import './globals.css'
@@ -11,6 +14,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body className="bg-gray-50 text-gray-900 min-h-screen">
+        {/* Top navigation bar — shared across Portfolio and Backtest pages */}
         <header className="bg-slate-900 text-white shadow-md">
           <div className="max-w-7xl mx-auto px-6 py-4 flex items-center gap-8">
             <div>
@@ -29,6 +33,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </nav>
           </div>
         </header>
+        {/* Page content is constrained to max-w-7xl and padded consistently */}
         <main className="max-w-7xl mx-auto px-6 py-8">{children}</main>
       </body>
     </html>

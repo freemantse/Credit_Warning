@@ -1,79 +1,167 @@
 """
 XBRL tag fallback maps and concept resolution.
 
-Each concept maps to a prioritised list of XBRL tags (taxonomy/ConceptName).
-resolve_tag tries them in order and returns (value, winning_tag).
-It raises MissingDataError if none resolve — never returns 0 or a default.
-"""
+Background — what is XBRL?
+  SEC filers attach machine-readable "tags" to every number in their 10-K.
+  Each tag is a concept name like "us-gaap/Revenues". EDGAR stores all tagged values in a company facts JSON file that looks like:
+    {
+      "facts": {
+        "us-gaap": {
+          "Revenues": {
+            "units": {
+              "USD": [
+                {"end": "2023-09-30", "val": 394328000000, "form": "10-K", "filed": "2023-11-02"},
+                ...
+              ]
+            }
+          }
+        }
+      }
+    }
 
+Why fallback lists?
+  Different companies (and different fiscal years) use different XBRL tags for
+  the same concept. For example, revenue might be tagged as:
+    - RevenueFromContractWithCustomerExcludingAssessedTax  (post-2018 ASC 606)
+    - Revenues                                             (older, still common)
+    - SalesRevenueNet                                      (legacy pre-2015)
+  We try tags in priority order (most common first) and return the first match.
+  This approach avoids hardcoding one tag and failing on companies that use a
+  different equivalent tag.
+
+resolve_tag tries each tag in order and returns (value, winning_tag).
+It raises MissingDataError if none resolve — never returns 0 or a default,
+because silently defaulting to 0 would corrupt ratio calculations.
+"""
 from __future__ import annotations
 
-
 class MissingDataError(Exception):
-    """Raised when a required financial concept cannot be resolved from XBRL facts."""
+    """
+    Raised when a required financial concept cannot be resolved from XBRL facts.
+
+    Callers (extract_all in extract.py) catch this and record it in the results dict rather than letting it propagate — so one missing ratio doesn't block the others from being computed.
+    """
 
 
-# Prioritised fallback lists per concept.
-# Format: "taxonomy/ConceptName" matching the EDGAR companyfacts JSON structure.
+# ── Prioritised fallback tag lists per financial concept ────────────────────
+#
+# Each key is the concept name used throughout this codebase ("revenue", "cash").
+# Each value is an ordered list of XBRL tag paths in "taxonomy/TagName" format.
+# resolve_tag iterates this list top-to-bottom and returns the first match found in the company's EDGAR data for the requested period_end date.
+#
+# Ordering rule: most-specific / most-commonly-used tags come first.
+# Less-specific fallbacks (e.g. pre-taxonomy tags) come last.
 TAGS: dict[str, list[str]] = {
+
+    # ── Revenue ──────────────────────────────────────────────────────────────
+    # Preferred: ASC 606 tag introduced in 2018 (excludes collected sales tax).
+    # Fallback chain covers older taxonomy names used before ASC 606 adoption.
     "revenue": [
-        "us-gaap/RevenueFromContractWithCustomerExcludingAssessedTax",
-        "us-gaap/Revenues",
-        "us-gaap/SalesRevenueNet",
-        "us-gaap/RevenueFromContractWithCustomerIncludingAssessedTax",
-        "us-gaap/SalesRevenueGoodsNet",
+        "us-gaap/RevenueFromContractWithCustomerExcludingAssessedTax",  # post-2018 standard
+        "us-gaap/Revenues",                                              # broad, widely used
+        "us-gaap/SalesRevenueNet",                                       # older net-revenue tag
+        "us-gaap/RevenueFromContractWithCustomerIncludingAssessedTax",   # includes sales tax
+        "us-gaap/SalesRevenueGoodsNet",                                  # goods-only legacy tag
     ],
+
+    # ── Operating Income ─────────────────────────────────────────────────────
+    # OperatingIncomeLoss is the standard tag. The second tag catches companies
+    # that report pre-tax income as their top-line income figure but don't
+    # separately break out operating income on the XBRL tagging.
     "operating_income": [
         "us-gaap/OperatingIncomeLoss",
         "us-gaap/IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
     ],
+
+    # ── Interest Expense ─────────────────────────────────────────────────────
+    # Multiple equivalent tags exist across debt instruments and lease obligations.
     "interest_expense": [
-        "us-gaap/InterestExpense",
-        "us-gaap/InterestAndDebtExpense",
-        "us-gaap/InterestExpenseDebt",
-        "us-gaap/FinanceLeaseInterestExpense",
+        "us-gaap/InterestExpense",           # most common
+        "us-gaap/InterestAndDebtExpense",    # combined debt + lease interest
+        "us-gaap/InterestExpenseDebt",       # debt-only interest
+        "us-gaap/FinanceLeaseInterestExpense", # finance lease interest (post-ASC 842)
     ],
+
+    # ── Depreciation & Amortisation ──────────────────────────────────────────
+    # Added back to operating income to derive EBITDA (Earnings Before Interest,
+    # Taxes, Depreciation & Amortisation). D&A is a non-cash charge so EBITDA
+    # is a better proxy for cash generation than operating income alone.
     "depreciation": [
-        "us-gaap/DepreciationDepletionAndAmortization",
+        "us-gaap/DepreciationDepletionAndAmortization",  # most inclusive
         "us-gaap/DepreciationAndAmortization",
-        "us-gaap/Depreciation",
-        "us-gaap/AmortizationOfIntangibleAssets",
+        "us-gaap/Depreciation",                          # depreciation only
+        "us-gaap/AmortizationOfIntangibleAssets",        # last resort: intangibles only
     ],
+
+    # ── Total (Long-Term) Debt ───────────────────────────────────────────────
+    # Used as the numerator in net_debt = total_debt - cash.
+    # Prefers LongTermDebt which excludes current maturities; broader tags
+    # (DebtAndCapitalLeaseObligations) are used if the narrower tag is absent.
     "total_debt": [
         "us-gaap/LongTermDebt",
         "us-gaap/LongTermDebtNoncurrent",
-        "us-gaap/DebtAndCapitalLeaseObligations",
+        "us-gaap/DebtAndCapitalLeaseObligations",         # includes lease liabilities
         "us-gaap/LongTermDebtAndCapitalLeaseObligations",
         "us-gaap/NotesAndLoansPayable",
     ],
+
+    # ── Short-Term Debt ──────────────────────────────────────────────────────
+    # Current-portion debt: used in the liquidity ratio (cash / short_term_debt).
+    # This measures whether the company can cover imminent debt maturities.
     "short_term_debt": [
         "us-gaap/ShortTermBorrowings",
-        "us-gaap/LongTermDebtCurrent",
-        "us-gaap/DebtCurrent",
+        "us-gaap/LongTermDebtCurrent",          # current portion of long-term debt
+        "us-gaap/DebtCurrent",                   # broadest current-debt tag
         "us-gaap/NotesAndLoansPayableCurrent",
     ],
+
+    # ── Cash ─────────────────────────────────────────────────────────────────
+    # Used in: net_debt = total_debt - cash, and liquidity = cash / short_term_debt.
+    # Prefer the balance-sheet carrying value; the period-increase tag is a last
+    # resort (it measures change, not level, and is only used if nothing else matches).
     "cash": [
-        "us-gaap/CashAndCashEquivalentsAtCarryingValue",
-        "us-gaap/CashCashEquivalentsAndShortTermInvestments",
-        "us-gaap/Cash",
-        "us-gaap/CashAndCashEquivalentsPeriodIncreaseDecrease",
+        "us-gaap/CashAndCashEquivalentsAtCarryingValue",      # standard balance-sheet tag
+        "us-gaap/CashCashEquivalentsAndShortTermInvestments", # includes short-term investments
+        "us-gaap/Cash",                                        # narrower: cash only
+        "us-gaap/CashAndCashEquivalentsPeriodIncreaseDecrease", # last resort: flow tag
     ],
+
+    # ── Operating Cash Flow ──────────────────────────────────────────────────
+    # From the cash flow statement (not the income statement). Only one tag exists
+    # in practice — this is one of the most consistently tagged XBRL concepts.
     "operating_cashflow": [
         "us-gaap/NetCashProvidedByUsedInOperatingActivities",
     ],
+
+    # ── Capital Expenditures (CapEx) ─────────────────────────────────────────
+    # Subtracted from operating cash flow to compute free cash flow.
+    # CapEx is reported as a cash outflow, so EDGAR stores it as a positive number.
+    # We subtract it: FCF = OCF - capex.
     "capex": [
-        "us-gaap/PaymentsToAcquirePropertyPlantAndEquipment",
-        "us-gaap/CapitalExpendituresIncurredButNotYetPaid",
-        "us-gaap/PaymentsToAcquireProductiveAssets",
+        "us-gaap/PaymentsToAcquirePropertyPlantAndEquipment",  # most common PP&E capex tag
+        "us-gaap/CapitalExpendituresIncurredButNotYetPaid",    # accrued but unpaid capex
+        "us-gaap/PaymentsToAcquireProductiveAssets",           # broader productive asset tag
     ],
+
+    # ── Net Income ───────────────────────────────────────────────────────────
+    # Stored in the database for completeness and potential future use.
+    # Not directly used in any stress-score calculation today.
     "net_income": [
         "us-gaap/NetIncomeLoss",
-        "us-gaap/ProfitLoss",
+        "us-gaap/ProfitLoss",                               # IFRS-influenced filers
         "us-gaap/IncomeLossFromContinuingOperations",
     ],
+
+    # ── Total Assets ─────────────────────────────────────────────────────────
+    # Used as the "anchor" concept in _get_available_periods() (extract.py).
+    # Total assets (us-gaap/Assets) is reported exactly once per fiscal year in a
+    # 10-K — making its 'end' dates a reliable list of fiscal year-end dates.
     "total_assets": [
         "us-gaap/Assets",
     ],
+
+    # ── Total Liabilities ────────────────────────────────────────────────────
+    # Stored for completeness and for future solvency-ratio extensions.
     "total_liabilities": [
         "us-gaap/Liabilities",
     ],
@@ -87,47 +175,76 @@ def resolve_tag(
     filed_before: str | None = None,
 ) -> tuple[float, str]:
     """
-    Try each tag for `concept` in priority order.
+    Search the EDGAR companyfacts JSON for a financial concept and return its value.
+
+    How it works:
+      1. Look up the fallback tag list for `concept` in TAGS.
+      2. For each tag, navigate into facts["facts"]["us-gaap"][tag_name].
+      3. Inside each tag's "units" dict (e.g. {"USD": [...entries...]}), scan
+         each entry for one whose "end" date matches `period_end`.
+      4. Apply the point-in-time filter: skip entries filed after `filed_before`.
+      5. Return (value, tag_path) for the first entry that passes all checks.
+      6. If no tag resolves, raise MissingDataError listing exactly what was tried.
 
     Args:
-        facts: EDGAR companyfacts JSON (the full dict from CIK{cik}.json).
-        concept: key from TAGS, e.g. "revenue".
-        period_end: ISO date string "YYYY-MM-DD"; match the 'end' field of a unit entry.
-        filed_before: if set, only consider entries whose 'filed' <= this date (point-in-time).
+        facts:        Full EDGAR companyfacts JSON for one company.
+        concept:      Key from the TAGS dict above, e.g. "revenue" or "cash".
+        period_end:   ISO date "YYYY-MM-DD" for the fiscal year-end to look up.
+        filed_before: If provided, only consider XBRL entries whose "filed" date is on or before this date. Used in the backtest to prevent look-ahead bias (we only use data that existed at eval_date).
 
     Returns:
-        (value, winning_tag) — the first tag that resolves.
+        (value, winning_tag) — e.g. (394328000000.0, "us-gaap/Revenues")
 
     Raises:
-        MissingDataError: if concept unknown or no tag resolves for this period.
+        MissingDataError — if concept is unknown or no tag resolves for period_end.
     """
     if concept not in TAGS:
         raise MissingDataError(f"Unknown concept: {concept!r}")
 
     tag_list = TAGS[concept]
+
+    # Navigate to the us-gaap section of the EDGAR facts JSON.
+    # Use .get() with defaults so we don't crash on malformed/empty data.
     us_gaap = facts.get("facts", {}).get("us-gaap", {})
 
     for tag_path in tag_list:
-        # tag_path is "us-gaap/ConceptName" — strip the taxonomy prefix
-        tag_name = tag_path.split("/", 1)[1]
+        # tag_path format: "us-gaap/ConceptName"
+        # The EDGAR JSON uses just "ConceptName" as the dict key (no taxonomy prefix).
+        tag_name = tag_path.split("/", 1)[1]  # e.g. "us-gaap/Revenues" → "Revenues"
+
         concept_data = us_gaap.get(tag_name)
         if not concept_data:
+            # This company doesn't use this tag at all — try the next fallback.
             continue
 
-        # EDGAR units: usually "USD" for financials
+        # EDGAR groups values by their unit of measurement.
+        # Financial dollar amounts use "USD". Some concepts also have a "USD/shares"
+        # unit (e.g. EPS). We iterate all units to be safe rather than hard-coding "USD".
         for unit_key, entries in concept_data.get("units", {}).items():
             for entry in entries:
+
+                # Each entry represents one reported value. We only want entries
+                # whose fiscal period-end date matches what we're looking for.
                 if entry.get("end") != period_end:
                     continue
-                # Only annual (10-K) or quarterly (10-Q) forms; skip 10-K/A amendments
-                # that might skew point-in-time if filed_before is set
+
+                # Point-in-time filter for the backtest: if filed_before is set,
+                # skip entries from filings that weren't yet public at that date.
+                # String comparison works here because dates are ISO format "YYYY-MM-DD".
                 if filed_before and entry.get("filed", "") > filed_before:
                     continue
-                # Prefer instantaneous or duration entries that match period exactly
+
+                # Some XBRL entries describe context (e.g. segment labels) without
+                # a numeric value. The "val" key only exists for numeric entries.
                 if "val" not in entry:
                     continue
+
+                # This entry matches — return the value and the tag that supplied it.
+                # Converting to float handles both int and float values from the JSON.
                 return float(entry["val"]), tag_path
 
+    # We exhausted every fallback tag without finding a matching entry.
+    # Build a helpful error message listing exactly which tags were tried.
     attempted = ", ".join(tag_list)
     raise MissingDataError(
         f"Concept {concept!r} not found for period_end={period_end!r}. "

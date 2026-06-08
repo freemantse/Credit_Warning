@@ -1,9 +1,22 @@
 """
 Deterministic ratio extraction from EDGAR companyfacts JSON.
 
-Every function returns a RatioResult carrying the computed value,
-the raw inputs used, and the winning XBRL source tags — fully auditable.
+Every public function returns a RatioResult carrying the computed value,
+the raw XBRL inputs used, and the winning XBRL source tags — fully auditable.
 Missing data raises MissingDataError (never silently returns 0 or a guess).
+
+How the module fits into the system:
+  ingest.py  →  get_company_facts(cik)  →  facts dict
+  extract.py →  extract_all(facts, period_end)  →  dict of RatioResult objects
+  store.py   →  save_ratios(ticker, period, results)  →  Supabase
+  score.py   →  compute_score(results, findings)  →  ScoreResult
+
+Ratios computed:
+  leverage          = net_debt / EBITDA
+  interest_coverage = EBITDA / interest_expense
+  free_cash_flow    = operating_cashflow - capex
+  fcf_margin        = free_cash_flow / revenue
+  liquidity         = cash / short_term_debt
 """
 
 from __future__ import annotations
@@ -15,46 +28,132 @@ from typing import Any
 from src.concepts import resolve_tag, MissingDataError, TAGS
 
 
+# ── Data container ───────────────────────────────────────────────────────────
+
 @dataclass
 class RatioResult:
-    name: str
-    value: float
-    inputs: dict[str, float]
-    source_tags: dict[str, str]  # input_name → winning XBRL tag
-    period_end: str
+    """
+    Immutable container for one computed ratio value plus its full audit trail.
 
+    Every ratio function returns one of these so downstream code (score.py,
+    store.py, the API) gets not just the number but also exactly which XBRL tags
+    were used and what the raw input values were.
+
+    Example for leverage:
+        name        = "leverage"
+        value       = 3.2          # net_debt / EBITDA = 3.2×
+        inputs      = {"total_debt": 8e9, "cash": 2e9,
+                        "operating_income": 2e9, "depreciation": 0.5e9}
+        source_tags = {"total_debt": "us-gaap/LongTermDebt",
+                        "cash": "us-gaap/CashAndCashEquivalentsAtCarryingValue",
+                        "operating_income": "us-gaap/OperatingIncomeLoss",
+                        "depreciation": "us-gaap/DepreciationDepletionAndAmortization"}
+        period_end  = "2023-09-30"
+    """
+    name: str                       # ratio identifier, e.g. "leverage"
+    value: float                    # the computed ratio
+    inputs: dict[str, float]        # raw dollar values used in the formula
+    source_tags: dict[str, str]     # maps each input name to its winning XBRL tag
+    period_end: str                 # fiscal year-end date, e.g. "2023-09-30"
+
+
+# ── Private helper ───────────────────────────────────────────────────────────
 
 def _resolve(facts: dict, concept: str, period_end: str, filed_before: str | None = None) -> tuple[float, str]:
+    """
+    Thin wrapper around concepts.resolve_tag.
+    Kept private because only this module calls it directly.
+    Returns (value, winning_tag_path).
+    """
     return resolve_tag(facts, concept, period_end, filed_before=filed_before)
 
 
+# ── Intermediate building-block helpers ─────────────────────────────────────
+#
+# ebitda() and net_debt() are NOT public ratio functions — they are shared
+# building blocks used internally by leverage() and interest_coverage().
+# They return raw (value, inputs_dict, tags_dict) tuples instead of RatioResult
+# so that the ratio functions can merge their inputs/tags into one flat dict
+# for the final RatioResult audit trail.
+
 def ebitda(facts: dict, period_end: str, filed_before: str | None = None) -> tuple[float, dict, dict]:
-    """Derived EBITDA = operating_income + depreciation. Returns (value, inputs, tags)."""
+    """
+    Compute EBITDA = operating_income + depreciation for a given period.
+
+    EDGAR doesn't provide an EBITDA tag directly, so we derive it by adding
+    back the depreciation & amortisation charge to operating income.
+    This is the standard EBITDA derivation used in credit analysis.
+
+    Returns:
+        (ebitda_value, inputs_dict, source_tags_dict)
+        e.g. (2.5e9, {"operating_income": 2e9, "depreciation": 0.5e9}, {...})
+    """
+    # Fetch operating income and the XBRL tag that supplied it.
     op_inc, op_tag = _resolve(facts, "operating_income", period_end, filed_before)
+    # Fetch D&A and the XBRL tag that supplied it.
     dep, dep_tag = _resolve(facts, "depreciation", period_end, filed_before)
     value = op_inc + dep
-    return value, {"operating_income": op_inc, "depreciation": dep}, \
-           {"operating_income": op_tag, "depreciation": dep_tag}
+    # Return the merged inputs and tags dicts so callers can include them in
+    # the final RatioResult.inputs and RatioResult.source_tags.
+    return (
+        value,
+        {"operating_income": op_inc, "depreciation": dep},
+        {"operating_income": op_tag, "depreciation": dep_tag},
+    )
 
 
 def net_debt(facts: dict, period_end: str, filed_before: str | None = None) -> tuple[float, dict, dict]:
-    """Net debt = total_debt - cash."""
+    """
+    Compute net debt = total_debt - cash for a given period.
+
+    Net debt is the leverage numerator. A negative result means the company
+    holds more cash than debt — which makes leverage negative (financial strength).
+
+    Returns:
+        (net_debt_value, inputs_dict, source_tags_dict)
+    """
     debt, debt_tag = _resolve(facts, "total_debt", period_end, filed_before)
     cash, cash_tag = _resolve(facts, "cash", period_end, filed_before)
-    value = debt - cash
-    return value, {"total_debt": debt, "cash": cash}, \
-           {"total_debt": debt_tag, "cash": cash_tag}
+    value = debt - cash  # positive = more debt than cash (typical); negative = net cash
+    return (
+        value,
+        {"total_debt": debt, "cash": cash},
+        {"total_debt": debt_tag, "cash": cash_tag},
+    )
 
+
+# ── Public ratio functions ───────────────────────────────────────────────────
+#
+# Each function takes the same three parameters (facts, period_end, filed_before)
+# and returns a RatioResult. They are collected into _RATIO_FUNCTIONS below so
+# extract_all() can iterate them without listing them by name.
 
 def leverage(facts: dict, period_end: str, filed_before: str | None = None) -> RatioResult:
-    """Leverage = net_debt / EBITDA."""
+    """
+    Leverage = net_debt / EBITDA.
+
+    Interpretation:
+      < 3×  — typical investment-grade issuer
+      3–5×  — watch territory (elevated but manageable)
+      > 5×  — stress rule triggers (+25 pts to the stress score)
+
+    The dict-merge pattern {**nd_inputs, **ebit_inputs} combines the raw inputs
+    from both net_debt and ebitda into a single flat dict for the audit trail.
+
+    Raises MissingDataError if EBITDA is zero (division undefined).
+    """
     nd, nd_inputs, nd_tags = net_debt(facts, period_end, filed_before)
     ebit, ebit_inputs, ebit_tags = ebitda(facts, period_end, filed_before)
+
     if ebit == 0:
+        # Zero EBITDA makes the ratio undefined. Raise rather than return inf/nan.
         raise MissingDataError(f"EBITDA is zero for {period_end}, cannot compute leverage")
+
     return RatioResult(
         name="leverage",
         value=nd / ebit,
+        # Merge the four input values (total_debt, cash, operating_income, depreciation)
+        # into one flat dict for display in the source audit panel.
         inputs={**nd_inputs, **ebit_inputs},
         source_tags={**nd_tags, **ebit_tags},
         period_end=period_end,
@@ -62,11 +161,23 @@ def leverage(facts: dict, period_end: str, filed_before: str | None = None) -> R
 
 
 def interest_coverage(facts: dict, period_end: str, filed_before: str | None = None) -> RatioResult:
-    """Interest coverage = EBITDA / interest_expense."""
+    """
+    Interest coverage = EBITDA / interest_expense.
+
+    Interpretation:
+      > 4×  — comfortable — EBITDA covers interest many times over
+      2–4×  — watch territory
+      < 2×  — stress rule triggers (+25 pts to the stress score)
+
+    Raises MissingDataError if interest expense is zero (company has no
+    interest-bearing debt, making the ratio undefined/meaningless).
+    """
     ebit, ebit_inputs, ebit_tags = ebitda(facts, period_end, filed_before)
     int_exp, int_tag = _resolve(facts, "interest_expense", period_end, filed_before)
+
     if int_exp == 0:
         raise MissingDataError(f"Interest expense is zero for {period_end}")
+
     return RatioResult(
         name="interest_coverage",
         value=ebit / int_exp,
@@ -77,9 +188,19 @@ def interest_coverage(facts: dict, period_end: str, filed_before: str | None = N
 
 
 def free_cash_flow(facts: dict, period_end: str, filed_before: str | None = None) -> RatioResult:
-    """Free cash flow = operating_cashflow - capex."""
+    """
+    Free cash flow = operating_cashflow - capex.
+
+    FCF measures how much real cash the company generates after maintaining/expanding
+    its asset base. Negative FCF means the company spent more cash on operations
+    and investment than it brought in — a stress signal (+20 pts).
+
+    Note: EDGAR reports capex (PaymentsToAcquirePropertyPlantAndEquipment) as a
+    POSITIVE outflow number, so we subtract it from OCF.
+    """
     ocf, ocf_tag = _resolve(facts, "operating_cashflow", period_end, filed_before)
     capex, capex_tag = _resolve(facts, "capex", period_end, filed_before)
+
     return RatioResult(
         name="free_cash_flow",
         value=ocf - capex,
@@ -90,14 +211,28 @@ def free_cash_flow(facts: dict, period_end: str, filed_before: str | None = None
 
 
 def fcf_margin(facts: dict, period_end: str, filed_before: str | None = None) -> RatioResult:
-    """FCF margin = free_cash_flow / revenue."""
+    """
+    FCF margin = free_cash_flow / revenue.
+
+    Normalises FCF by revenue so it is size-agnostic and comparable across
+    issuers. A 10% FCF margin means the company converts 10 cents of every
+    revenue dollar into free cash.
+
+    Not directly used in the stress score, but stored for trend analysis.
+    Raises MissingDataError if revenue is zero (e.g. pre-revenue companies).
+    """
+    # Re-use the free_cash_flow function — avoids fetching OCF and capex twice.
     fcf_result = free_cash_flow(facts, period_end, filed_before)
     rev, rev_tag = _resolve(facts, "revenue", period_end, filed_before)
+
     if rev == 0:
         raise MissingDataError(f"Revenue is zero for {period_end}, cannot compute FCF margin")
+
     return RatioResult(
         name="fcf_margin",
+        # Divide FCF by revenue to get the margin as a decimal fraction (e.g. 0.12 = 12%).
         value=fcf_result.value / rev,
+        # Merge FCF's inputs (OCF + capex) with revenue into one flat audit dict.
         inputs={**fcf_result.inputs, "revenue": rev},
         source_tags={**fcf_result.source_tags, "revenue": rev_tag},
         period_end=period_end,
@@ -105,11 +240,27 @@ def fcf_margin(facts: dict, period_end: str, filed_before: str | None = None) ->
 
 
 def liquidity(facts: dict, period_end: str, filed_before: str | None = None) -> RatioResult:
-    """Liquidity = cash / short_term_debt. Signals near-term coverage."""
+    """
+    Liquidity = cash / short_term_debt.
+
+    Measures near-term solvency: can the company cover its maturing obligations
+    using cash on its balance sheet today?
+
+    Interpretation:
+      > 1×  — cash exceeds near-term debt (healthy)
+      < 1×  — stress rule triggers (+20 pts); company may need to refinance
+               or draw on credit lines to meet maturities
+
+    Raises MissingDataError if short-term debt is zero — not necessarily bad,
+    it just means the ratio is undefined (no short-term debt to cover).
+    """
     cash, cash_tag = _resolve(facts, "cash", period_end, filed_before)
     st_debt, st_tag = _resolve(facts, "short_term_debt", period_end, filed_before)
+
     if st_debt == 0:
+        # Undefined, not a stress signal. Raise so the score treats it as missing.
         raise MissingDataError(f"Short-term debt is zero for {period_end}, liquidity ratio undefined")
+
     return RatioResult(
         name="liquidity",
         value=cash / st_debt,
@@ -119,6 +270,10 @@ def liquidity(facts: dict, period_end: str, filed_before: str | None = None) -> 
     )
 
 
+# ── Batch extraction ─────────────────────────────────────────────────────────
+
+# This list drives extract_all(). Adding a new ratio function here is all
+# that's needed to include it in every batch extraction run.
 _RATIO_FUNCTIONS = [leverage, interest_coverage, free_cash_flow, fcf_margin, liquidity]
 
 
@@ -128,47 +283,81 @@ def extract_all(
     filed_before: str | None = None,
 ) -> dict[str, RatioResult | MissingDataError]:
     """
-    Run all ratio functions for a given period.
-    Returns a dict of ratio_name → RatioResult (or MissingDataError if data absent).
-    Never raises — missing data is recorded, not propagated.
+    Run all five ratio functions for one (company, period) combination.
+
+    Design decision — never raises, records errors:
+      If one ratio can't be computed (e.g. missing depreciation tag), the others
+      still run. The failed ratio is stored in the dict as a MissingDataError
+      object. Callers check with isinstance(result, RatioResult) to skip errors.
+
+    Returns:
+        Dict keyed by ratio name. Values are either a RatioResult (success)
+        or a MissingDataError (explains exactly which XBRL tags were tried).
+        Example: {"leverage": RatioResult(...), "liquidity": MissingDataError(...)}
     """
     results: dict[str, RatioResult | MissingDataError] = {}
+
     for fn in _RATIO_FUNCTIONS:
         try:
             result = fn(facts, period_end, filed_before)
+            # Key by result.name (e.g. "leverage") — the canonical ratio name.
             results[result.name] = result
         except MissingDataError as e:
+            # Key by fn.__name__ (e.g. "leverage") when the function itself raises.
+            # fn.__name__ matches result.name so the dict key is consistent either way.
             results[fn.__name__] = e
+
     return results
 
 
 def _get_available_periods(facts: dict) -> list[str]:
-    """Return annual fiscal-year-end dates, newest first.
+    """
+    Find all annual fiscal-year-end dates in the EDGAR XBRL data.
 
-    Anchored on the balance-sheet date (total assets), which every 10-K reports
-    exactly once per fiscal year-end (current year + one comparative). Its 'end'
-    dates therefore *are* the fiscal year ends. Scanning every concept instead
-    (the naive approach) pulls in spurious dates: quarterly revenue
-    disaggregations, acquisition-date fair values, and cover-page share counts
-    all carry form=="10-K" but are not annual period ends.
+    The problem:
+      Many different XBRL tags in a 10-K carry form=="10-K" metadata, but most
+      of them are NOT fiscal-year-end dates. For example:
+        - Quarterly revenue breakdowns (reported in the 10-K for comparison)
+        - Segment data at acquisition dates
+        - Cover-page share counts at arbitrary dates
+      Scanning all tags naively produces dozens of spurious dates.
+
+    The solution — anchor on total_assets (us-gaap/Assets):
+      Total assets is a balance-sheet item reported EXACTLY ONCE per year-end
+      in a 10-K. Its 'end' date IS the fiscal year-end. Using it as the anchor
+      gives a clean list with no spurious dates.
+
+    Fallback (for rare issuers that don't tag total assets):
+      Scan all concepts but require the reporting span to be ≥ 350 days,
+      which filters out quarterly periods (≈ 90 days) while keeping annual ones.
+
+    Returns:
+        List of "YYYY-MM-DD" fiscal year-end strings, newest first.
     """
     us_gaap = facts.get("facts", {}).get("us-gaap", {})
 
+    # ── Primary path: anchor on total_assets ──────────────────────────────
+    # Strip the "us-gaap/" prefix to get the bare tag name used as a dict key.
     anchor_tags = [t.split("/", 1)[1] for t in TAGS["total_assets"]]
     periods: set[str] = set()
+
     for tag in anchor_tags:
         concept_data = us_gaap.get(tag)
         if not concept_data:
             continue
         for entries in concept_data.get("units", {}).values():
             for entry in entries:
+                # Only collect dates from annual (10-K) filings with an 'end' date.
                 if entry.get("form") == "10-K" and entry.get("end"):
                     periods.add(entry["end"])
+
     if periods:
+        # Return newest-first so callers can slice [:N] to get the most recent N.
         return sorted(periods, reverse=True)
 
-    # Fallback: issuer doesn't tag total assets — scan all concepts but keep
-    # only full-year durations (~350+ days), dropping quarterly periods.
+    # ── Fallback path: scan all concepts, filter by duration ──────────────
+    # Deferred import — only needed in the fallback, and `date` is a stdlib type
+    # that we don't want to import at module level for a rarely-hit code path.
     from datetime import date
 
     for concept_data in us_gaap.values():
@@ -179,14 +368,23 @@ def _get_available_periods(facts: dict) -> list[str]:
                 start = entry.get("start")
                 if start:
                     try:
+                        # Compute the number of days the reporting span covers.
                         span = date.fromisoformat(entry["end"]) - date.fromisoformat(start)
                     except ValueError:
+                        # Malformed date string — skip this entry.
                         continue
+                    # Annual reports span ~365 days; quarterly span ~90 days.
+                    # 350 days is the threshold to distinguish annual from quarterly.
                     if span.days < 350:
                         continue
                 periods.add(entry["end"])
+
     return sorted(periods, reverse=True)
 
+
+# ── CLI convenience ──────────────────────────────────────────────────────────
+# Run this file directly to test ratio extraction for a given ticker.
+# Usage:  python -m src.extract AAPL
 
 if __name__ == "__main__":
     from src.ingest import get_cik, get_company_facts
@@ -206,5 +404,6 @@ if __name__ == "__main__":
             if isinstance(result, RatioResult):
                 print(f"  {name:20s} = {result.value:>10.2f}  (tags: {list(result.source_tags.values())})")
             else:
+                # MissingDataError — print the reason so you can see which tags were tried.
                 print(f"  {name:20s} = MISSING: {result}")
         print()
