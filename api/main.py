@@ -37,14 +37,23 @@ sys.path.insert(0, str(_ROOT))
 
 from src.concepts import MissingDataError
 from src.extract import RatioResult, _get_available_periods, extract_all
-from src.ingest import get_cik, get_company_facts, get_filings, get_filing_text
+from src.ingest import (
+    get_company_facts,
+    get_company_info,
+    get_filings,
+    get_filing_text,
+    resolve_identifier,
+)
 from src.score import STRESS_THRESHOLD, compute_score
 from src.store import (
     delete_issuer,
+    get_cik_by_ticker,
+    get_company,
     get_findings,
     get_full_ratios,
     get_issuers,
     get_periods,
+    save_company,
     save_findings,
     save_ratios,
 )
@@ -93,6 +102,31 @@ def _to_ratio_results(full_ratios: dict, period_end: str) -> dict[str, RatioResu
     }
 
 
+def _resolve_cik_for_read(identifier: str) -> str:
+    """
+    Resolve a ticker-or-CIK path param to a canonical CIK for read endpoints.
+
+    The frontend still uses friendly /issuer/AAPL URLs, but the DB is keyed on
+    CIK. We resolve without hitting EDGAR when possible:
+      1. A bare CIK (all digits) is zero-padded and returned directly.
+      2. A ticker is looked up in the local companies table (it was stored when
+         the issuer was tracked) — no SEC round-trip.
+      3. As a last resort (e.g. a ticker that was renamed since it was tracked),
+         fall back to an EDGAR ticker→CIK lookup via resolve_identifier.
+    """
+    ident = identifier.strip()
+    cand = ident[3:] if ident[:3].upper() == "CIK" else ident
+    if cand.isdigit() and len(cand) <= 10:
+        return cand.zfill(10)
+
+    cik = get_cik_by_ticker(ident)
+    if cik:
+        return cik
+
+    # Not tracked under that ticker locally — try EDGAR as a fallback.
+    return resolve_identifier(ident)
+
+
 def _finding_objects(findings: list[dict]):
     # Convert raw dicts from Supabase into Finding dataclass instances
     # so compute_score can call getattr(f, "severity") on them.
@@ -124,18 +158,19 @@ def list_issuers():
     Each row includes the five key ratios and a stress score so the dashboard
     table can render without a separate per-issuer API call.
     """
-    tickers = get_issuers()
+    issuers = get_issuers()
     result = []
-    for ticker in tickers:
-        periods = get_periods(ticker)
+    for issuer in issuers:
+        cik = issuer["cik"]
+        periods = get_periods(cik)
         if not periods:
-            # Ticker exists in DB but has no stored ratios — skip rather than error.
+            # Company exists in DB but has no stored ratios — skip rather than error.
             continue
 
         # periods is sorted ascending; the latest period is the last element.
         latest = periods[-1]
-        full_ratios = get_full_ratios(ticker, latest)
-        findings = get_findings(ticker, latest)
+        full_ratios = get_full_ratios(cik, latest)
+        findings = get_findings(cik, latest)
 
         # Re-score from stored data so the summary is always consistent with
         # the detail page (both call compute_score with the same inputs).
@@ -149,7 +184,9 @@ def list_issuers():
             return r["value"] if r else None
 
         result.append({
-            "ticker": ticker,
+            "cik": cik,
+            "ticker": issuer["ticker"],
+            "name": issuer["name"],
             "latest_period": latest,
             "period_count": len(periods),
             "leverage": _v("leverage"),
@@ -172,33 +209,42 @@ def track_issuer(req: TrackRequest):
     Optionally runs an LLM qualitative review of the 10-K MD&A text for each
     period if no_llm=False (slow; disabled by default in the UI).
     """
-    ticker = req.ticker.upper().strip()
+    identifier = req.ticker.upper().strip()
 
-    # Step 1: Resolve ticker → CIK (SEC's internal company identifier).
+    # Step 1: Resolve the input (ticker OR CIK) → canonical CIK.
     try:
-        cik = get_cik(ticker)
+        cik = resolve_identifier(identifier)
     except ValueError:
-        raise HTTPException(404, f"Ticker {ticker!r} not found in SEC EDGAR")
+        raise HTTPException(404, f"{identifier!r} not found in SEC EDGAR")
     except Exception as e:
         raise HTTPException(500, f"EDGAR lookup failed: {e}")
 
-    # Step 2: Fetch the full XBRL company facts JSON (cached to disk after first fetch).
+    # Step 2: Persist the company's identity snapshot (name, current tickers,
+    # former names) keyed on the permanent CIK. Best-effort: a failure here
+    # shouldn't block ratio ingestion, but we still surface a clear error.
+    try:
+        info = get_company_info(cik)
+        save_company(info)
+    except Exception as e:
+        raise HTTPException(500, f"Failed to fetch/save company info: {e}")
+
+    # Step 3: Fetch the full XBRL company facts JSON (cached to disk after first fetch).
     try:
         facts = get_company_facts(cik)
     except Exception as e:
         raise HTTPException(500, f"Failed to fetch company facts: {e}")
 
-    # Step 3: Determine which annual periods are available and take the most recent N.
+    # Step 4: Determine which annual periods are available and take the most recent N.
     available = _get_available_periods(facts)
     periods = available[: req.periods]
     if not periods:
-        raise HTTPException(404, f"No annual XBRL periods found for {ticker}")
+        raise HTTPException(404, f"No annual XBRL periods found for {identifier}")
 
-    # Step 4: Extract ratios and optionally run LLM review for each period.
+    # Step 5: Extract ratios and optionally run LLM review for each period.
     saved = 0
     for period in periods:
         results = extract_all(facts, period)
-        save_ratios(ticker, period, results)
+        save_ratios(cik, period, results)
 
         if not req.no_llm:
             try:
@@ -213,13 +259,19 @@ def track_issuer(req: TrackRequest):
                     from src.llm_review import review_text
                     # Trim to 12 000 chars — enough for MD&A; avoids token-limit errors.
                     findings_list = review_text(text[:12000], f"10-K {period}")
-                    save_findings(ticker, period, findings_list)
+                    save_findings(cik, period, findings_list)
             except Exception:
                 # LLM review is best-effort; ratio data has already been saved.
                 pass
         saved += 1
 
-    return {"ticker": ticker, "periods_saved": saved, "periods": periods}
+    return {
+        "cik": cik,
+        "ticker": info["tickers"][0] if info.get("tickers") else identifier,
+        "name": info.get("name", ""),
+        "periods_saved": saved,
+        "periods": periods,
+    }
 
 
 @app.get("/api/issuer/{ticker}")
@@ -230,16 +282,18 @@ def get_issuer(ticker: str):
     Periods are returned newest-first so the frontend chart can show recent
     trends at the top without client-side sorting.
     """
-    ticker = ticker.upper()
-    periods = get_periods(ticker)
+    cik = _resolve_cik_for_read(ticker)
+    periods = get_periods(cik)
     if not periods:
         raise HTTPException(404, f"{ticker} is not tracked. POST /api/track first.")
+
+    company = get_company(cik) or {}
 
     period_data = []
     # reversed() because get_periods() returns ascending; we want newest first.
     for period in reversed(periods):
-        full_ratios = get_full_ratios(ticker, period)
-        findings = get_findings(ticker, period)
+        full_ratios = get_full_ratios(cik, period)
+        findings = get_findings(cik, period)
         ratio_results = _to_ratio_results(full_ratios, period)
         finding_objs = _finding_objects(findings)
         score_result = compute_score(ratio_results, finding_objs)
@@ -253,15 +307,21 @@ def get_issuer(ticker: str):
             "findings": findings,           # LLM qualitative findings (may be empty)
         })
 
-    return {"ticker": ticker, "periods": period_data}
+    tickers = company.get("tickers") or []
+    return {
+        "cik": cik,
+        "ticker": tickers[0] if tickers else ticker.upper(),
+        "name": company.get("name", ""),
+        "periods": period_data,
+    }
 
 
 @app.delete("/api/issuer/{ticker}")
 def remove_issuer(ticker: str):
-    """Delete all stored ratios and findings for a ticker."""
-    ticker = ticker.upper()
-    delete_issuer(ticker)
-    return {"status": "deleted", "ticker": ticker}
+    """Delete all stored data for a company (resolved from ticker or CIK)."""
+    cik = _resolve_cik_for_read(ticker)
+    delete_issuer(cik)
+    return {"status": "deleted", "cik": cik}
 
 
 # ── Backtest (long-running background task) ──────────────────────────────────

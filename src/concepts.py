@@ -1,38 +1,3 @@
-"""
-XBRL tag fallback maps and concept resolution.
-
-Background — what is XBRL?
-  SEC filers attach machine-readable "tags" to every number in their 10-K.
-  Each tag is a concept name like "us-gaap/Revenues". EDGAR stores all tagged values in a company facts JSON file that looks like:
-    {
-      "facts": {
-        "us-gaap": {
-          "Revenues": {
-            "units": {
-              "USD": [
-                {"end": "2023-09-30", "val": 394328000000, "form": "10-K", "filed": "2023-11-02"},
-                ...
-              ]
-            }
-          }
-        }
-      }
-    }
-
-Why fallback lists?
-  Different companies (and different fiscal years) use different XBRL tags for
-  the same concept. For example, revenue might be tagged as:
-    - RevenueFromContractWithCustomerExcludingAssessedTax  (post-2018 ASC 606)
-    - Revenues                                             (older, still common)
-    - SalesRevenueNet                                      (legacy pre-2015)
-  We try tags in priority order (most common first) and return the first match.
-  This approach avoids hardcoding one tag and failing on companies that use a
-  different equivalent tag.
-
-resolve_tag tries each tag in order and returns (value, winning_tag).
-It raises MissingDataError if none resolve — never returns 0 or a default,
-because silently defaulting to 0 would corrupt ratio calculations.
-"""
 from __future__ import annotations
 
 class MissingDataError(Exception):
@@ -41,7 +6,6 @@ class MissingDataError(Exception):
 
     Callers (extract_all in extract.py) catch this and record it in the results dict rather than letting it propagate — so one missing ratio doesn't block the others from being computed.
     """
-
 
 # ── Prioritised fallback tag lists per financial concept ────────────────────
 #

@@ -150,6 +150,71 @@ def get_cik(ticker: str) -> str:
     raise ValueError(f"Ticker {ticker!r} not found in SEC company tickers list")
 
 
+def resolve_identifier(identifier: str) -> str:
+    """
+    Resolve either a ticker or a CIK to a zero-padded 10-digit CIK.
+
+    The CIK is SEC EDGAR's canonical, permanent identifier for a company. Unlike
+    tickers and company names — which change over rebrands, ticker swaps, and
+    reincorporations — a CIK is assigned once and never changes. Callers should
+    prefer this over get_cik() so that historical companies whose ticker has
+    since changed (and therefore no longer appears in company_tickers.json) can
+    still be looked up directly by CIK.
+
+    Accepts:
+      - A ticker symbol, e.g. "AAPL"  → resolved via get_cik().
+      - A bare CIK, e.g. "320193" or "0000320193", with or without a "CIK"
+        prefix → zero-padded and returned directly (no HTTP request).
+
+    A value is treated as a CIK if, once any leading "CIK" prefix and leading
+    zeros are stripped, it is all digits and at most 10 digits long.
+
+    Returns:
+        Zero-padded 10-digit CIK string, e.g. "0000320193".
+    """
+    raw = identifier.strip()
+
+    # Allow an optional "CIK" / "cik" prefix, e.g. "CIK0000320193".
+    candidate = raw
+    if candidate[:3].upper() == "CIK":
+        candidate = candidate[3:]
+
+    # If what's left is all digits and fits in 10 digits, it's a CIK already.
+    if candidate.isdigit() and len(candidate) <= 10:
+        return candidate.zfill(10)
+
+    # Otherwise treat it as a ticker and resolve through the ticker list.
+    return get_cik(raw)
+
+
+def get_company_info(cik: str) -> dict[str, Any]:
+    """
+    Return identity metadata for a company from its submissions JSON.
+
+    Ticker and name are mutable display attributes, not identity — this helper
+    pulls the *current* values plus the history needed to recognise a company
+    across rebrands and ticker changes. Key your storage on the CIK and treat
+    everything here as a refreshable snapshot.
+
+    Returns a dict with:
+        cik:         Zero-padded 10-digit CIK (the canonical key).
+        name:        Current legal/display name.
+        tickers:     List of current ticker symbols (a company can have several).
+        exchanges:   List of exchanges the tickers trade on.
+        formerNames: List of {name, from, to} dicts for prior names, if any.
+                     Useful for matching historical filings and "f/k/a" display.
+    """
+    cik_padded = cik.zfill(10)
+    submissions = get_submissions(cik_padded)
+    return {
+        "cik": cik_padded,
+        "name": submissions.get("name", ""),
+        "tickers": submissions.get("tickers", []),
+        "exchanges": submissions.get("exchanges", []),
+        "formerNames": submissions.get("formerNames", []),
+    }
+
+
 def get_company_facts(cik: str) -> dict[str, Any]:
     """
     Fetch the full XBRL companyfacts JSON for a company.
@@ -304,10 +369,18 @@ def get_filing_text(cik: str, accession: str, document: str) -> str:
 if __name__ == "__main__":
     import sys
 
-    ticker = sys.argv[1] if len(sys.argv) > 1 else "AAPL"
-    print(f"Resolving CIK for {ticker}...")
-    cik = get_cik(ticker)
+    # Accepts a ticker (e.g. AAPL) or a bare CIK (e.g. 320193 / 0000320193).
+    identifier = sys.argv[1] if len(sys.argv) > 1 else "AAPL"
+    print(f"Resolving CIK for {identifier}...")
+    cik = resolve_identifier(identifier)
     print(f"  CIK: {cik}")
+
+    info = get_company_info(cik)
+    print(f"  Name: {info['name']}")
+    print(f"  Tickers: {', '.join(info['tickers']) or '—'}")
+    if info["formerNames"]:
+        former = ", ".join(fn.get("name", "") for fn in info["formerNames"])
+        print(f"  Formerly: {former}")
 
     filings = get_filings(cik, ["10-K", "10-Q"])
     # Count filings by form type and display the totals.
