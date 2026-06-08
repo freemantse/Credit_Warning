@@ -125,17 +125,21 @@ export async function fetchIssuers(): Promise<IssuerSummary[]> {
 }
 
 /**
- * Start tracking a new ticker (or refresh an existing one).
+ * Start tracking a new issuer (or refresh an existing one).
+ *
+ * `identifier` may be either a ticker (e.g. "AAPL") or a CIK (e.g. "320193" or
+ * "0000320193"); the backend resolves both to the canonical CIK.
  *
  * noLlm defaults to true — the LLM qualitative pass takes ~30 s per filing
  * and is skipped by default in the UI to keep the "Track" button responsive.
  * The user can enable it by setting noLlm=false, but the UI doesn't expose this yet.
  */
-export async function trackIssuer(ticker: string, noLlm = true): Promise<void> {
+export async function trackIssuer(identifier: string, noLlm = true): Promise<void> {
   const res = await fetch('/api/track', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ticker, no_llm: noLlm, periods: 8 }),
+    // The API field is still named `ticker` but accepts a ticker or a CIK.
+    body: JSON.stringify({ ticker: identifier, no_llm: noLlm, periods: 8 }),
   })
   if (!res.ok) {
     // Try to parse the FastAPI error detail; fall back to a generic message.

@@ -6,7 +6,7 @@
 // their latest-period key ratios, stress scores, and status badges.
 //
 // User actions available on this page:
-//   1. Add a new issuer: type a ticker → click Track → data is fetched from EDGAR
+//   1. Add a new issuer: type a ticker or CIK → click Track → data is fetched from EDGAR
 //   2. Click a ticker row → navigates to /issuer/[ticker] for full history
 //   3. Remove an issuer: click the Remove button on any row
 //   4. Refresh: reload the table from the database
@@ -24,8 +24,10 @@ export default function Dashboard() {
   // ── State ───────────────────────────────────────────────────────────────────
   const [issuers, setIssuers] = useState<IssuerSummary[]>([])
 
-  // Controlled input for the "Add Issuer" text field.
+  // Controlled inputs for the "Add Issuer" card — one row per identifier type.
+  // The user fills in EITHER field; handleTrack submits whichever is non-empty.
   const [ticker, setTicker] = useState('')
+  const [cik, setCik] = useState('')
 
   // True while POST /api/track is in-flight. Disables the Track button
   // and shows a "Fetching EDGAR data…" label to prevent double-submits.
@@ -73,24 +75,28 @@ export default function Dashboard() {
   // ── Event handlers ──────────────────────────────────────────────────────────
 
   /**
-   * Handle the "Track" button click (and Enter keypress in the input).
-   * Validates the ticker, calls POST /api/track, then reloads the table.
+   * Handle the "Track" button click (and Enter keypress in either input).
+   * Submits whichever field is filled — a ticker (e.g. AAPL) or a CIK
+   * (e.g. 320193 / 0000320193). The backend resolves both to the canonical CIK.
+   * Uppercasing is safe for digits and normalises an optional "CIK" prefix.
    */
   async function handleTrack() {
-    const t = ticker.trim().toUpperCase()
-    if (!t) return  // ignore empty input
+    // Prefer the ticker field if both happen to be filled.
+    const identifier = (ticker.trim() || cik.trim()).toUpperCase()
+    if (!identifier) return  // ignore when both fields are empty
 
     setTracking(true)
     setError('')
     setSuccess('')
 
     try {
-      await trackIssuer(t)
-      setTicker('')  // clear the input on success
-      setSuccess(`${t} added successfully`)
+      await trackIssuer(identifier)
+      setTicker('')  // clear both inputs on success
+      setCik('')
+      setSuccess(`${identifier} added successfully`)
       await load()   // reload the table to show the newly tracked issuer
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to track ticker')
+      setError(e instanceof Error ? e.message : 'Failed to track issuer')
     } finally {
       setTracking(false)
     }
@@ -129,27 +135,54 @@ export default function Dashboard() {
 
       {/* ── Add Issuer card ── */}
       <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
-        <h2 className="text-sm font-semibold text-slate-700 mb-3">Add Issuer</h2>
-        <div className="flex gap-3">
-          <input
-            type="text"
-            value={ticker}
-            onChange={e => setTicker(e.target.value)}
-            // Submit on Enter so users don't have to reach for the Track button.
-            // Guard with !tracking to prevent double-submits on fast keystrokes.
-            onKeyDown={e => e.key === 'Enter' && !tracking && handleTrack()}
-            placeholder="TICKER (e.g. AAPL)"
-            className="border border-gray-300 rounded-lg px-4 py-2 text-sm w-48 focus:outline-none focus:ring-2 focus:ring-slate-400 font-mono"
-            disabled={tracking}
-          />
-          <button
-            onClick={handleTrack}
-            // Disable if already tracking OR if the input is empty (no ticker to submit).
-            disabled={tracking || !ticker.trim()}
-            className="bg-slate-800 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            {tracking ? 'Fetching EDGAR data…' : 'Track'}
-          </button>
+        <h2 className="text-sm font-semibold text-slate-700 mb-1">Add Issuer</h2>
+        <p className="text-xs text-slate-400 mb-4">Enter a ticker or a CIK — either one works.</p>
+
+        <div className="space-y-3">
+
+          {/* Row 1 — Ticker */}
+          <div className="flex items-center gap-3">
+            <label className="w-16 text-xs font-medium text-slate-500 shrink-0">Ticker</label>
+            <input
+              type="text"
+              value={ticker}
+              onChange={e => setTicker(e.target.value)}
+              // Submit on Enter so users don't have to reach for the Track button.
+              // Guard with !tracking to prevent double-submits on fast keystrokes.
+              onKeyDown={e => e.key === 'Enter' && !tracking && handleTrack()}
+              placeholder="e.g. AAPL"
+              className="border border-gray-300 rounded-lg px-4 py-2 text-sm w-56 focus:outline-none focus:ring-2 focus:ring-slate-400 font-mono disabled:bg-gray-50"
+              // Disable while the other field is in use so it's clear only one applies.
+              disabled={tracking || !!cik.trim()}
+            />
+          </div>
+
+          {/* Row 2 — CIK */}
+          <div className="flex items-center gap-3">
+            <label className="w-16 text-xs font-medium text-slate-500 shrink-0">CIK</label>
+            <input
+              type="text"
+              value={cik}
+              onChange={e => setCik(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && !tracking && handleTrack()}
+              placeholder="e.g. 0000320193"
+              className="border border-gray-300 rounded-lg px-4 py-2 text-sm w-56 focus:outline-none focus:ring-2 focus:ring-slate-400 font-mono disabled:bg-gray-50"
+              disabled={tracking || !!ticker.trim()}
+            />
+          </div>
+
+          {/* Track button on its own row, aligned under the inputs. */}
+          <div className="flex items-center gap-3">
+            <span className="w-16 shrink-0" aria-hidden="true" />
+            <button
+              onClick={handleTrack}
+              // Disable while tracking OR when both fields are empty (nothing to submit).
+              disabled={tracking || (!ticker.trim() && !cik.trim())}
+              className="bg-slate-800 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {tracking ? 'Fetching EDGAR data…' : 'Track'}
+            </button>
+          </div>
         </div>
 
         {/* Hint while EDGAR fetch is running — first call can take 10–30 s (cached after). */}
