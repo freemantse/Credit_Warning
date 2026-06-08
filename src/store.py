@@ -45,6 +45,7 @@ Setup:
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any
 
@@ -134,7 +135,10 @@ def get_cik_by_ticker(ticker: str, **_) -> str | None:
         .table("companies")
         .select("cik")
         # JSONB containment: companies whose `tickers` array includes this symbol.
-        .contains("tickers", [ticker.upper()])
+        # The value must be a JSON *string* (e.g. '["AAPL"]'), not a Python list —
+        # passing a list makes postgrest emit a PostgreSQL array literal ({AAPL}),
+        # which Postgres rejects as invalid JSON for a JSONB column.
+        .contains("tickers", json.dumps([ticker.upper()]))
         .limit(1)
         .execute()
     )
@@ -156,30 +160,15 @@ def _companies_map(ciks: list[str]) -> dict[str, dict]:
 
 # ── Write operations ─────────────────────────────────────────────────────────
 
-def save_ratios(
-    cik: str,
-    period_end: str,
-    results: dict[str, RatioResult | MissingDataError],
-    **_,   # accept and ignore extra kwargs for forward compatibility
-) -> None:
+def _ratio_rows(cik: str, period_end: str, results: dict[str, RatioResult | MissingDataError]) -> list[dict]:
     """
-    Persist ratio results for one (cik, period_end) to the ratios table.
+    Build the list of upsert rows for one (cik, period_end).
 
-    Only successful RatioResult objects are stored — MissingDataError entries
-    are silently skipped because there is nothing meaningful to persist for a
-    ratio that couldn't be computed.
-
-    Upsert semantics (insert or update on conflict):
-      If a row with the same (cik, period_end, ratio_name) already exists,
-      it is overwritten. This makes re-running track() for the same period safe.
-
-    inputs_json and source_tags_json are stored as JSONB columns.
-    Supabase automatically serialises the Python dicts to JSON on write
-    and deserialises back to Python dicts on read.
+    Only successful RatioResult objects produce a row — MissingDataError entries
+    are skipped because there is nothing meaningful to persist for a ratio that
+    couldn't be computed.
     """
-    cik = cik.zfill(10)
-    # Build the list of rows to upsert, skipping any error entries.
-    rows = [
+    return [
         {
             "cik": cik,
             "period_end": period_end,
@@ -192,7 +181,54 @@ def save_ratios(
         if isinstance(result, RatioResult)  # skip MissingDataError entries
     ]
 
+
+def save_ratios(
+    cik: str,
+    period_end: str,
+    results: dict[str, RatioResult | MissingDataError],
+    **_,   # accept and ignore extra kwargs for forward compatibility
+) -> None:
+    """
+    Persist ratio results for one (cik, period_end) to the ratios table.
+
+    Upsert semantics (insert or update on conflict):
+      If a row with the same (cik, period_end, ratio_name) already exists,
+      it is overwritten. This makes re-running track() for the same period safe.
+
+    inputs_json and source_tags_json are stored as JSONB columns.
+    Supabase automatically serialises the Python dicts to JSON on write
+    and deserialises back to Python dicts on read.
+
+    Note: to persist many periods at once, prefer save_ratios_bulk — it does a
+    single round-trip instead of one per period.
+    """
+    rows = _ratio_rows(cik.zfill(10), period_end, results)
     # Only make the DB call if there's something to store.
+    if rows:
+        _client().table("ratios").upsert(rows).execute()
+
+
+def save_ratios_bulk(
+    cik: str,
+    results_by_period: dict[str, dict[str, RatioResult | MissingDataError]],
+    **_,
+) -> None:
+    """
+    Persist ratio results for MANY periods in a single upsert round-trip.
+
+    `results_by_period` maps period_end → the results dict from extract_all().
+    Tracking an issuer produces ~18 periods × ~5 ratios; writing them one period
+    at a time was ~15 round-trips (the dominant cost of a track). Flattening every
+    period's rows into one upsert turns that into a single request.
+
+    Same upsert semantics as save_ratios (overwrite on PK conflict).
+    """
+    cik = cik.zfill(10)
+    rows = [
+        row
+        for period_end, results in results_by_period.items()
+        for row in _ratio_rows(cik, period_end, results)
+    ]
     if rows:
         _client().table("ratios").upsert(rows).execute()
 

@@ -20,6 +20,7 @@
  * Returned by GET /api/issuers — one entry per tracked ticker.
  */
 export interface IssuerSummary {
+  cik: string                      // canonical 10-digit EDGAR id, e.g. "0000320193"
   ticker: string
   latest_period: string | null    // most recent fiscal year-end, e.g. "2023-09-30"
   period_count: number            // how many annual periods are stored for this issuer
@@ -139,7 +140,9 @@ export async function trackIssuer(identifier: string, noLlm = true): Promise<voi
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     // The API field is still named `ticker` but accepts a ticker or a CIK.
-    body: JSON.stringify({ ticker: identifier, no_llm: noLlm, periods: 8 }),
+    // Omitting `periods` lets the backend fetch the full available history
+    // (~15 years — XBRL data only goes back to ~2009).
+    body: JSON.stringify({ ticker: identifier, no_llm: noLlm }),
   })
   if (!res.ok) {
     // Try to parse the FastAPI error detail; fall back to a generic message.

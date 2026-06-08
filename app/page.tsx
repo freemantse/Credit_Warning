@@ -85,9 +85,22 @@ export default function Dashboard() {
     const identifier = (ticker.trim() || cik.trim()).toUpperCase()
     if (!identifier) return  // ignore when both fields are empty
 
-    setTracking(true)
     setError('')
     setSuccess('')
+
+    // Skip the EDGAR round-trip if this issuer is already in the portfolio.
+    // Match against the ticker and the CIK (zero-padding so "320193" matches
+    // the stored "0000320193") so either identifier form is caught.
+    const existing = issuers.find(iss =>
+      iss.ticker.toUpperCase() === identifier ||
+      iss.cik === identifier.replace(/^CIK/i, '').padStart(10, '0')
+    )
+    if (existing) {
+      setError(`${existing.ticker} is already in your portfolio.`)
+      return
+    }
+
+    setTracking(true)
 
     try {
       await trackIssuer(identifier)
@@ -146,7 +159,8 @@ export default function Dashboard() {
             <input
               type="text"
               value={ticker}
-              onChange={e => setTicker(e.target.value)}
+              // Clear any stale error/success banner as soon as the user edits the input.
+              onChange={e => { setTicker(e.target.value); setError(''); setSuccess('') }}
               // Submit on Enter so users don't have to reach for the Track button.
               // Guard with !tracking to prevent double-submits on fast keystrokes.
               onKeyDown={e => e.key === 'Enter' && !tracking && handleTrack()}
@@ -163,7 +177,7 @@ export default function Dashboard() {
             <input
               type="text"
               value={cik}
-              onChange={e => setCik(e.target.value)}
+              onChange={e => { setCik(e.target.value); setError(''); setSuccess('') }}
               onKeyDown={e => e.key === 'Enter' && !tracking && handleTrack()}
               placeholder="e.g. 0000320193"
               className="border border-gray-300 rounded-lg px-4 py-2 text-sm w-56 focus:outline-none focus:ring-2 focus:ring-slate-400 font-mono disabled:bg-gray-50"
@@ -240,7 +254,8 @@ export default function Dashboard() {
                   <th className="px-4 py-3 text-right">Liquidity</th>
                   <th className="px-4 py-3 text-center">Score</th>
                   <th className="px-4 py-3 text-center">Status</th>
-                  <th className="px-6 py-3"></th>  {/* Remove button column, no header */}
+                  {/* Remove button column, no header */}
+                  <th className="px-6 py-3"></th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
