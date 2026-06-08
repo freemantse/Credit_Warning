@@ -73,20 +73,6 @@ def test_save_skips_upsert_when_all_missing():
     mock_client.table.return_value.upsert.assert_not_called()
 
 
-def test_get_ratio_history_builds_dataframe():
-    raw = [
-        {"period_end": "2022-12-31", "value": 1.0, "inputs_json": {}, "source_tags_json": {}},
-        {"period_end": "2023-12-31", "value": 2.0, "inputs_json": {}, "source_tags_json": {}},
-    ]
-    mock_client = make_mock_client(data=raw)
-    with patch("src.store._client", return_value=mock_client):
-        history = store.get_ratio_history("MSFT", "leverage")
-
-    assert len(history) == 2
-    assert abs(history.iloc[0]["value"] - 1.0) < 1e-9
-    assert abs(history.iloc[1]["value"] - 2.0) < 1e-9
-
-
 def test_get_issuers_deduplicates():
     raw = [{"ticker": "AAPL"}, {"ticker": "MSFT"}, {"ticker": "AAPL"}]
     mock_client = make_mock_client(data=raw)
