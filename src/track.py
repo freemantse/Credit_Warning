@@ -29,9 +29,15 @@ import argparse
 import sys
 from typing import Any
 
-from src.ingest import get_cik, get_company_facts, get_filings, get_filing_text
+from src.ingest import (
+    get_company_facts,
+    get_company_info,
+    get_filings,
+    get_filing_text,
+    resolve_identifier,
+)
 from src.extract import extract_all, RatioResult, _get_available_periods
-from src.store import save_ratios, save_findings, get_periods
+from src.store import save_company, save_ratios, save_findings, get_periods
 from src.score import compute_score, STRESS_THRESHOLD
 from src.concepts import MissingDataError
 
@@ -125,11 +131,15 @@ def track(ticker: str, n_periods: int = 8, include_llm: bool = True) -> None:
     ticker = ticker.upper()
     print(f"Tracking {ticker}...")
 
-    # Step 1: Resolve ticker → CIK. Raises ValueError if not found.
-    cik = get_cik(ticker)
+    # Step 1: Resolve the input (ticker OR CIK) → canonical CIK. Raises ValueError if not found.
+    cik = resolve_identifier(ticker)
     print(f"  CIK: {cik}")
 
-    # Step 2: Fetch the full XBRL companyfacts JSON from EDGAR (cached after first fetch).
+    # Step 2: Persist the company identity snapshot (name, current tickers, former names),
+    # keyed on the permanent CIK, so reads can map CIK ↔ ticker without an EDGAR call.
+    save_company(get_company_info(cik))
+
+    # Step 3: Fetch the full XBRL companyfacts JSON from EDGAR (cached after first fetch).
     facts = get_company_facts(cik)
 
     # Step 3: Find available annual periods and take the N most recent.
@@ -150,8 +160,8 @@ def track(ticker: str, n_periods: int = 8, include_llm: bool = True) -> None:
         # Step 4a: Extract all five ratios from the XBRL data for this period.
         results = extract_all(facts, period)
 
-        # Step 4b: Persist ratios to Supabase. Upsert — safe to re-run.
-        save_ratios(ticker, period, results)
+        # Step 4b: Persist ratios to Supabase, keyed on CIK. Upsert — safe to re-run.
+        save_ratios(cik, period, results)
 
         findings = []
         if include_llm:
@@ -179,7 +189,7 @@ def track(ticker: str, n_periods: int = 8, include_llm: bool = True) -> None:
                     findings = review_text(text[:12000], label)
 
                     # Persist findings to Supabase (no-op if findings is empty).
-                    save_findings(ticker, period, findings)
+                    save_findings(cik, period, findings)
 
             except Exception as e:
                 # LLM review is best-effort — ratio data is already saved.

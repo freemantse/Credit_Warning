@@ -138,8 +138,8 @@ export default function Dashboard() {
             // Submit on Enter so users don't have to reach for the Track button.
             // Guard with !tracking to prevent double-submits on fast keystrokes.
             onKeyDown={e => e.key === 'Enter' && !tracking && handleTrack()}
-            placeholder="Ticker (e.g. AAPL)"
-            className="border border-gray-300 rounded-lg px-4 py-2 text-sm w-48 focus:outline-none focus:ring-2 focus:ring-slate-400 font-mono uppercase"
+            placeholder="TICKER (e.g. AAPL)"
+            className="border border-gray-300 rounded-lg px-4 py-2 text-sm w-48 focus:outline-none focus:ring-2 focus:ring-slate-400 font-mono"
             disabled={tracking}
           />
           <button
