@@ -105,9 +105,13 @@ export default function IssuerPage() {
           <Link href="/" className="text-sm text-slate-400 hover:text-slate-600 mb-2 inline-block">
             ← Portfolio
           </Link>
-          <h1 className="text-2xl font-bold font-mono text-slate-900">{ticker}</h1>
+          {/* Company name as the primary heading; ticker shown as a monospace sub-label.
+              Falls back to the route ticker until data loads. */}
+          <h1 className="text-2xl font-bold text-slate-900">{data?.name || ticker}</h1>
           {data && (
             <p className="text-sm text-slate-400 mt-1">
+              <span className="font-mono text-slate-500">{data.ticker}</span>
+              {' · '}
               {data.periods.length} annual periods tracked
             </p>
           )}
@@ -140,7 +144,15 @@ export default function IssuerPage() {
           {/* Shows the stress score on the Y-axis (0–100) over time on the X-axis. */}
           {/* The orange dashed line at Y=50 marks the STRESS_THRESHOLD. */}
           <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
-            <h2 className="font-semibold text-slate-800 mb-4">Stress Score Trend</h2>
+            <div className="mb-4">
+              <h2 className="font-semibold text-slate-800">Stress Score Trend</h2>
+              <p className="text-xs text-slate-400 mt-0.5 leading-relaxed">
+                The stress score (0–100) gauges an issuer's credit risk from its financial
+                ratios — higher means more financial stress. The orange dashed line at 50 is
+                the stress threshold: scores below it are considered healthy, while scores at
+                or above it signal elevated credit risk.
+              </p>
+            </div>
             <ResponsiveContainer width="100%" height={200}>
               <LineChart data={chartData}>
                 {/* Trim dates to "YYYY-MM" to save horizontal space on the axis. */}
@@ -164,7 +176,7 @@ export default function IssuerPage() {
                   y={50}
                   stroke="#f97316"
                   strokeDasharray="4 2"
-                  label={{ value: 'Stress threshold', position: 'right', fontSize: 10, fill: '#f97316' }}
+                  label={{ value: 'Stress threshold (healthy below)', position: 'right', fontSize: 10, fill: '#f97316' }}
                 />
                 <Line
                   type="monotone"
@@ -194,7 +206,7 @@ export default function IssuerPage() {
                   <tr className="bg-gray-50 text-xs font-medium text-slate-500 uppercase tracking-wide">
                     <th className="px-6 py-3 text-left">Period</th>
                     <th className="px-4 py-3 text-right">Leverage</th>
-                    <th className="px-4 py-3 text-right">Coverage</th>
+                    <th className="px-4 py-3 text-right">Interest Coverage</th>
                     <th className="px-4 py-3 text-right">FCF</th>
                     <th className="px-4 py-3 text-right">FCF Margin</th>
                     <th className="px-4 py-3 text-right">Liquidity</th>
@@ -339,9 +351,15 @@ function AuditPanel({ period }: { period: PeriodData }) {
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {Object.entries(period.ratios).map(([name, data]) => (
             <div key={name} className="bg-white rounded-lg border border-gray-200 p-3">
-              {/* Ratio name: underscores replaced with spaces for readability. */}
-              <p className="text-xs font-semibold text-slate-700 mb-2 capitalize">
-                {name.replace(/_/g, ' ')}
+              {/* Ratio name: underscores replaced with spaces for readability. A
+                  missing ratio (value === null) gets a red "missing" badge. */}
+              <p className="text-xs font-semibold text-slate-700 mb-2 capitalize flex items-center gap-2">
+                <span>{name.replace(/_/g, ' ')}</span>
+                {data.value === null && (
+                  <span className="text-[10px] font-semibold uppercase tracking-wide text-red-600 bg-red-50 rounded px-1.5 py-0.5">
+                    missing
+                  </span>
+                )}
               </p>
               {/* Each input (e.g. "total_debt") with its value and the XBRL tag. */}
               {Object.entries(data.inputs).map(([field, val]) => {
@@ -372,6 +390,27 @@ function AuditPanel({ period }: { period: PeriodData }) {
                   </div>
                 )
               })}
+
+              {/* Missing inputs: each absent raw datum, flagged red, with the XBRL
+                  tags that were searched so the analyst sees exactly what's missing. */}
+              {data.missing_inputs?.map(({ field, tags_tried }) => (
+                <div key={field} className="text-xs mt-1">
+                  <span className="text-red-400">{field}:</span>{' '}
+                  <span className="font-mono text-red-600 font-semibold">missing</span>
+                  <div
+                    className="text-red-300 text-[10px] truncate"
+                    title={`tried: ${tags_tried.join(', ')}`}
+                  >
+                    tried: {tags_tried.join(', ') || '—'}
+                  </div>
+                </div>
+              ))}
+
+              {/* Guard failure (all inputs resolved but ratio undefined, e.g. zero
+                  EBITDA): no missing inputs, so show the reason instead. */}
+              {data.value === null && !data.missing_inputs?.length && data.reason && (
+                <div className="text-xs text-red-600 mt-1">{data.reason}</div>
+              )}
             </div>
           ))}
         </div>

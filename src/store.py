@@ -51,8 +51,7 @@ from typing import Any
 
 from supabase import Client, create_client
 
-from src.concepts import MissingDataError
-from src.extract import RatioResult
+from src.extract import RatioResult, MissingRatio
 
 
 # ── Supabase client factory ──────────────────────────────────────────────────
@@ -171,32 +170,48 @@ def _companies_map(ciks: list[str]) -> dict[str, dict]:
 
 # ── Write operations ─────────────────────────────────────────────────────────
 
-def _ratio_rows(cik: str, period_end: str, results: dict[str, RatioResult | MissingDataError]) -> list[dict]:
+def _ratio_rows(cik: str, period_end: str, results: dict[str, RatioResult | MissingRatio]) -> list[dict]:
     """
     Build the list of upsert rows for one (cik, period_end).
 
-    Only successful RatioResult objects produce a row — MissingDataError entries
-    are skipped because there is nothing meaningful to persist for a ratio that
-    couldn't be computed.
+    Both computed (RatioResult) and missing (MissingRatio) ratios produce a row:
+      - RatioResult → value set, missing_json null.
+      - MissingRatio → value null, inputs/source_tags hold whichever inputs DID
+        resolve, and missing_json records which inputs are missing + the reason so
+        the source-audit panel can explain exactly what's absent.
     """
-    return [
-        {
-            "cik": cik,
-            "period_end": period_end,
-            "ratio_name": name,
-            "value": result.value,
-            "inputs_json": result.inputs,           # Python dict → JSONB
-            "source_tags_json": result.source_tags,  # Python dict → JSONB
-        }
-        for name, result in results.items()
-        if isinstance(result, RatioResult)  # skip MissingDataError entries
-    ]
+    rows: list[dict] = []
+    for name, result in results.items():
+        if isinstance(result, RatioResult):
+            rows.append({
+                "cik": cik,
+                "period_end": period_end,
+                "ratio_name": name,
+                "value": result.value,
+                "inputs_json": result.inputs,           # Python dict → JSONB
+                "source_tags_json": result.source_tags,  # Python dict → JSONB
+                "missing_json": None,
+            })
+        elif isinstance(result, MissingRatio):
+            rows.append({
+                "cik": cik,
+                "period_end": period_end,
+                "ratio_name": name,
+                "value": None,
+                "inputs_json": result.inputs,            # the subset that resolved
+                "source_tags_json": result.source_tags,
+                "missing_json": {
+                    "missing_inputs": result.missing_inputs,
+                    "reason": result.reason,
+                },
+            })
+    return rows
 
 
 def save_ratios(
     cik: str,
     period_end: str,
-    results: dict[str, RatioResult | MissingDataError],
+    results: dict[str, RatioResult | MissingRatio],
     **_,   # accept and ignore extra kwargs for forward compatibility
 ) -> None:
     """
@@ -221,7 +236,7 @@ def save_ratios(
 
 def save_ratios_bulk(
     cik: str,
-    results_by_period: dict[str, dict[str, RatioResult | MissingDataError]],
+    results_by_period: dict[str, dict[str, RatioResult | MissingRatio]],
     **_,
 ) -> None:
     """
@@ -419,6 +434,24 @@ def get_periods(cik: str, **_) -> list[str]:
     return sorted(set(r["period_end"] for r in res.data))
 
 
+def _ratio_data_from_row(row: dict) -> dict:
+    """
+    Shape one ratios-table row into the {value, inputs, source_tags, ...} dict the
+    API/frontend expect. For a missing ratio (value null), unpack missing_json into
+    `missing_inputs` and `reason` so the source-audit panel can show what's absent.
+    """
+    data = {
+        "value": row["value"],                   # None for a missing ratio
+        "inputs": row["inputs_json"],            # JSONB → already a Python dict
+        "source_tags": row["source_tags_json"],  # JSONB → already a Python dict
+    }
+    missing = row.get("missing_json")
+    if missing:
+        data["missing_inputs"] = missing.get("missing_inputs", [])
+        data["reason"] = missing.get("reason", "")
+    return data
+
+
 def get_full_ratios(cik: str, period_end: str, **_) -> dict[str, dict]:
     """
     Return all ratio data for one (cik, period_end), including audit info.
@@ -430,7 +463,9 @@ def get_full_ratios(cik: str, period_end: str, **_) -> dict[str, dict]:
           "inputs": {"total_debt": 8e9, "cash": 2e9, ...},
           "source_tags": {"total_debt": "us-gaap/LongTermDebt", ...}
         },
-        "free_cash_flow": { ... },
+        # a missing ratio additionally carries value=None plus:
+        #   "missing_inputs": [{"field": "total_debt", "tags_tried": [...]}],
+        #   "reason": "..."
         ...
       }
 
@@ -441,19 +476,12 @@ def get_full_ratios(cik: str, period_end: str, **_) -> dict[str, dict]:
     res = (
         _client()
         .table("ratios")
-        .select("ratio_name, value, inputs_json, source_tags_json")
+        .select("ratio_name, value, inputs_json, source_tags_json, missing_json")
         .eq("cik", cik)
         .eq("period_end", period_end)
         .execute()
     )
-    return {
-        row["ratio_name"]: {
-            "value": row["value"],
-            "inputs": row["inputs_json"],           # JSONB → already a Python dict
-            "source_tags": row["source_tags_json"],  # JSONB → already a Python dict
-        }
-        for row in res.data
-    }
+    return {row["ratio_name"]: _ratio_data_from_row(row) for row in res.data}
 
 
 def get_all_ratios(cik: str, period_end: str, **_) -> dict[str, float]:
@@ -502,7 +530,7 @@ def get_ratios_grouped(cik: str | None = None, **_) -> dict[str, dict[str, dict[
     q = (
         _client()
         .table("ratios")
-        .select("cik, period_end, ratio_name, value, inputs_json, source_tags_json")
+        .select("cik, period_end, ratio_name, value, inputs_json, source_tags_json, missing_json")
     )
     if cik is not None:
         q = q.eq("cik", cik.zfill(10))
@@ -510,11 +538,9 @@ def get_ratios_grouped(cik: str | None = None, **_) -> dict[str, dict[str, dict[
 
     out: dict[str, dict[str, dict[str, dict]]] = {}
     for row in res.data:
-        out.setdefault(row["cik"], {}).setdefault(row["period_end"], {})[row["ratio_name"]] = {
-            "value": row["value"],
-            "inputs": row["inputs_json"],           # JSONB → already a Python dict
-            "source_tags": row["source_tags_json"],  # JSONB → already a Python dict
-        }
+        out.setdefault(row["cik"], {}).setdefault(row["period_end"], {})[row["ratio_name"]] = (
+            _ratio_data_from_row(row)
+        )
     return out
 
 

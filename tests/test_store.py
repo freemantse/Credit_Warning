@@ -4,8 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.concepts import MissingDataError
-from src.extract import RatioResult
+from src.extract import RatioResult, MissingRatio
 import src.store as store
 
 
@@ -16,6 +15,17 @@ def make_result(name, value, period="2023-12-31"):
         inputs={"a": 1.0, "b": 2.0},
         source_tags={"a": "us-gaap/TagA", "b": "us-gaap/TagB"},
         period_end=period,
+    )
+
+
+def make_missing(name, period="2023-12-31"):
+    return MissingRatio(
+        name=name,
+        period_end=period,
+        inputs={"a": 1.0},
+        source_tags={"a": "us-gaap/TagA"},
+        missing_inputs=[{"field": "b", "tags_tried": ["us-gaap/TagB"]}],
+        reason="no data",
     )
 
 
@@ -49,28 +59,28 @@ def test_save_ratios_upserts_correct_rows():
     assert abs(rows[0]["value"] - 3.5) < 1e-9
 
 
-def test_save_skips_missing_errors():
+def test_save_persists_missing_ratios():
+    # Missing ratios now produce a row (value null) carrying which inputs are
+    # missing, so the source-audit panel can show what's absent.
     results = {
         "leverage": make_result("leverage", 2.0),
-        "interest_coverage": MissingDataError("no data"),
+        "interest_coverage": make_missing("interest_coverage"),
     }
     mock_client = make_mock_client()
     with patch("src.store._client", return_value=mock_client):
         store.save_ratios("AAPL", "2023-12-31", results)
 
     rows = mock_client.table.return_value.upsert.call_args[0][0]
-    assert len(rows) == 1
-    assert rows[0]["ratio_name"] == "leverage"
+    by_name = {r["ratio_name"]: r for r in rows}
+    assert len(rows) == 2
 
+    assert by_name["leverage"]["value"] == 2.0
+    assert by_name["leverage"]["missing_json"] is None
 
-def test_save_skips_upsert_when_all_missing():
-    results = {"leverage": MissingDataError("no data")}
-    mock_client = make_mock_client()
-    with patch("src.store._client", return_value=mock_client):
-        store.save_ratios("AAPL", "2023-12-31", results)
-
-    # No valid rows → upsert must NOT be called
-    mock_client.table.return_value.upsert.assert_not_called()
+    miss = by_name["interest_coverage"]
+    assert miss["value"] is None
+    assert miss["missing_json"]["missing_inputs"][0]["field"] == "b"
+    assert miss["missing_json"]["reason"] == "no data"
 
 
 def test_get_issuers_deduplicates():

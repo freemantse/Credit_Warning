@@ -3,7 +3,11 @@ Deterministic stress scoring per (issuer, period).
 
 How the score is built:
   The score is a simple additive sum of rule-based penalties:
-    - Each quantitative ratio rule contributes 0 or a fixed number of points.
+    - Each quantitative ratio rule contributes points on a linear ramp: 0 while
+      the ratio is at or healthier than its threshold, then rising continuously
+      to the rule's maximum as the ratio worsens toward a severe extreme (and
+      clamped at the maximum beyond it). This replaces the older binary 0/full
+      scheme so a ratio just past its cutoff scores low, not the full penalty.
     - High-severity LLM findings contribute up to 10 additional points.
     - The total is capped at 100.
 
@@ -70,6 +74,33 @@ def _attr(obj: Any, name: str, default: Any = None) -> Any:
     return getattr(obj, name, default)
 
 
+def _ramp(
+    value: float | None,
+    healthy: float,
+    severe: float,
+    max_pts: float,
+) -> float:
+    """
+    Linearly map a ratio value to stress points in [0, max_pts].
+
+      - At `healthy` (and anything healthier) → 0 pts.
+      - At `severe` (and anything worse) → max_pts.
+      - Linear in between.
+
+    Direction is inferred from healthy vs severe via the sign of
+    (severe - healthy), so the same formula handles both "higher is worse"
+    ratios (leverage, maturity wall: healthy < severe) and "lower is worse"
+    ratios (coverage, liquidity, fcf_margin: healthy > severe).
+
+    Returns 0.0 for None — a missing ratio is never penalised.
+    """
+    if value is None:
+        return 0.0
+    frac = (value - healthy) / (severe - healthy)
+    frac = max(0.0, min(1.0, frac))
+    return round(frac * max_pts, 1)
+
+
 def compute_score(
     ratios: dict[str, RatioResult],
     findings: list[Any] | None = None,
@@ -130,45 +161,62 @@ def compute_score(
     # Net debt / EBITDA above 5× is a widely-used speculative-grade boundary.
     # Investment-grade issuers typically run below 3×. Above 5× indicates
     # the company would take over 5 years of full EBITDA to pay off its debt.
+    # Ramp: 0 pts at/below 3× (investment-grade norm), rising to the full 25 pts
+    # at 6× and beyond (well into speculative territory). Research basis: 2–4×
+    # is stable, 4–5× cautionary, >5× speculative/high-risk.
     lev = _val("leverage")
-    if lev is not None and lev > 5.0:
-        breakdown["leverage>5x"] = 25.0
-        alerts.append(f"Leverage {lev:.1f}× > 5× threshold")
-    else:
-        breakdown["leverage>5x"] = 0.0  # record 0 so the breakdown is complete
+    lev_pts = _ramp(lev, healthy=3.0, severe=6.0, max_pts=25.0)
+    breakdown["leverage>5x"] = lev_pts
+    if lev_pts > 0:
+        alerts.append(f"Leverage {lev:.1f}× elevated ({lev_pts:.0f}/25 pts)")
 
     # ── Rule 2: Interest Coverage < 2× ──────────────────────────────────────
     # EBITDA / interest expense below 2× means earnings barely cover interest.
     # At 1× the company's entire EBITDA goes to interest; below 1× it cannot
     # cover interest from operations at all.
+    # Ramp: 0 pts at/above 4× (Fed flags <4× as a distress warning), rising to
+    # the full 25 pts at 1× and below (at 1× all EBITDA goes to interest; below
+    # 1× operations can't cover interest at all).
     cov = _val("interest_coverage")
-    if cov is not None and cov < 2.0:
-        breakdown["coverage<2x"] = 25.0
-        alerts.append(f"Interest coverage {cov:.1f}× < 2× threshold")
-    else:
-        breakdown["coverage<2x"] = 0.0
+    cov_pts = _ramp(cov, healthy=4.0, severe=1.0, max_pts=25.0)
+    breakdown["coverage<2x"] = cov_pts
+    if cov_pts > 0:
+        alerts.append(f"Interest coverage {cov:.1f}× thin ({cov_pts:.0f}/25 pts)")
 
     # ── Rule 3: Free Cash Flow negative ─────────────────────────────────────
     # Negative FCF (OCF minus capex) means the company consumed more cash than
     # it generated, even before considering debt repayment or dividends.
     # Sustained negative FCF forces reliance on debt or equity financing.
+    #
+    # Scored on FCF margin (FCF / revenue) so the penalty has a magnitude:
+    # 0 pts at/above break-even (margin >= 0), rising to the full 20 pts at a
+    # deeply negative -10% margin and below. The raw FCF value is used only for
+    # the alert string.
+    # Ramp on FCF margin: 0 pts at/above break-even (margin >= 0), rising to the
+    # full 20 pts at a deeply negative -10% margin and below. Mature issuers
+    # target 10–15% FCF margin; sustained negative is the credit concern.
+    fcf_margin = _val("fcf_margin")
     fcf = _val("free_cash_flow")
-    if fcf is not None and fcf < 0:
-        breakdown["fcf_negative"] = 20.0
-        alerts.append(f"Free cash flow negative ({fcf:,.0f})")
-    else:
-        breakdown["fcf_negative"] = 0.0
+    fcf_pts = _ramp(fcf_margin, healthy=0.0, severe=-0.10, max_pts=20.0)
+    breakdown["fcf_negative"] = fcf_pts
+    if fcf_pts > 0:
+        fcf_str = f"{fcf:,.0f}" if fcf is not None else "n/a"
+        alerts.append(
+            f"Free cash flow negative ({fcf_str}, {fcf_margin * 100:.0f}% margin, {fcf_pts:.0f}/20 pts)"
+        )
 
     # ── Rule 4: Liquidity < 1× ──────────────────────────────────────────────
     # Cash / short-term debt below 1× means the company can't cover its maturing
     # near-term obligations with cash on hand alone — it would need to refinance
     # or draw on revolving credit facilities.
+    # Ramp: 0 pts at/above 1× (cash fully covers short-term debt), rising to the
+    # full 20 pts at 0.25× and below — covenant minimums commonly sit at
+    # 0.25–0.5×, so below 0.25× signals acute refinancing pressure.
     liq = _val("liquidity")
-    if liq is not None and liq < 1.0:
-        breakdown["liquidity<1x"] = 20.0
-        alerts.append(f"Liquidity {liq:.2f}× < 1× threshold")
-    else:
-        breakdown["liquidity<1x"] = 0.0
+    liq_pts = _ramp(liq, healthy=1.0, severe=0.25, max_pts=20.0)
+    breakdown["liquidity<1x"] = liq_pts
+    if liq_pts > 0:
+        alerts.append(f"Liquidity {liq:.2f}× thin ({liq_pts:.0f}/20 pts)")
 
     # ── LLM qualitative adjustment ───────────────────────────────────────────
     # High-severity findings from the LLM review each add 2 pts, capped at 10.
@@ -194,14 +242,16 @@ def compute_score(
     # tags. A heavy near-term concentration means a large share of debt must be
     # refinanced soon — refinancing risk. Because it is XBRL-derived (not LLM),
     # it carries full weight like the ratio rules. None (no/zero schedule) → skip.
+    # Ramp: 0 pts at/below 30% near-term, rising to the full 15 pts at 80% and
+    # above — rating agencies penalise heavy near-term maturity concentration.
     near_term_pct = _attr(maturity, "near_term_pct") if maturity is not None else None
-    if near_term_pct is not None and near_term_pct > 0.40:
-        breakdown["maturity_wall"] = 15.0
+    wall_pts = _ramp(near_term_pct, healthy=0.30, severe=0.80, max_pts=15.0)
+    breakdown["maturity_wall"] = wall_pts
+    if wall_pts > 0:
         alerts.append(
-            f"Maturity wall: {near_term_pct * 100:.0f}% of debt due within 2 years"
+            f"Maturity wall: {near_term_pct * 100:.0f}% of debt due within 2 years "
+            f"({wall_pts:.0f}/15 pts)"
         )
-    else:
-        breakdown["maturity_wall"] = 0.0
 
     # ── Rule 6: Covenant proximity (LLM-DERIVED, capped) ─────────────────────
     # Each covenant the footnote describes the company as close to breaching adds

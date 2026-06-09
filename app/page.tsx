@@ -33,9 +33,14 @@ export default function Dashboard() {
   // and shows a "Fetching EDGAR data…" label to prevent double-submits.
   const [tracking, setTracking] = useState(false)
 
-  // Stores the ticker currently being deleted so only that row's button shows "…".
-  // null = no delete in progress.
-  const [deletingTicker, setDeletingTicker] = useState<string | null>(null)
+  // Stores the CIK currently being deleted so only that row's button shows "…".
+  // Keyed on CIK (not ticker) because delisted issuers have an empty ticker,
+  // which would otherwise collide across rows. null = no delete in progress.
+  const [deletingCik, setDeletingCik] = useState<string | null>(null)
+
+  // The issuer the user has clicked "Remove" on, awaiting confirmation in the
+  // modal. null = the confirm modal is closed.
+  const [pendingDelete, setPendingDelete] = useState<IssuerSummary | null>(null)
 
   // Error and success banners shown below the Add Issuer input.
   const [error, setError] = useState('')
@@ -103,10 +108,15 @@ export default function Dashboard() {
     setTracking(true)
 
     try {
-      await trackIssuer(identifier)
+      const added = await trackIssuer(identifier)
       setTicker('')  // clear both inputs on success
       setCik('')
-      setSuccess(`${identifier} added successfully`)
+      // Name the company and its CIK in the confirmation so the user can verify
+      // the right issuer was resolved (especially for CIK-only / delisted inputs).
+      const label = added.name
+        ? `${added.name} (CIK ${added.cik})`
+        : `CIK ${added.cik}`
+      setSuccess(`${label} added successfully`)
       await load()   // reload the table to show the newly tracked issuer
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Failed to track issuer')
@@ -116,19 +126,31 @@ export default function Dashboard() {
   }
 
   /**
-   * Handle the "Remove" button click for a specific issuer.
-   * Sets deletingTicker so only that row's button shows "…" while in-flight.
+   * Perform the actual deletion for the issuer awaiting confirmation in the
+   * modal. Triggered by the modal's "Remove" button (handleDelete only opens
+   * the modal). Sets deletingCik so the modal button shows an in-flight state.
+   *
+   * Deletes by CIK (the permanent identifier) rather than ticker — delisted
+   * issuers (e.g. WeWork) have no ticker, and DELETE /api/issuer/{id} accepts
+   * either form.
    */
-  async function handleDelete(t: string) {
-    setDeletingTicker(t)
+  async function confirmDelete() {
+    const iss = pendingDelete
+    if (!iss) return
+    const label = iss.name || iss.ticker || `CIK ${iss.cik}`
+    setDeletingCik(iss.cik)
     setError('')
     try {
-      await deleteIssuer(t)
-      await load()   // reload the table to remove the deleted row
+      // Prefer the ticker for a friendly URL, but fall back to the CIK when the
+      // issuer has no ticker so the delete still resolves.
+      await deleteIssuer(iss.ticker || iss.cik)
+      setPendingDelete(null)  // close the modal on success
+      await load()            // reload the table to remove the deleted row
     } catch {
-      setError(`Failed to remove ${t}`)
+      setError(`Failed to remove ${label}`)
+      setPendingDelete(null)  // close the modal; the error banner explains the failure
     } finally {
-      setDeletingTicker(null)
+      setDeletingCik(null)
     }
   }
 
@@ -249,7 +271,7 @@ export default function Dashboard() {
                   <th className="px-6 py-3 text-left">Ticker</th>
                   <th className="px-4 py-3 text-left">Latest Period</th>
                   <th className="px-4 py-3 text-right">Leverage</th>
-                  <th className="px-4 py-3 text-right">Coverage</th>
+                  <th className="px-4 py-3 text-right">Interest Coverage</th>
                   <th className="px-4 py-3 text-right">FCF</th>
                   <th className="px-4 py-3 text-right">Liquidity</th>
                   <th className="px-4 py-3 text-center">Score</th>
@@ -259,17 +281,42 @@ export default function Dashboard() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {issuers.map(iss => (
-                  <tr key={iss.ticker} className="hover:bg-gray-50 transition-colors">
+                {issuers.map(iss => {
+                  // Delisted issuers (e.g. WeWork) have no current ticker. The detail
+                  // route accepts a CIK too, so fall back to it for the link target.
+                  const href = `/issuer/${iss.ticker || iss.cik}`
+                  return (
+                  <tr key={iss.cik} className="hover:bg-gray-50 transition-colors">
 
                     {/* Ticker cell: links to the full issuer detail page + shows period count. */}
                     <td className="px-6 py-4">
-                      <Link
-                        href={`/issuer/${iss.ticker}`}
-                        className="font-bold text-slate-800 hover:text-blue-600 font-mono"
-                      >
-                        {iss.ticker}
-                      </Link>
+                      {iss.ticker ? (
+                        <Link
+                          href={href}
+                          className="font-bold text-slate-800 hover:text-blue-600 font-mono"
+                        >
+                          {iss.ticker}
+                        </Link>
+                      ) : (
+                        // No ticker (delisted) — show the CIK as the monospace identifier.
+                        <Link
+                          href={href}
+                          className="font-bold text-slate-800 hover:text-blue-600 font-mono"
+                        >
+                          {iss.cik}
+                        </Link>
+                      )}
+                      {/* Company name beneath — also a link, so issuers without a
+                          ticker (delisted) remain reachable via their name. */}
+                      {iss.name && (
+                        <Link
+                          href={href}
+                          className="block text-xs text-slate-600 hover:text-blue-600 mt-0.5 max-w-[16rem] truncate"
+                          title={iss.name}
+                        >
+                          {iss.name}
+                        </Link>
+                      )}
                       <div className="text-xs text-slate-400 mt-0.5">{iss.period_count} periods</div>
                     </td>
 
@@ -301,15 +348,16 @@ export default function Dashboard() {
                     {/* Remove button. Shows "…" while the delete for THIS row is in-flight. */}
                     <td className="px-6 py-4 text-right">
                       <button
-                        onClick={() => handleDelete(iss.ticker)}
-                        disabled={deletingTicker === iss.ticker}
+                        onClick={() => { setError(''); setPendingDelete(iss) }}
+                        disabled={deletingCik === iss.cik}
                         className="text-xs text-slate-300 hover:text-red-400 transition-colors disabled:opacity-50"
                       >
-                        {deletingTicker === iss.ticker ? '…' : 'Remove'}
+                        {deletingCik === iss.cik ? '…' : 'Remove'}
                       </button>
                     </td>
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
             </table>
           </div>
@@ -326,6 +374,55 @@ export default function Dashboard() {
         <span className="text-orange-600">50–74 Stressed</span>
         <span className="text-red-600">75–100 High Risk</span>
       </div>
+
+      {/* ── Remove-confirmation modal ──
+          Rendered only when an issuer is pending deletion. The backdrop click and
+          the Cancel button both dismiss it; Remove calls confirmDelete(). */}
+      {pendingDelete && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          // Click on the backdrop (but not the dialog itself) cancels.
+          onClick={() => { if (!deletingCik) setPendingDelete(null) }}
+        >
+          <div
+            className="bg-white rounded-xl shadow-xl border border-gray-200 w-full max-w-md p-6"
+            // Stop clicks inside the dialog from bubbling up to the backdrop handler.
+            onClick={e => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+          >
+            <h3 className="text-base font-semibold text-slate-900">Remove issuer?</h3>
+            <p className="text-sm text-slate-600 mt-2">
+              This permanently deletes all stored data for{' '}
+              <span className="font-semibold text-slate-800">
+                {pendingDelete.name || pendingDelete.ticker || `CIK ${pendingDelete.cik}`}
+              </span>
+              {pendingDelete.name && pendingDelete.ticker && (
+                <span className="font-mono text-slate-500"> ({pendingDelete.ticker})</span>
+              )}
+              {' '}from your portfolio. This can&apos;t be undone.
+            </p>
+            <div className="text-xs text-slate-400 mt-2 font-mono">CIK {pendingDelete.cik}</div>
+
+            <div className="flex justify-end gap-3 mt-6">
+              <button
+                onClick={() => setPendingDelete(null)}
+                disabled={!!deletingCik}
+                className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-gray-100 transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDelete}
+                disabled={!!deletingCik}
+                className="px-4 py-2 rounded-lg text-sm font-medium bg-red-600 text-white hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {deletingCik ? 'Removing…' : 'Remove'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   )
