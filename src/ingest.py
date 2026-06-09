@@ -1,14 +1,6 @@
 """
 SEC EDGAR ingestion: ticker → CIK → filings + company facts.
 
-How EDGAR data is structured:
-  Every public US company has a CIK (Central Index Key) — a 10-digit number
-  that EDGAR uses internally. To fetch data you need:
-    1. The CIK for your ticker (from company_tickers.json)
-    2. The XBRL companyfacts JSON  →  all tagged financial values ever reported
-    3. The submissions JSON        →  metadata for all filings (dates, form types)
-    4. Optionally: the raw filing document text (for LLM qualitative review)
-
 Caching strategy:
   All HTTP responses are written to disk as JSON (or plain text for filing docs).
   On the next call the cache file is returned immediately — no HTTP request.
@@ -32,7 +24,6 @@ from __future__ import annotations
 import json
 import time
 import pathlib
-import urllib.parse
 from typing import Any
 
 import requests
@@ -58,10 +49,6 @@ CACHE_DIR.mkdir(exist_ok=True)  # create the directory if it doesn't exist yet
 USER_AGENT = "CreditWarning/1.0 freeman.tse@xpef.org"
 
 BASE_URL = "https://data.sec.gov"  # EDGAR structured data API
-
-# This URL template is kept for reference but not currently used — ticker search
-# is done through company_tickers.json instead, which is more reliable.
-SEARCH_URL = "https://efts.sec.gov/LATEST/search-index?q=%22{ticker}%22&dateRange=custom&startdt=2000-01-01&enddt=2030-01-01&forms=10-K"
 
 
 # ── Rate limiting ────────────────────────────────────────────────────────────
@@ -121,14 +108,6 @@ def get_cik(ticker: str) -> str:
     """
     Resolve a stock ticker to its SEC Central Index Key (CIK).
 
-    EDGAR identifies companies by CIK, not by ticker symbol. The company_tickers
-    endpoint returns a JSON object like:
-      {
-        "0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."},
-        "1": {"cik_str": 789019, "ticker": "MSFT", "title": "MICROSOFT CORP"},
-        ...
-      }
-
     We search through all entries for a ticker match (case-insensitive).
     The CIK is zero-padded to 10 digits because EDGAR API URLs require that format.
 
@@ -153,13 +132,6 @@ def get_cik(ticker: str) -> str:
 def resolve_identifier(identifier: str) -> str:
     """
     Resolve either a ticker or a CIK to a zero-padded 10-digit CIK.
-
-    The CIK is SEC EDGAR's canonical, permanent identifier for a company. Unlike
-    tickers and company names — which change over rebrands, ticker swaps, and
-    reincorporations — a CIK is assigned once and never changes. Callers should
-    prefer this over get_cik() so that historical companies whose ticker has
-    since changed (and therefore no longer appears in company_tickers.json) can
-    still be looked up directly by CIK.
 
     Accepts:
       - A ticker symbol, e.g. "AAPL"  → resolved via get_cik().
@@ -191,11 +163,6 @@ def get_company_info(cik: str) -> dict[str, Any]:
     """
     Return identity metadata for a company from its submissions JSON.
 
-    Ticker and name are mutable display attributes, not identity — this helper
-    pulls the *current* values plus the history needed to recognise a company
-    across rebrands and ticker changes. Key your storage on the CIK and treat
-    everything here as a refreshable snapshot.
-
     Returns a dict with:
         cik:         Zero-padded 10-digit CIK (the canonical key).
         name:        Current legal/display name.
@@ -218,10 +185,6 @@ def get_company_info(cik: str) -> dict[str, Any]:
 def get_company_facts(cik: str) -> dict[str, Any]:
     """
     Fetch the full XBRL companyfacts JSON for a company.
-
-    This is the primary data source for all ratio extraction. It contains every
-    financial value the company has ever tagged in any SEC filing, organised by:
-      facts → taxonomy (us-gaap) → concept (Revenues) → units (USD) → entries
 
     Each entry has: val, end, start, form, filed, accn (accession number).
 
@@ -355,8 +318,8 @@ def get_filing_text(cik: str, accession: str, document: str) -> str:
     _last_request_time = time.monotonic()
 
     text = resp.text
-    # errors="replace" substitutes the Unicode replacement character (U+FFFD) for
-    # any byte sequences that aren't valid UTF-8. Old filings sometimes use
+    # errors="replace" substitutes the Unicode replacement character (U+FFFD) 
+    # for any byte sequences that aren't valid UTF-8. Old filings sometimes use
     # Windows-1252 or Latin-1 encoding, which would otherwise cause decode errors.
     cache_path.write_text(text, encoding="utf-8", errors="replace")
     return text
@@ -364,7 +327,7 @@ def get_filing_text(cik: str, accession: str, document: str) -> str:
 
 # ── CLI convenience ──────────────────────────────────────────────────────────
 # Run directly to inspect EDGAR data for a ticker.
-# Usage:  python -m src.ingest AAPL
+# Usage:  python3 -m src.ingest AAPL
 
 if __name__ == "__main__":
     import sys
