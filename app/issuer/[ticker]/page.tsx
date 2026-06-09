@@ -213,6 +213,7 @@ export default function IssuerPage() {
                 <thead>
                   <tr className="bg-gray-50 text-xs font-medium text-slate-500 uppercase tracking-wide">
                     <th className="px-6 py-3 text-left">Period</th>
+                    <th className="px-4 py-3 text-right">EBITDA Margin</th>
                     <th className="px-4 py-3 text-right">Leverage</th>
                     <th className="px-4 py-3 text-right">Interest Coverage</th>
                     <th className="px-4 py-3 text-right">FCF</th>
@@ -239,6 +240,7 @@ export default function IssuerPage() {
                         <td className="px-6 py-3 font-mono text-slate-700 text-xs">{p.period_end}</td>
 
                         {/* Optional chaining (?.) handles periods where a ratio is missing. */}
+                        <td className="px-4 py-3 text-right font-mono text-slate-700">{fmtPct(p.ratios.ebitda_margin?.value)}</td>
                         <td className="px-4 py-3 text-right font-mono text-slate-700">{fmtRatio(p.ratios.leverage?.value)}</td>
                         <td className="px-4 py-3 text-right font-mono text-slate-700">{fmtRatio(p.ratios.interest_coverage?.value)}</td>
                         <td className="px-4 py-3 text-right font-mono text-slate-700">{fmtFCF(p.ratios.free_cash_flow?.value)}</td>
@@ -257,12 +259,12 @@ export default function IssuerPage() {
 
                       {/*
                         Audit panel row — rendered only when this period's row is open.
-                        Uses colSpan={8} to span the full table width.
+                        Uses colSpan={9} to span the full table width.
                         The AuditPanel component handles the detailed display.
                       */}
                       {openAudit === p.period_end && (
                         <tr>
-                          <td colSpan={8} className="bg-slate-50 px-6 py-4 border-t border-slate-100">
+                          <td colSpan={9} className="bg-slate-50 px-6 py-4 border-t border-slate-100">
                             <AuditPanel period={p} />
                           </td>
                         </tr>
