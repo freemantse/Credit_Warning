@@ -57,14 +57,20 @@ from src.extract import RatioResult
 
 # ── Supabase client factory ──────────────────────────────────────────────────
 
+# Module-level cached client. Reused across all calls within a warm process.
+_cached_client: Client | None = None
+
+
 def _client() -> Client:
     """
-    Create and return a Supabase client for one operation.
+    Return a cached Supabase client, creating it on first use.
 
-    Why not cache the client at module level?
-      A module-level client would survive across multiple serverless invocations
-      on Vercel, potentially holding a stale connection. Creating a fresh client
-      per call is slightly slower but avoids connection-state issues in serverless.
+    Why cache at module level?
+      Building a client per call cost ~1.1s of TLS/connection setup *per query* —
+      with the N+1 read pattern that dominated request latency (a detail page
+      made ~39 queries). supabase-py talks to the REST API over a pooled httpx
+      session; there is no long-lived Postgres connection to go stale, so reusing
+      the client is safe and reuses the underlying HTTP connection pool.
 
     Why the service-role key (not the anon key)?
       The service-role key bypasses Supabase Row Level Security (RLS). Since
@@ -74,6 +80,10 @@ def _client() -> Client:
     Raises RuntimeError with setup instructions if credentials are missing,
     rather than a cryptic AttributeError or None-related crash later.
     """
+    global _cached_client
+    if _cached_client is not None:
+        return _cached_client
+
     url = os.environ.get("SUPABASE_URL")
     # Accept either key name for backward compatibility with older .env.local files.
     key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_KEY")
@@ -82,7 +92,8 @@ def _client() -> Client:
             "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set. "
             "Copy .env.local.example to .env.local and fill in your Supabase credentials."
         )
-    return create_client(url, key)
+    _cached_client = create_client(url, key)
+    return _cached_client
 
 
 # ── Company identity ─────────────────────────────────────────────────────────
@@ -386,6 +397,64 @@ def get_findings(cik: str, period_end: str, **_) -> list[dict]:
         .execute()
     )
     return list(res.data)
+
+
+def get_ratios_grouped(cik: str | None = None, **_) -> dict[str, dict[str, dict[str, dict]]]:
+    """
+    Fetch ratios in ONE query and group them as cik → period_end → ratio_name → data.
+
+    This replaces the per-period get_full_ratios() loop that caused an N+1 query
+    storm (a detail page issued ~18×2 round-trips). Pass a cik to scope to one
+    company (detail page); omit it to fetch every issuer at once (portfolio list).
+
+    `data` is {value, inputs, source_tags} — the same shape get_full_ratios returns.
+    """
+    q = (
+        _client()
+        .table("ratios")
+        .select("cik, period_end, ratio_name, value, inputs_json, source_tags_json")
+    )
+    if cik is not None:
+        q = q.eq("cik", cik.zfill(10))
+    res = q.execute()
+
+    out: dict[str, dict[str, dict[str, dict]]] = {}
+    for row in res.data:
+        out.setdefault(row["cik"], {}).setdefault(row["period_end"], {})[row["ratio_name"]] = {
+            "value": row["value"],
+            "inputs": row["inputs_json"],           # JSONB → already a Python dict
+            "source_tags": row["source_tags_json"],  # JSONB → already a Python dict
+        }
+    return out
+
+
+def get_findings_grouped(cik: str | None = None, **_) -> dict[str, dict[str, list[dict]]]:
+    """
+    Fetch findings in ONE query and group them as cik → period_end → [findings].
+
+    Companion to get_ratios_grouped — lets a request read all of a company's
+    findings (or every company's) without a per-period round-trip. The findings
+    table is usually empty (LLM review is off by default), so this is one cheap
+    query rather than 18.
+    """
+    q = (
+        _client()
+        .table("llm_findings")
+        .select("cik, period_end, concern, severity, evidence_quote, source")
+    )
+    if cik is not None:
+        q = q.eq("cik", cik.zfill(10))
+    res = q.execute()
+
+    out: dict[str, dict[str, list[dict]]] = {}
+    for row in res.data:
+        out.setdefault(row["cik"], {}).setdefault(row["period_end"], []).append({
+            "concern": row["concern"],
+            "severity": row["severity"],
+            "evidence_quote": row["evidence_quote"],
+            "source": row["source"],
+        })
+    return out
 
 
 def delete_issuer(cik: str, **_) -> None:
