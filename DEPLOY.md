@@ -74,14 +74,37 @@ python3 -m pytest
 
 ## Deploy to Vercel
 
+> ⚠️ **Set the environment variables in Vercel before (or right after) your first
+> deploy.** `.env.local` is **not** uploaded — the deployed Python function reads
+> only Vercel's env vars. If `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` are
+> missing, the build still succeeds and the deploy shows **Ready**, but every API
+> call returns **500** and the frontend shows *"Cannot reach API."* (The function
+> raises `RuntimeError: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set`.)
+
 1. Push the repo to GitHub and import it in Vercel (or use the `vercel` CLI).
-2. In **Vercel → Project → Settings → Environment Variables**, add:
-   - `SUPABASE_URL`
-   - `SUPABASE_SERVICE_ROLE_KEY`
-   - `ANTHROPIC_API_KEY` (if used)
-   - Do **not** set `PYTHON_API_URL` — it's local-dev only.
-3. Deploy. Vercel auto-detects Next.js for the frontend and builds the Python
+2. In **Vercel → Project → Settings → Environment Variables**, add the following,
+   scoped to **Production** *and* **Preview** (so preview deploys work too):
+
+   | Variable | Required | Scope |
+   |----------|----------|-------|
+   | `SUPABASE_URL` | **yes** | Production + Preview |
+   | `SUPABASE_SERVICE_ROLE_KEY` | **yes** | Production + Preview (keep secret — no `NEXT_PUBLIC_` prefix) |
+   | `ANTHROPIC_API_KEY` | optional | only if using LLM review |
+
+   Do **not** set `PYTHON_API_URL` — it's local-dev only.
+3. **Redeploy after adding or changing env vars.** Existing deployments do not pick
+   up new variables — push a commit, or use **Deployments → ⋯ → Redeploy**.
+4. Vercel auto-detects Next.js for the frontend and builds the Python
    function from `api/main.py` (config in `vercel.json`, `requirements.txt`).
+
+### Verify the deploy
+
+```bash
+curl -i https://<your-app>.vercel.app/api/issuers   # expect 200 + JSON
+```
+
+A 500 here almost always means a missing env var — check **Vercel → Deployment →
+Logs** for the traceback.
 
 ```bash
 # CLI alternative
