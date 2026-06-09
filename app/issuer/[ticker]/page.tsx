@@ -27,6 +27,27 @@ import {
 // How many period rows to show per page in the Ratio History table.
 const PAGE_SIZE = 10
 
+// Metrics selectable in the trend chart's tab bar: the stress score plus each
+// of the 6 financial ratios. `accessor` pulls the value out of a period,
+// `fmt` formats it for the Y-axis ticks and tooltip, `domain` fixes the Y-axis
+// scale (undefined → auto), and `threshold` (when set) draws a reference line.
+const TREND_METRICS: {
+  key: string
+  label: string
+  accessor: (p: PeriodData) => number | null | undefined
+  fmt: (v: number) => string
+  domain?: [number, number]
+  threshold?: number
+}[] = [
+  { key: 'score',             label: 'Stress Score',      accessor: p => p.score,                       fmt: v => `${Math.round(v)}`, domain: [0, 100], threshold: 50 },
+  { key: 'ebitda_margin',     label: 'EBITDA Margin',     accessor: p => p.ratios.ebitda_margin?.value,     fmt: fmtPct },
+  { key: 'leverage',          label: 'Leverage',          accessor: p => p.ratios.leverage?.value,          fmt: fmtRatio },
+  { key: 'interest_coverage', label: 'Interest Coverage', accessor: p => p.ratios.interest_coverage?.value, fmt: fmtRatio },
+  { key: 'free_cash_flow',    label: 'FCF',               accessor: p => p.ratios.free_cash_flow?.value,    fmt: fmtFCF },
+  { key: 'fcf_margin',        label: 'FCF Margin',        accessor: p => p.ratios.fcf_margin?.value,        fmt: fmtPct },
+  { key: 'liquidity',         label: 'Liquidity',         accessor: p => p.ratios.liquidity?.value,         fmt: fmtRatio },
+]
+
 export default function IssuerPage() {
 
   // ── State ───────────────────────────────────────────────────────────────────
@@ -44,6 +65,10 @@ export default function IssuerPage() {
 
   // Zero-based page index for the Ratio History table (full history can be ~15 rows).
   const [page, setPage] = useState(0)
+
+  // Which metric the trend chart is currently plotting (a key from TREND_METRICS).
+  // Defaults to the stress score so the chart looks unchanged on load.
+  const [selectedMetric, setSelectedMetric] = useState('score')
 
 
   // ── Data loading ────────────────────────────────────────────────────────────
@@ -83,8 +108,11 @@ export default function IssuerPage() {
   // The API returns periods newest-first, but the Recharts line chart plots
   // left-to-right chronologically — so we reverse before mapping.
   // [...data.periods] creates a shallow copy so we don't mutate the state array.
+  // The metric the chart is plotting, and its values per period (chronological).
+  // A missing ratio in a period maps to null; connectNulls bridges the gap.
+  const metric = TREND_METRICS.find(m => m.key === selectedMetric) ?? TREND_METRICS[0]
   const chartData = data
-    ? [...data.periods].reverse().map(p => ({ date: p.period_end, score: p.score }))
+    ? [...data.periods].reverse().map(p => ({ date: p.period_end, value: metric.accessor(p) ?? null }))
     : []
 
   // ── Ratio-history pagination ──────────────────────────────────────────────
@@ -149,14 +177,38 @@ export default function IssuerPage() {
           {/* The orange dashed line at Y=50 marks the STRESS_THRESHOLD. */}
           <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
             <div className="mb-4">
-              <h2 className="font-semibold text-slate-800">Stress Score Trend</h2>
-              <p className="text-xs text-slate-400 mt-0.5 leading-relaxed">
-                The stress score (0–100) gauges an issuer's credit risk from its financial
-                ratios — higher means more financial stress. The orange dashed line at 50 is
-                the stress threshold: scores below it are considered healthy, while scores at
-                or above it signal elevated credit risk.
-              </p>
+              <h2 className="font-semibold text-slate-800">{metric.label} Trend</h2>
+              {metric.key === 'score' ? (
+                <p className="text-xs text-slate-400 mt-0.5 leading-relaxed">
+                  The stress score (0–100) gauges an issuer's credit risk from its financial
+                  ratios — higher means more financial stress. The orange dashed line at 50 is
+                  the stress threshold: scores below it are considered healthy, while scores at
+                  or above it signal elevated credit risk.
+                </p>
+              ) : (
+                <p className="text-xs text-slate-400 mt-0.5 leading-relaxed">
+                  {metric.label} over time — same history as the Stress Score, plotted for this ratio.
+                </p>
+              )}
             </div>
+
+            {/* Tab bar — switches which metric the chart below plots. */}
+            <div className="flex flex-wrap gap-1.5 mb-4">
+              {TREND_METRICS.map(m => (
+                <button
+                  key={m.key}
+                  onClick={() => setSelectedMetric(m.key)}
+                  className={`text-xs px-3 py-1.5 rounded-full transition-colors ${
+                    m.key === selectedMetric
+                      ? 'bg-slate-800 text-white'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+
             <ResponsiveContainer width="100%" height={220}>
               <LineChart data={chartData}>
                 {/* Trim dates to "YYYY-MM" to save horizontal space on the axis. */}
@@ -170,25 +222,29 @@ export default function IssuerPage() {
                   height={50}           // reserve vertical room for the rotated labels
                 />
                 <YAxis
-                  domain={[0, 100]}  // fixed scale so changes are visually comparable
+                  domain={metric.domain ?? ['auto', 'auto']}  // score uses a fixed 0–100; ratios auto-scale
                   tick={{ fontSize: 11, fill: '#94a3b8' }}
-                  width={32}
+                  tickFormatter={(v: number) => metric.fmt(v)}
+                  width={48}
                 />
                 <Tooltip
-                  formatter={(v: number) => [`${v}`, 'Score']}
+                  formatter={(v: number) => [metric.fmt(v), metric.label]}
                   labelFormatter={l => `Period: ${l}`}
                   contentStyle={{ fontSize: 12 }}
                 />
-                {/* Dashed orange reference line at the stress threshold. */}
-                <ReferenceLine
-                  y={50}
-                  stroke="#f97316"
-                  strokeDasharray="4 2"
-                  label={{ value: 'Stress threshold (healthy below)', position: 'right', fontSize: 10, fill: '#f97316' }}
-                />
+                {/* Dashed orange reference line at the stress threshold (score tab only). */}
+                {metric.threshold != null && (
+                  <ReferenceLine
+                    y={metric.threshold}
+                    stroke="#f97316"
+                    strokeDasharray="4 2"
+                    label={{ value: 'Stress threshold (healthy below)', position: 'right', fontSize: 10, fill: '#f97316' }}
+                  />
+                )}
                 <Line
                   type="monotone"
-                  dataKey="score"
+                  dataKey="value"
+                  connectNulls            // bridge periods where this ratio is missing
                   stroke="#1e293b"
                   strokeWidth={2}
                   dot={{ r: 4, fill: '#1e293b' }}

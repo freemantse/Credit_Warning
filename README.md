@@ -150,24 +150,22 @@ See [`DEPLOY.md`](./DEPLOY.md) for the full deployment guide.
 
 ---
 
-## Project layout
+## Remaining Work / Roadmap
 
-```
-api/main.py            FastAPI backend (routes under /api/*)
-app/                   Next.js pages (dashboard, issuer detail, backtest)
-lib/api.ts             Frontend API client & TypeScript types
-src/
-  ingest.py            EDGAR fetch: ticker→CIK, filings, XBRL (cached, rate-limited)
-  concepts.py          XBRL tag fallback lists per financial concept
-  extract.py           Deterministic ratio computation (with audit trail)
-  score.py             Stress-score calculation (0–100)
-  store.py             Supabase persistence layer
-  llm_review.py        LLM qualitative review of MD&A text
-  footnote_review.py   LLM extraction of covenants & loss provisions
-  sections.py          Filing-text section parsing
-  track.py             CLI: track an issuer
-  backtest.py          Point-in-time backtest harness
-supabase/schema.sql    PostgreSQL schema (companies, ratios, findings, …)
-data/cases.csv         Backtest case library (distressed / healthy tickers)
-tests/                 pytest suite
-```
+The pipeline runs end-to-end, but a few pieces are scaffolded yet not fully
+validated. What's left:
+
+**1. LLM qualitative analysis & footnote extraction** — the LLM path exists
+(`src/llm_review.py`, `src/footnote_review.py`, `src/sections.py`) but needs:
+section location validated/tuned across more filers; broader format coverage
+(older plain-text filings and 10-Qs — only 10-K HTML is handled today); a
+labeled set to evaluate extraction accuracy; finalized scoring weight; and LLM
+result caching.
+
+**2. Backtesting** — the point-in-time harness exists (`src/backtest.py`) but
+needs a vetted case library (`data/cases.csv`), threshold tuning against
+catch rate / lead time / false positives, a decision on including LLM findings,
+and CI wiring.
+
+**3. Broader ingestion (future)** — 8-K event filings, earnings-call
+transcripts, and sell-side reports are planned but not started.
