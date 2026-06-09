@@ -49,10 +49,9 @@ from src.store import (
     delete_issuer,
     get_cik_by_ticker,
     get_company,
-    get_findings,
-    get_full_ratios,
+    get_findings_grouped,
     get_issuers,
-    get_periods,
+    get_ratios_grouped,
     save_company,
     save_findings,
     save_ratios_bulk,
@@ -158,19 +157,25 @@ def list_issuers():
     Each row includes the five key ratios and a stress score so the dashboard
     table can render without a separate per-issuer API call.
     """
+    # Fetch identity, all ratios, and all findings in a fixed handful of queries
+    # (instead of ~3 per issuer). Grouped dicts are keyed by cik → period → ….
     issuers = get_issuers()
+    ratios_by_cik = get_ratios_grouped()       # 1 query for every issuer's ratios
+    findings_by_cik = get_findings_grouped()   # 1 query for every issuer's findings
+
     result = []
     for issuer in issuers:
         cik = issuer["cik"]
-        periods = get_periods(cik)
-        if not periods:
+        by_period = ratios_by_cik.get(cik, {})
+        if not by_period:
             # Company exists in DB but has no stored ratios — skip rather than error.
             continue
 
-        # periods is sorted ascending; the latest period is the last element.
+        # period_end strings sort chronologically; the newest is the max.
+        periods = sorted(by_period)
         latest = periods[-1]
-        full_ratios = get_full_ratios(cik, latest)
-        findings = get_findings(cik, latest)
+        full_ratios = by_period[latest]
+        findings = findings_by_cik.get(cik, {}).get(latest, [])
 
         # Re-score from stored data so the summary is always consistent with
         # the detail page (both call compute_score with the same inputs).
@@ -286,17 +291,20 @@ def get_issuer(ticker: str):
     trends at the top without client-side sorting.
     """
     cik = _resolve_cik_for_read(ticker)
-    periods = get_periods(cik)
-    if not periods:
-        raise HTTPException(404, f"{ticker} is not tracked. POST /api/track first.")
 
+    # Fetch the whole history in two queries (ratios + findings), then build each
+    # period in memory — instead of two queries *per period* (the old N+1 storm).
     company = get_company(cik) or {}
+    ratios_by_period = get_ratios_grouped(cik).get(cik, {})
+    if not ratios_by_period:
+        raise HTTPException(404, f"{ticker} is not tracked. POST /api/track first.")
+    findings_by_period = get_findings_grouped(cik).get(cik, {})
 
     period_data = []
-    # reversed() because get_periods() returns ascending; we want newest first.
-    for period in reversed(periods):
-        full_ratios = get_full_ratios(cik, period)
-        findings = get_findings(cik, period)
+    # Newest period first so the frontend chart/table show recent data at the top.
+    for period in sorted(ratios_by_period, reverse=True):
+        full_ratios = ratios_by_period[period]
+        findings = findings_by_period.get(period, [])
         ratio_results = _to_ratio_results(full_ratios, period)
         finding_objs = _finding_objects(findings)
         score_result = compute_score(ratio_results, finding_objs)
