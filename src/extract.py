@@ -311,6 +311,38 @@ def fcf_margin(facts: dict, period_end: str, filed_before: str | None = None) ->
     )
 
 
+def ebitda_margin(facts: dict, period_end: str, filed_before: str | None = None) -> RatioResult:
+    """
+    EBITDA margin = EBITDA / revenue.
+
+    Measures core operating profitability per revenue dollar. A negative EBITDA
+    margin means the company loses money at the operating line before interest,
+    taxes, and capex — the most fundamental credit-distress signal. Unlike the
+    leverage ratio (whose sign flips when EBITDA goes negative), this metric
+    moves the right way: lower is always worse.
+
+    Interpretation:
+      >= 10% — healthy operating profitability
+      0–10%  — thin
+      < 0%   — operating losses; stress rule triggers (full profitability penalty)
+
+    Raises MissingDataError if revenue is zero (e.g. pre-revenue companies).
+    """
+    ebit, ebit_inputs, ebit_tags = ebitda(facts, period_end, filed_before)
+    rev, rev_tag = _resolve(facts, "revenue", period_end, filed_before)
+
+    if rev == 0:
+        raise MissingDataError(f"Revenue is zero for {period_end}, cannot compute EBITDA margin")
+
+    return RatioResult(
+        name="ebitda_margin",
+        value=ebit / rev,
+        inputs={**ebit_inputs, "revenue": rev},
+        source_tags={**ebit_tags, "revenue": rev_tag},
+        period_end=period_end,
+    )
+
+
 def liquidity(facts: dict, period_end: str, filed_before: str | None = None) -> RatioResult:
     """
     Liquidity = cash / short_term_debt.
@@ -395,7 +427,7 @@ def debt_maturity_schedule(
 
 # This list drives extract_all(). Adding a new ratio function here is all
 # that's needed to include it in every batch extraction run.
-_RATIO_FUNCTIONS = [leverage, interest_coverage, free_cash_flow, fcf_margin, liquidity]
+_RATIO_FUNCTIONS = [leverage, interest_coverage, free_cash_flow, fcf_margin, ebitda_margin, liquidity]
 
 
 # Maps each ratio name → the ordered list of input concept keys (keys into
@@ -407,6 +439,7 @@ RATIO_INPUTS: dict[str, list[str]] = {
     "interest_coverage": ["operating_income", "depreciation", "interest_expense"],
     "free_cash_flow":    ["operating_cashflow", "capex"],
     "fcf_margin":        ["operating_cashflow", "capex", "revenue"],
+    "ebitda_margin":     ["operating_income", "depreciation", "revenue"],
     "liquidity":         ["cash", "short_term_debt"],
 }
 

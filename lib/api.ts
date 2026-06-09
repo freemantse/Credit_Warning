@@ -25,6 +25,7 @@ export interface IssuerSummary {
   name: string                     // company display name, e.g. "Apple Inc."
   latest_period: string | null    // most recent fiscal year-end, e.g. "2023-09-30"
   period_count: number            // how many annual periods are stored for this issuer
+  ebitda_margin: number | null    // EBITDA / revenue, decimal fraction (negative = operating loss)
   leverage: number | null         // net_debt / EBITDA (null = XBRL data missing)
   interest_coverage: number | null
   free_cash_flow: number | null   // raw dollars — use fmtFCF() to display

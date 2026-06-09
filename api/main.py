@@ -215,6 +215,7 @@ def list_issuers():
             "name": issuer["name"],
             "latest_period": latest,
             "period_count": len(periods),
+            "ebitda_margin": _v("ebitda_margin"),
             "leverage": _v("leverage"),
             "interest_coverage": _v("interest_coverage"),
             "free_cash_flow": _v("free_cash_flow"),

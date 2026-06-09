@@ -16,7 +16,7 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import {
   IssuerSummary, fetchIssuers, trackIssuer, deleteIssuer,
-  fmtRatio, fmtFCF, scoreLabel, scoreBg,
+  fmtRatio, fmtFCF, fmtPct, scoreLabel, scoreBg,
 } from '@/lib/api'
 
 export default function Dashboard() {
@@ -274,6 +274,7 @@ export default function Dashboard() {
                 <tr className="bg-gray-50 text-xs font-medium text-slate-500 uppercase tracking-wide">
                   <th className="px-6 py-3 text-left">Ticker</th>
                   <th className="px-4 py-3 text-left">Latest Period</th>
+                  <th className="px-4 py-3 text-right">EBITDA Margin</th>
                   <th className="px-4 py-3 text-right">Leverage</th>
                   <th className="px-4 py-3 text-right">Interest Coverage</th>
                   <th className="px-4 py-3 text-right">FCF</th>
@@ -330,6 +331,7 @@ export default function Dashboard() {
                     </td>
 
                     {/* Ratio cells use fmtRatio() which adds the × suffix and handles nulls. */}
+                    <td className="px-4 py-4 text-right font-mono text-slate-700">{fmtPct(iss.ebitda_margin)}</td>
                     <td className="px-4 py-4 text-right font-mono text-slate-700">{fmtRatio(iss.leverage)}</td>
                     <td className="px-4 py-4 text-right font-mono text-slate-700">{fmtRatio(iss.interest_coverage)}</td>
 
