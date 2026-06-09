@@ -303,7 +303,7 @@ def compute_score(
         alerts.append(f"{len(high_sev)} high-severity qualitative concern(s) flagged")
 
     # ── Rule 5: Maturity wall (DETERMINISTIC, full weight) ───────────────────
-    # near_term_pct = (y1 + y2) / total scheduled principal, from XBRL maturity
+    # near_term_pct = (y1 + y2 + y3) / total scheduled principal, from XBRL maturity
     # tags. A heavy near-term concentration means a large share of debt must be
     # refinanced soon — refinancing risk. Because it is XBRL-derived (not LLM),
     # it carries full weight like the ratio rules. None (no/zero schedule) → skip.
@@ -314,7 +314,7 @@ def compute_score(
     breakdown["maturity_wall"] = wall_pts
     if wall_pts > 0:
         alerts.append(
-            f"Maturity wall: {near_term_pct * 100:.0f}% of debt due within 2 years "
+            f"Maturity wall: {near_term_pct * 100:.0f}% of debt due within 3 years "
             f"({wall_pts:.0f}/10 pts)"
         )
 

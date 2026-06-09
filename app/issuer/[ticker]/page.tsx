@@ -570,7 +570,7 @@ function fmtMoney(val: number | null | undefined): string {
 // Renders the debt maturity schedule for the most recent period as a bar chart.
 // The buckets (y1…thereafter) are XBRL-derived, so this is fully auditable. The
 // "wall" year (the bucket with the most principal) is highlighted, and the
-// near-term concentration (% due within 2 years) is shown — the metric that
+// near-term concentration (% due within 3 years) is shown — the metric that
 // drives the maturity-wall stress rule.
 
 const _BUCKET_ORDER = ['y1', 'y2', 'y3', 'y4', 'y5', 'thereafter']
@@ -632,7 +632,7 @@ function MaturityWallSection({ periods }: { periods: PeriodData[] }) {
             <span className={pct > 0.4 ? 'text-orange-700 font-semibold' : 'text-slate-700 font-semibold'}>
               {(pct * 100).toFixed(0)}%
             </span>{' '}
-            of scheduled principal is due within 2 years
+            of scheduled principal is due within 3 years
             {pct > 0.4 && ' — elevated refinancing risk'}.
           </p>
         )}
