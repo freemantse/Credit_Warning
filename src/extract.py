@@ -57,6 +57,48 @@ class RatioResult:
     period_end: str                 # fiscal year-end date, e.g. "2023-09-30"
 
 
+@dataclass
+class MaturitySchedule:
+    """
+    Deterministic long-term-debt maturity schedule for one fiscal period.
+
+    Built entirely from XBRL companyfacts tags (no LLM, no HTML parsing), so it
+    carries the same audit guarantee as RatioResult: every bucket value maps to
+    the exact us-gaap tag that supplied it.
+
+    The "maturity wall" is the near-term concentration of principal coming due:
+    a high near_term_pct means a large share of debt must be refinanced soon.
+
+    Attributes:
+        period_end:      Fiscal year-end the schedule is reported as of.
+        buckets:         {bucket_name: principal_due} for whichever buckets the
+                         filer tagged. Keys are "y1".."y5" and "thereafter".
+        source_tags:     {bucket_name: winning_xbrl_tag} audit trail.
+        total_scheduled: Sum of all resolved buckets.
+        near_term_pct:   (y1 + y2) / total_scheduled, or None when total is 0
+                         (so the maturity-wall score rule is suppressed, not
+                         mis-computed, on unreliable data).
+        wall_year:       Bucket with the largest principal due, or None if empty.
+    """
+    period_end: str
+    buckets: dict[str, float]
+    source_tags: dict[str, str]
+    total_scheduled: float
+    near_term_pct: float | None
+    wall_year: str | None
+
+
+# Ordered maturity buckets: concept name (in TAGS) → display/short key.
+_MATURITY_BUCKETS = [
+    ("debt_maturity_y1", "y1"),
+    ("debt_maturity_y2", "y2"),
+    ("debt_maturity_y3", "y3"),
+    ("debt_maturity_y4", "y4"),
+    ("debt_maturity_y5", "y5"),
+    ("debt_maturity_thereafter", "thereafter"),
+]
+
+
 # ── Private helper ───────────────────────────────────────────────────────────
 
 def _resolve(facts: dict, concept: str, period_end: str, filed_before: str | None = None) -> tuple[float, str]:
@@ -267,6 +309,55 @@ def liquidity(facts: dict, period_end: str, filed_before: str | None = None) -> 
         inputs={"cash": cash, "short_term_debt": st_debt},
         source_tags={"cash": cash_tag, "short_term_debt": st_tag},
         period_end=period_end,
+    )
+
+
+def debt_maturity_schedule(
+    facts: dict,
+    period_end: str,
+    filed_before: str | None = None,
+) -> MaturitySchedule:
+    """
+    Build the long-term-debt maturity schedule from XBRL for one period.
+
+    Unlike the ratio functions, this NEVER raises on missing data: a filer may
+    tag only some buckets (or none). Each bucket is resolved independently and a
+    per-bucket MissingDataError is simply skipped. The returned schedule reflects
+    whatever buckets were available — possibly empty.
+
+    Derived metrics are pure arithmetic over the resolved buckets:
+      total_scheduled = sum of all buckets
+      near_term_pct   = (y1 + y2) / total_scheduled   (None if total is 0)
+      wall_year       = bucket with the largest principal due (None if empty)
+    """
+    buckets: dict[str, float] = {}
+    source_tags: dict[str, str] = {}
+
+    for concept, key in _MATURITY_BUCKETS:
+        try:
+            value, tag = _resolve(facts, concept, period_end, filed_before)
+        except MissingDataError:
+            # Filer didn't tag this bucket for this period — skip it.
+            continue
+        buckets[key] = value
+        source_tags[key] = tag
+
+    total_scheduled = sum(buckets.values())
+
+    # near_term = principal due within the next two fiscal years.
+    near_term = buckets.get("y1", 0.0) + buckets.get("y2", 0.0)
+    near_term_pct = (near_term / total_scheduled) if total_scheduled else None
+
+    # wall_year = the single bucket carrying the most principal.
+    wall_year = max(buckets, key=buckets.get) if buckets else None
+
+    return MaturitySchedule(
+        period_end=period_end,
+        buckets=buckets,
+        source_tags=source_tags,
+        total_scheduled=total_scheduled,
+        near_term_pct=near_term_pct,
+        wall_year=wall_year,
     )
 
 

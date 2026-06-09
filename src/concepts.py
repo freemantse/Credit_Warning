@@ -129,6 +129,41 @@ TAGS: dict[str, list[str]] = {
     "total_liabilities": [
         "us-gaap/Liabilities",
     ],
+
+    # ── Debt maturity schedule (the "maturity wall") ───────────────────────────
+    # Companies disclose how much long-term-debt principal comes due in each of
+    # the next five fiscal years, plus a "thereafter" bucket. These tags drive
+    # the deterministic maturity-wall extraction (debt_maturity_schedule in
+    # extract.py): a heavy near-term concentration signals refinancing risk.
+    # Per-bucket misses are tolerated — many filers omit some buckets.
+    "debt_maturity_y1": [
+        "us-gaap/LongTermDebtMaturitiesRepaymentsOfPrincipalInNextTwelveMonths",
+        "us-gaap/LongTermDebtMaturitiesRepaymentsOfPrincipalRemainderOfFiscalYear",
+    ],
+    "debt_maturity_y2": [
+        "us-gaap/LongTermDebtMaturitiesRepaymentsOfPrincipalInYearTwo",
+    ],
+    "debt_maturity_y3": [
+        "us-gaap/LongTermDebtMaturitiesRepaymentsOfPrincipalInYearThree",
+    ],
+    "debt_maturity_y4": [
+        "us-gaap/LongTermDebtMaturitiesRepaymentsOfPrincipalInYearFour",
+    ],
+    "debt_maturity_y5": [
+        "us-gaap/LongTermDebtMaturitiesRepaymentsOfPrincipalInYearFive",
+    ],
+    "debt_maturity_thereafter": [
+        "us-gaap/LongTermDebtMaturitiesRepaymentsOfPrincipalAfterYearFive",
+    ],
+
+    # ── Loss contingency accrual ───────────────────────────────────────────────
+    # The amount accrued on the balance sheet for probable losses (litigation,
+    # environmental, etc.). Sparsely tagged, so treated as best-effort context
+    # alongside the LLM-extracted loss provisions.
+    "loss_contingency_accrual": [
+        "us-gaap/LossContingencyAccrualAtCarryingValue",
+        "us-gaap/LossContingencyAccrualCarryingValueCurrent",
+    ],
 }
 
 

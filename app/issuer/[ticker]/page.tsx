@@ -15,10 +15,11 @@ import { Fragment, useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import {
-  LineChart, Line, XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer,
+  LineChart, Line, BarChart, Bar, Cell,
+  XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer,
 } from 'recharts'
 import {
-  IssuerDetail, PeriodData, Finding,
+  IssuerDetail, PeriodData, Finding, Covenant, LossProvision,
   fetchIssuer, trackIssuer,
   fmtRatio, fmtFCF, fmtPct, scoreBg, scoreLabel, severityDot,
 } from '@/lib/api'
@@ -281,6 +282,15 @@ export default function IssuerPage() {
             )}
           </div>
 
+          {/* Debt maturity wall — XBRL-derived, shown for the latest period. */}
+          <MaturityWallSection periods={data.periods} />
+
+          {/* Maintenance covenants — LLM-extracted from the debt footnote. */}
+          <CovenantsSection periods={data.periods} />
+
+          {/* Loss provisions — LLM-extracted from the contingencies footnote. */}
+          <LossProvisionsSection periods={data.periods} />
+
           {/* Qualitative findings section — only rendered if findings exist. */}
           <FindingsSection periods={data.periods} />
         </>
@@ -430,6 +440,207 @@ function FindingsSection({ periods }: { periods: PeriodData[] }) {
                 <p className="mt-1 text-xs text-slate-400">{f.source}</p>
               </div>
             </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+
+// ── Money formatting ──────────────────────────────────────────────────────────
+// Compact $ display for maturity bars and provision amounts.
+// e.g. 5000000000 → "$5.0B", 250000000 → "$250M".
+function fmtMoney(val: number | null | undefined): string {
+  if (val == null) return '—'
+  const m = val / 1e6
+  if (Math.abs(m) >= 1000) return `$${(m / 1000).toFixed(1)}B`
+  if (Math.abs(m) >= 1) return `$${m.toFixed(0)}M`
+  return `$${val.toFixed(0)}`
+}
+
+
+// ── MaturityWallSection component ─────────────────────────────────────────────
+//
+// Renders the debt maturity schedule for the most recent period as a bar chart.
+// The buckets (y1…thereafter) are XBRL-derived, so this is fully auditable. The
+// "wall" year (the bucket with the most principal) is highlighted, and the
+// near-term concentration (% due within 2 years) is shown — the metric that
+// drives the maturity-wall stress rule.
+
+const _BUCKET_ORDER = ['y1', 'y2', 'y3', 'y4', 'y5', 'thereafter']
+const _BUCKET_LABEL: Record<string, string> = {
+  y1: 'Yr 1', y2: 'Yr 2', y3: 'Yr 3', y4: 'Yr 4', y5: 'Yr 5', thereafter: '5+ yrs',
+}
+
+function MaturityWallSection({ periods }: { periods: PeriodData[] }) {
+  // Use the most recent period that actually has a maturity schedule with buckets.
+  const period = periods.find(p => p.maturities && Object.keys(p.maturities.buckets).length > 0)
+  const sched = period?.maturities
+  if (!period || !sched) return null
+
+  // Build the chart series in canonical bucket order (skip buckets the filer omitted).
+  const chartData = _BUCKET_ORDER
+    .filter(b => b in sched.buckets)
+    .map(b => ({ bucket: _BUCKET_LABEL[b] ?? b, key: b, value: sched.buckets[b] }))
+
+  const pct = sched.near_term_pct
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      <div className="px-6 py-4 border-b border-gray-100 flex items-baseline justify-between">
+        <div>
+          <h2 className="font-semibold text-slate-800">Debt Maturity Wall</h2>
+          <p className="text-xs text-slate-400 mt-0.5">
+            Long-term debt principal due by year (XBRL-sourced) · {period.period_end}
+          </p>
+        </div>
+        <div className="text-right">
+          <span className="text-xs text-slate-400">Total scheduled</span>
+          <p className="font-mono font-semibold text-slate-700">{fmtMoney(sched.total_scheduled)}</p>
+        </div>
+      </div>
+
+      <div className="p-6">
+        <ResponsiveContainer width="100%" height={220}>
+          <BarChart data={chartData}>
+            <XAxis dataKey="bucket" tick={{ fontSize: 11, fill: '#94a3b8' }} />
+            <YAxis
+              tick={{ fontSize: 11, fill: '#94a3b8' }}
+              width={48}
+              tickFormatter={(v: number) => fmtMoney(v)}
+            />
+            <Tooltip
+              formatter={(v: number) => [fmtMoney(v), 'Due']}
+              contentStyle={{ fontSize: 12 }}
+            />
+            <Bar dataKey="value" radius={[4, 4, 0, 0]}>
+              {/* Highlight the wall year (most principal due) in orange. */}
+              {chartData.map(d => (
+                <Cell key={d.key} fill={d.key === sched.wall_year ? '#f97316' : '#1e293b'} />
+              ))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+
+        {pct != null && (
+          <p className="mt-3 text-sm text-slate-600">
+            <span className={pct > 0.4 ? 'text-orange-700 font-semibold' : 'text-slate-700 font-semibold'}>
+              {(pct * 100).toFixed(0)}%
+            </span>{' '}
+            of scheduled principal is due within 2 years
+            {pct > 0.4 && ' — elevated refinancing risk'}.
+          </p>
+        )}
+      </div>
+    </div>
+  )
+}
+
+
+// ── CovenantsSection component ────────────────────────────────────────────────
+//
+// Aggregates LLM-extracted maintenance covenants across all periods into a table.
+// Numeric fields may be null (only kept when quote-backed), so they render "—".
+// Rows where the company sits near its limit get a red "Near limit" badge. Each
+// row carries the verbatim quote, mirroring the FindingsSection styling.
+
+function CovenantsSection({ periods }: { periods: PeriodData[] }) {
+  const all = periods.flatMap(p =>
+    (p.covenants ?? []).map(c => ({ ...c, period: p.period_end }))
+  )
+  if (all.length === 0) return null
+
+  const label: Record<string, string> = {
+    max_leverage: 'Max leverage',
+    min_coverage: 'Min coverage',
+    min_net_worth: 'Min net worth',
+    other: 'Other',
+  }
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      <div className="px-6 py-4 border-b border-gray-100">
+        <h2 className="font-semibold text-slate-800">Maintenance Covenants</h2>
+        <p className="text-xs text-slate-400 mt-0.5">
+          Extracted from the debt footnote. Figures shown only when quoted verbatim.
+        </p>
+      </div>
+      <div className="divide-y divide-gray-100">
+        {all.map((c: Covenant & { period: string }, i) => (
+          <div key={i} className="px-6 py-4">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="font-medium text-sm text-slate-800">
+                {label[c.covenant_type] ?? c.covenant_type}
+              </span>
+              <span className="text-xs text-slate-400 font-mono">{c.period}</span>
+              <span className="text-xs text-slate-500 font-mono">
+                {c.direction === 'max' ? '≤' : '≥'} {c.threshold ?? '—'}
+              </span>
+              {c.reported_actual != null && (
+                <span className="text-xs text-slate-500 font-mono">
+                  actual {c.reported_actual}
+                </span>
+              )}
+              {c.near_limit && (
+                <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-red-100 text-red-700">
+                  Near limit
+                </span>
+              )}
+            </div>
+            <blockquote className="mt-2 text-xs text-slate-500 italic border-l-2 border-slate-200 pl-3">
+              "{c.evidence_quote}"
+            </blockquote>
+            <p className="mt-1 text-xs text-slate-400">{c.source}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+
+// ── LossProvisionsSection component ───────────────────────────────────────────
+//
+// Aggregates LLM-extracted litigation/contingency provisions across all periods.
+// Mirrors FindingsSection: matter label, period, optional amount, a "Material"
+// badge, the qualitative flag, and the verbatim quote.
+
+function LossProvisionsSection({ periods }: { periods: PeriodData[] }) {
+  const all = periods.flatMap(p =>
+    (p.loss_provisions ?? []).map(lp => ({ ...lp, period: p.period_end }))
+  )
+  if (all.length === 0) return null
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      <div className="px-6 py-4 border-b border-gray-100">
+        <h2 className="font-semibold text-slate-800">Loss Provisions &amp; Contingencies</h2>
+        <p className="text-xs text-slate-400 mt-0.5">
+          Litigation and contingency exposures from the footnotes. Amounts shown only when quoted verbatim.
+        </p>
+      </div>
+      <div className="divide-y divide-gray-100">
+        {all.map((lp: LossProvision & { period: string }, i) => (
+          <div key={i} className="px-6 py-4">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="font-medium text-sm text-slate-800">{lp.matter}</span>
+              <span className="text-xs text-slate-400 font-mono">{lp.period}</span>
+              {lp.provision_amount != null && (
+                <span className="text-xs text-slate-500 font-mono">{fmtMoney(lp.provision_amount)}</span>
+              )}
+              {lp.is_material && (
+                <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-red-100 text-red-700">
+                  Material
+                </span>
+              )}
+            </div>
+            {lp.qualitative_flag && (
+              <p className="mt-1 text-xs text-slate-500">{lp.qualitative_flag}</p>
+            )}
+            <blockquote className="mt-2 text-xs text-slate-500 italic border-l-2 border-slate-200 pl-3">
+              "{lp.evidence_quote}"
+            </blockquote>
+            <p className="mt-1 text-xs text-slate-400">{lp.source}</p>
           </div>
         ))}
       </div>

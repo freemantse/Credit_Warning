@@ -55,6 +55,44 @@ export interface Finding {
 }
 
 /**
+ * Deterministic long-term-debt maturity schedule for one period (from XBRL).
+ * Drives the "maturity wall" block on the detail page.
+ */
+export interface MaturitySchedule {
+  buckets: Record<string, number>      // { y1, y2, ..., y5, thereafter } principal due
+  source_tags: Record<string, string>  // winning XBRL tag per bucket (audit trail)
+  total_scheduled: number
+  near_term_pct: number | null         // (y1 + y2) / total — the concentration metric
+  wall_year: string | null             // bucket with the most principal due
+}
+
+/**
+ * One maintenance covenant extracted from the debt footnote (LLM, hybrid).
+ * Numeric fields are null unless the figure appears verbatim in evidence_quote.
+ */
+export interface Covenant {
+  covenant_type: string                // max_leverage | min_coverage | min_net_worth | other
+  threshold: number | null             // the limit, if reliably parsed
+  direction: 'max' | 'min'
+  reported_actual: number | null       // current level, if disclosed
+  near_limit: boolean                  // sits close to / at risk of breaching the limit
+  evidence_quote: string               // verbatim quote
+  source: string
+}
+
+/**
+ * One litigation/contingency provision from the commitments footnote (LLM, hybrid).
+ */
+export interface LossProvision {
+  matter: string                       // short label of the matter
+  provision_amount: number | null      // accrued amount, if reliably parsed
+  is_material: boolean
+  qualitative_flag: string             // e.g. "reasonably possible loss, not accrued"
+  evidence_quote: string               // verbatim quote
+  source: string
+}
+
+/**
  * All data for one fiscal year of one issuer.
  * Returned as an array in the IssuerDetail response, newest period first.
  */
@@ -65,6 +103,9 @@ export interface PeriodData {
   breakdown: Record<string, number>   // per-component points, e.g. { "leverage>5x": 25.0 }
   alerts: string[]
   findings: Finding[]                 // empty if no LLM review was run for this period
+  maturities?: MaturitySchedule | null // XBRL maturity schedule (always present after track)
+  covenants?: Covenant[]              // LLM-extracted covenants (empty if no LLM review)
+  loss_provisions?: LossProvision[]   // LLM-extracted provisions (empty if no LLM review)
 }
 
 /**

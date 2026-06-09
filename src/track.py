@@ -36,8 +36,21 @@ from src.ingest import (
     get_filing_text,
     resolve_identifier,
 )
-from src.extract import extract_all, RatioResult, _get_available_periods
-from src.store import save_company, save_ratios_bulk, save_findings, get_periods
+from src.extract import (
+    extract_all,
+    RatioResult,
+    _get_available_periods,
+    debt_maturity_schedule,
+)
+from src.store import (
+    save_company,
+    save_ratios_bulk,
+    save_findings,
+    save_maturities_bulk,
+    save_covenants,
+    save_loss_provisions,
+    get_periods,
+)
 from src.score import compute_score, STRESS_THRESHOLD
 from src.concepts import MissingDataError
 
@@ -164,45 +177,52 @@ def track(ticker: str, n_periods: int | None = None, include_llm: bool = True) -
     results_by_period = {period: extract_all(facts, period) for period in periods}
     save_ratios_bulk(cik, results_by_period)
 
+    # Step 4b: Debt maturity schedules are pure XBRL compute (no LLM, no filing
+    # fetch), so extract them for every period and bulk-save alongside the ratios.
+    maturities_by_period = {
+        period: debt_maturity_schedule(facts, period) for period in periods
+    }
+    save_maturities_bulk(cik, maturities_by_period)
+
     for period in periods:
 
         results = results_by_period[period]
+        maturity = maturities_by_period[period]
 
         findings = []
+        covenants = []
+        provisions = []
         if include_llm:
             try:
-                # Step 4c: Find the 10-K filing for this fiscal year.
+                # Step 4c: Locate and review the period's 10-K. The MD&A pass uses
+                # the first 12 000 chars; the footnote pass locates the debt and
+                # contingencies sections deep in the document (which the 12k slice
+                # never reaches) and extracts covenants + loss provisions.
                 filings = get_filings(cik, ["10-K"])
-
-                # Match by fiscal year only (period[:4] = "YYYY") — 10-K filing dates
-                # don't align exactly with period_end (e.g. a Dec 2023 year-end is
-                # typically filed in February 2024, not December).
                 matching = [f for f in filings if period[:4] in f["filingDate"]]
 
                 if matching:
                     filing = matching[0]  # use the first (most recent) match for this year
-
-                    # Fetch the filing's primary HTML document (may be several MB).
-                    # Slice to 12 000 chars to stay within LLM token budgets while
-                    # still covering the MD&A section, which usually appears early.
                     text = get_filing_text(
                         cik, filing["accessionNumber"], filing["primaryDocument"]
                     )
 
                     from src.llm_review import review_text
-                    label = f"10-K {period}"
-                    findings = review_text(text[:12000], label)
-
-                    # Persist findings to Supabase (no-op if findings is empty).
+                    findings = review_text(text[:12000], f"10-K {period}")
                     save_findings(cik, period, findings)
+
+                    from src.footnote_review import review_filing_footnotes
+                    covenants, provisions = review_filing_footnotes(cik, period, filings)
+                    save_covenants(cik, period, covenants)
+                    save_loss_provisions(cik, period, provisions)
 
             except Exception as e:
                 # LLM review is best-effort — ratio data is already saved.
                 # Print the reason so the user can see what went wrong.
                 print(f"  [LLM review skipped for {period}: {e}]")
 
-        # Step 4d: Compute the stress score from ratios and any LLM findings.
-        score_result = compute_score(results, findings)
+        # Step 4d: Compute the stress score from ratios, findings, and footnotes.
+        score_result = compute_score(results, findings, maturity, covenants, provisions)
         all_results.append(results)
         all_scores.append(score_result)
 

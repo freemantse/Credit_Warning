@@ -36,7 +36,12 @@ load_dotenv(_ROOT / ".env.local")
 sys.path.insert(0, str(_ROOT))
 
 from src.concepts import MissingDataError
-from src.extract import RatioResult, _get_available_periods, extract_all
+from src.extract import (
+    RatioResult,
+    _get_available_periods,
+    extract_all,
+    debt_maturity_schedule,
+)
 from src.ingest import (
     get_company_facts,
     get_company_info,
@@ -49,11 +54,17 @@ from src.store import (
     delete_issuer,
     get_cik_by_ticker,
     get_company,
+    get_covenants_grouped,
     get_findings_grouped,
     get_issuers,
+    get_loss_provisions_grouped,
+    get_maturities_grouped,
     get_ratios_grouped,
     save_company,
+    save_covenants,
     save_findings,
+    save_loss_provisions,
+    save_maturities_bulk,
     save_ratios_bulk,
 )
 
@@ -162,6 +173,9 @@ def list_issuers():
     issuers = get_issuers()
     ratios_by_cik = get_ratios_grouped()       # 1 query for every issuer's ratios
     findings_by_cik = get_findings_grouped()   # 1 query for every issuer's findings
+    maturities_by_cik = get_maturities_grouped()       # 1 query for every issuer's maturities
+    covenants_by_cik = get_covenants_grouped()         # 1 query for every issuer's covenants
+    provisions_by_cik = get_loss_provisions_grouped()  # 1 query for every issuer's provisions
 
     result = []
     for issuer in issuers:
@@ -176,12 +190,17 @@ def list_issuers():
         latest = periods[-1]
         full_ratios = by_period[latest]
         findings = findings_by_cik.get(cik, {}).get(latest, [])
+        maturity = maturities_by_cik.get(cik, {}).get(latest)
+        covenants = covenants_by_cik.get(cik, {}).get(latest, [])
+        provisions = provisions_by_cik.get(cik, {}).get(latest, [])
 
         # Re-score from stored data so the summary is always consistent with
         # the detail page (both call compute_score with the same inputs).
         ratio_results = _to_ratio_results(full_ratios, latest)
         finding_objs = _finding_objects(findings)
-        score_result = compute_score(ratio_results, finding_objs)
+        score_result = compute_score(
+            ratio_results, finding_objs, maturity, covenants, provisions
+        )
 
         # Helper to safely pull a ratio value without KeyError on missing data.
         def _v(name: str) -> float | None:
@@ -253,12 +272,20 @@ def track_issuer(req: TrackRequest):
     results_by_period = {period: extract_all(facts, period) for period in periods}
     save_ratios_bulk(cik, results_by_period)
 
-    # Step 6: Optional LLM qualitative review per period (slow; disabled by default).
+    # Step 5b: Debt maturity schedules are pure XBRL compute (no LLM, no filing
+    # fetch) — extract for every period and bulk-save, always (even when no_llm).
+    maturities_by_period = {
+        period: debt_maturity_schedule(facts, period) for period in periods
+    }
+    save_maturities_bulk(cik, maturities_by_period)
+
+    # Step 6: Optional LLM review per period (slow; disabled by default). Runs the
+    # MD&A qualitative pass plus the footnote pass (locates the debt &
+    # contingencies sections and extracts covenants + loss provisions).
     if not req.no_llm:
         for period in periods:
             try:
                 filings = get_filings(cik, ["10-K"])
-                # Match by year only — filing dates don't align exactly with period_end.
                 matching = [f for f in filings if period[:4] in f["filingDate"]]
                 if matching:
                     filing = matching[0]
@@ -269,8 +296,13 @@ def track_issuer(req: TrackRequest):
                     # Trim to 12 000 chars — enough for MD&A; avoids token-limit errors.
                     findings_list = review_text(text[:12000], f"10-K {period}")
                     save_findings(cik, period, findings_list)
+
+                    from src.footnote_review import review_filing_footnotes
+                    covenants, provisions = review_filing_footnotes(cik, period, filings)
+                    save_covenants(cik, period, covenants)
+                    save_loss_provisions(cik, period, provisions)
             except Exception:
-                # LLM review is best-effort; ratio data has already been saved.
+                # LLM review is best-effort; ratio/maturity data has already been saved.
                 pass
 
     return {
@@ -299,15 +331,24 @@ def get_issuer(ticker: str):
     if not ratios_by_period:
         raise HTTPException(404, f"{ticker} is not tracked. POST /api/track first.")
     findings_by_period = get_findings_grouped(cik).get(cik, {})
+    maturities_by_period = get_maturities_grouped(cik).get(cik, {})
+    covenants_by_period = get_covenants_grouped(cik).get(cik, {})
+    provisions_by_period = get_loss_provisions_grouped(cik).get(cik, {})
 
     period_data = []
     # Newest period first so the frontend chart/table show recent data at the top.
     for period in sorted(ratios_by_period, reverse=True):
         full_ratios = ratios_by_period[period]
         findings = findings_by_period.get(period, [])
+        maturity = maturities_by_period.get(period)          # dict or None
+        covenants = covenants_by_period.get(period, [])      # list of dicts
+        provisions = provisions_by_period.get(period, [])    # list of dicts
         ratio_results = _to_ratio_results(full_ratios, period)
         finding_objs = _finding_objects(findings)
-        score_result = compute_score(ratio_results, finding_objs)
+        # compute_score accepts dicts for maturity/covenants/provisions (see _attr).
+        score_result = compute_score(
+            ratio_results, finding_objs, maturity, covenants, provisions
+        )
 
         period_data.append({
             "period_end": period,
@@ -316,6 +357,9 @@ def get_issuer(ticker: str):
             "breakdown": score_result.breakdown,   # per-component point contributions
             "alerts": score_result.alerts,
             "findings": findings,           # LLM qualitative findings (may be empty)
+            "maturities": maturity,         # XBRL maturity schedule (or None)
+            "covenants": covenants,         # LLM-extracted covenants (may be empty)
+            "loss_provisions": provisions,  # LLM-extracted provisions (may be empty)
         })
 
     tickers = company.get("tickers") or []
