@@ -105,7 +105,7 @@ class MaturitySchedule:
                          filer tagged. Keys are "y1".."y5" and "thereafter".
         source_tags:     {bucket_name: winning_xbrl_tag} audit trail.
         total_scheduled: Sum of all resolved buckets.
-        near_term_pct:   (y1 + y2) / total_scheduled, or None when total is 0
+        near_term_pct:   (y1 + y2 + y3) / total_scheduled, or None when total is 0
                          (so the maturity-wall score rule is suppressed, not
                          mis-computed, on unreliable data).
         wall_year:       Bucket with the largest principal due, or None if empty.
@@ -389,7 +389,7 @@ def debt_maturity_schedule(
 
     Derived metrics are pure arithmetic over the resolved buckets:
       total_scheduled = sum of all buckets
-      near_term_pct   = (y1 + y2) / total_scheduled   (None if total is 0)
+      near_term_pct   = (y1 + y2 + y3) / total_scheduled   (None if total is 0)
       wall_year       = bucket with the largest principal due (None if empty)
     """
     buckets: dict[str, float] = {}
@@ -406,8 +406,8 @@ def debt_maturity_schedule(
 
     total_scheduled = sum(buckets.values())
 
-    # near_term = principal due within the next two fiscal years.
-    near_term = buckets.get("y1", 0.0) + buckets.get("y2", 0.0)
+    # near_term = principal due within the next three fiscal years.
+    near_term = buckets.get("y1", 0.0) + buckets.get("y2", 0.0) + buckets.get("y3", 0.0)
     near_term_pct = (near_term / total_scheduled) if total_scheduled else None
 
     # wall_year = the single bucket carrying the most principal.

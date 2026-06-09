@@ -67,7 +67,7 @@ export interface MaturitySchedule {
   buckets: Record<string, number>      // { y1, y2, ..., y5, thereafter } principal due
   source_tags: Record<string, string>  // winning XBRL tag per bucket (audit trail)
   total_scheduled: number
-  near_term_pct: number | null         // (y1 + y2) / total — the concentration metric
+  near_term_pct: number | null         // (y1 + y2 + y3) / total — the concentration metric
   wall_year: string | null             // bucket with the most principal due
 }
 
