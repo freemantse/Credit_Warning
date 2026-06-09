@@ -119,8 +119,12 @@ export default function IssuerPage() {
         <button
           onClick={handleRefresh}
           disabled={refreshing}
-          className="mt-6 text-sm bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-lg disabled:opacity-50 transition-colors"
+          className="mt-6 inline-flex items-center gap-2 text-sm bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-lg disabled:opacity-50 transition-colors"
         >
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={refreshing ? 'animate-spin' : ''}>
+            <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+            <path d="M21 3v6h-6" />
+          </svg>
           {refreshing ? 'Refreshing…' : 'Refresh from EDGAR'}
         </button>
       </div>
@@ -153,13 +157,17 @@ export default function IssuerPage() {
                 or above it signal elevated credit risk.
               </p>
             </div>
-            <ResponsiveContainer width="100%" height={200}>
+            <ResponsiveContainer width="100%" height={220}>
               <LineChart data={chartData}>
                 {/* Trim dates to "YYYY-MM" to save horizontal space on the axis. */}
                 <XAxis
                   dataKey="date"
                   tick={{ fontSize: 11, fill: '#94a3b8' }}
                   tickFormatter={d => d.slice(0, 7)}
+                  interval={0}          // show a label for every period (Recharts otherwise auto-skips overlapping ones)
+                  angle={-45}           // rotate so adjacent YYYY-MM labels don't collide
+                  textAnchor="end"
+                  height={50}           // reserve vertical room for the rotated labels
                 />
                 <YAxis
                   domain={[0, 100]}  // fixed scale so changes are visually comparable
