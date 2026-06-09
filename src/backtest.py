@@ -35,14 +35,12 @@ from __future__ import annotations
 import argparse
 import csv
 import pathlib
-import sys
 from datetime import date, datetime
 from typing import Any
 
-from src.ingest import get_cik, get_company_facts, get_filings
-from src.extract import extract_all, _get_available_periods, debt_maturity_schedule
+from src.ingest import get_cik, get_company_facts
+from src.extract import extract_all, debt_maturity_schedule
 from src.score import compute_score, STRESS_THRESHOLD
-from src.concepts import MissingDataError
 
 
 # ── File paths ───────────────────────────────────────────────────────────────
