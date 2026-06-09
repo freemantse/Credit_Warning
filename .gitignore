@@ -1,6 +1,9 @@
 cache/
 *.pyc
 __pycache__/
+.pytest_cache/
+.DS_Store
+tsconfig.tsbuildinfo
 data/store.db
 data/backtest_report.txt
 .env

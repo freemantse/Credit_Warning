@@ -35,7 +35,6 @@ load_dotenv(_ROOT / ".env.local")
 # whether the server is started from the project root or the api/ subdirectory.
 sys.path.insert(0, str(_ROOT))
 
-from src.concepts import MissingDataError
 from src.extract import (
     RatioResult,
     _get_available_periods,
@@ -49,7 +48,7 @@ from src.ingest import (
     get_filing_text,
     resolve_identifier,
 )
-from src.score import STRESS_THRESHOLD, compute_score
+from src.score import compute_score
 from src.store import (
     delete_issuer,
     get_cik_by_ticker,
