@@ -277,6 +277,96 @@ def save_findings(
         _client().table("llm_findings").upsert(rows, ignore_duplicates=True).execute()
 
 
+def save_maturities_bulk(
+    cik: str,
+    schedules_by_period: dict[str, Any],
+    **_,
+) -> None:
+    """
+    Persist debt maturity schedules for MANY periods in one upsert round-trip.
+
+    `schedules_by_period` maps period_end → MaturitySchedule. One row is written
+    per resolved bucket (schedules with no buckets contribute nothing). Same
+    overwrite-on-PK-conflict semantics as save_ratios_bulk.
+    """
+    cik = cik.zfill(10)
+    rows = [
+        {
+            "cik": cik,
+            "period_end": period_end,
+            "bucket": bucket,
+            "value": value,
+            "source_tag": schedule.source_tags.get(bucket, ""),
+        }
+        for period_end, schedule in schedules_by_period.items()
+        for bucket, value in schedule.buckets.items()
+    ]
+    if rows:
+        _client().table("debt_maturities").upsert(rows).execute()
+
+
+def save_covenants(
+    cik: str,
+    period_end: str,
+    covenants: list[Any],
+    **_,
+) -> None:
+    """
+    Persist LLM-extracted covenants for one (cik, period_end).
+
+    ignore_duplicates=True (like save_findings): re-running the footnote review on
+    the same period won't multiply rows, since the UNIQUE constraint covers
+    (cik, period_end, covenant_type, evidence_quote).
+    """
+    cik = cik.zfill(10)
+    rows = [
+        {
+            "cik": cik,
+            "period_end": period_end,
+            "covenant_type": c.covenant_type,
+            "threshold": c.threshold,
+            "direction": c.direction,
+            "reported_actual": c.reported_actual,
+            "near_limit": c.near_limit,
+            "evidence_quote": c.evidence_quote,
+            "source": c.source,
+        }
+        for c in covenants
+    ]
+    if rows:
+        _client().table("covenants").upsert(rows, ignore_duplicates=True).execute()
+
+
+def save_loss_provisions(
+    cik: str,
+    period_end: str,
+    provisions: list[Any],
+    **_,
+) -> None:
+    """
+    Persist LLM-extracted loss provisions for one (cik, period_end).
+
+    Same ignore_duplicates semantics as save_covenants; UNIQUE constraint covers
+    (cik, period_end, matter, evidence_quote).
+    """
+    cik = cik.zfill(10)
+    rows = [
+        {
+            "cik": cik,
+            "period_end": period_end,
+            "matter": p.matter,
+            "provision_amount": p.provision_amount,
+            "is_material": p.is_material,
+            "qualitative_flag": p.qualitative_flag,
+            "evidence_quote": p.evidence_quote,
+            "source": p.source,
+        }
+        for p in provisions
+    ]
+    if rows:
+        _client().table("loss_provisions").upsert(rows, ignore_duplicates=True).execute()
+
+
 # ── Read operations ──────────────────────────────────────────────────────────
 
 def get_issuers(**_) -> list[dict[str, Any]]:
@@ -457,16 +547,119 @@ def get_findings_grouped(cik: str | None = None, **_) -> dict[str, dict[str, lis
     return out
 
 
+def get_maturities_grouped(cik: str | None = None, **_) -> dict[str, dict[str, dict]]:
+    """
+    Fetch maturity rows in ONE query, grouped as cik → period_end → schedule dict.
+
+    Each schedule dict is {buckets, source_tags, total_scheduled, near_term_pct,
+    wall_year} — the derived metrics are recomputed here from the stored buckets
+    so the read shape matches extract.MaturitySchedule without storing redundant
+    summary rows.
+    """
+    q = (
+        _client()
+        .table("debt_maturities")
+        .select("cik, period_end, bucket, value, source_tag")
+    )
+    if cik is not None:
+        q = q.eq("cik", cik.zfill(10))
+    res = q.execute()
+
+    # First gather raw buckets per (cik, period_end).
+    raw: dict[str, dict[str, dict]] = {}
+    for row in res.data:
+        period = raw.setdefault(row["cik"], {}).setdefault(
+            row["period_end"], {"buckets": {}, "source_tags": {}}
+        )
+        period["buckets"][row["bucket"]] = row["value"]
+        period["source_tags"][row["bucket"]] = row["source_tag"]
+
+    # Then derive the same metrics MaturitySchedule computes.
+    out: dict[str, dict[str, dict]] = {}
+    for c, periods in raw.items():
+        for period_end, data in periods.items():
+            buckets = data["buckets"]
+            total = sum(buckets.values())
+            near_term = buckets.get("y1", 0.0) + buckets.get("y2", 0.0)
+            out.setdefault(c, {})[period_end] = {
+                "buckets": buckets,
+                "source_tags": data["source_tags"],
+                "total_scheduled": total,
+                "near_term_pct": (near_term / total) if total else None,
+                "wall_year": max(buckets, key=buckets.get) if buckets else None,
+            }
+    return out
+
+
+def get_covenants_grouped(cik: str | None = None, **_) -> dict[str, dict[str, list[dict]]]:
+    """Fetch covenants in ONE query, grouped as cik → period_end → [covenants]."""
+    q = (
+        _client()
+        .table("covenants")
+        .select(
+            "cik, period_end, covenant_type, threshold, direction, "
+            "reported_actual, near_limit, evidence_quote, source"
+        )
+    )
+    if cik is not None:
+        q = q.eq("cik", cik.zfill(10))
+    res = q.execute()
+
+    out: dict[str, dict[str, list[dict]]] = {}
+    for row in res.data:
+        out.setdefault(row["cik"], {}).setdefault(row["period_end"], []).append({
+            "covenant_type": row["covenant_type"],
+            "threshold": row["threshold"],
+            "direction": row["direction"],
+            "reported_actual": row["reported_actual"],
+            "near_limit": row["near_limit"],
+            "evidence_quote": row["evidence_quote"],
+            "source": row["source"],
+        })
+    return out
+
+
+def get_loss_provisions_grouped(cik: str | None = None, **_) -> dict[str, dict[str, list[dict]]]:
+    """Fetch loss provisions in ONE query, grouped as cik → period_end → [provisions]."""
+    q = (
+        _client()
+        .table("loss_provisions")
+        .select(
+            "cik, period_end, matter, provision_amount, is_material, "
+            "qualitative_flag, evidence_quote, source"
+        )
+    )
+    if cik is not None:
+        q = q.eq("cik", cik.zfill(10))
+    res = q.execute()
+
+    out: dict[str, dict[str, list[dict]]] = {}
+    for row in res.data:
+        out.setdefault(row["cik"], {}).setdefault(row["period_end"], []).append({
+            "matter": row["matter"],
+            "provision_amount": row["provision_amount"],
+            "is_material": row["is_material"],
+            "qualitative_flag": row["qualitative_flag"],
+            "evidence_quote": row["evidence_quote"],
+            "source": row["source"],
+        })
+    return out
+
+
 def delete_issuer(cik: str, **_) -> None:
     """
     Hard-delete all stored data for a company from all three tables.
 
     Called when the user clicks "Remove" in the portfolio dashboard.
-    ratios, llm_findings, and the companies identity row are all cleared so the
-    issuer no longer appears anywhere.
+    All per-company rows (ratios, findings, maturities, covenants, loss
+    provisions) and the companies identity row are cleared so the issuer no
+    longer appears anywhere.
     """
     cik = cik.zfill(10)
     client = _client()
     client.table("ratios").delete().eq("cik", cik).execute()
     client.table("llm_findings").delete().eq("cik", cik).execute()
+    client.table("debt_maturities").delete().eq("cik", cik).execute()
+    client.table("covenants").delete().eq("cik", cik).execute()
+    client.table("loss_provisions").delete().eq("cik", cik).execute()
     client.table("companies").delete().eq("cik", cik).execute()

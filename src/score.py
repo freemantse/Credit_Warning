@@ -57,12 +57,28 @@ class ScoreResult:
 
 # ── Scoring function ─────────────────────────────────────────────────────────
 
+def _attr(obj: Any, name: str, default: Any = None) -> Any:
+    """
+    Read a field from either a dataclass instance or a plain dict.
+
+    Footnote signals reach compute_score as dataclasses (Covenant / LossProvision
+    straight from extraction) or as dicts (loaded back from Supabase). This makes
+    the scoring rules indifferent to which.
+    """
+    if isinstance(obj, dict):
+        return obj.get(name, default)
+    return getattr(obj, name, default)
+
+
 def compute_score(
     ratios: dict[str, RatioResult],
     findings: list[Any] | None = None,
+    maturity: Any | None = None,
+    covenants: list[Any] | None = None,
+    loss_provisions: list[Any] | None = None,
 ) -> ScoreResult:
     """
-    Combine ratio results and LLM qualitative findings into a stress score.
+    Combine ratio results and footnote signals into a stress score.
 
     This function is deliberately kept simple and auditable:
       - Each rule either fires (adds points) or doesn't (adds 0).
@@ -70,18 +86,29 @@ def compute_score(
         for having incomplete XBRL data.
       - All breakdowns are recorded so the score can be fully explained.
 
+    Two tiers of signal, by trustworthiness:
+      - DETERMINISTIC (XBRL-derived) rules carry full weight, like the ratio
+        rules: the maturity-wall concentration is computed from tagged figures.
+      - LLM-DERIVED signals (covenants, loss provisions) are capped low, mirroring
+        the existing 10-pt cap on qualitative findings, so model output can only
+        nudge the score at the margin and never breach the threshold alone.
+
     Args:
-        ratios:   Output of extract_all(). The dict may contain RatioResult
-                  objects (successful computations) or MissingDataError objects
-                  (failed computations). Only RatioResult values are scored.
-        findings: List of Finding objects from llm_review.review_text().
-                  Pass [] or None to skip the qualitative adjustment.
+        ratios:          Output of extract_all(); only RatioResult values are scored.
+        findings:        Finding objects from llm_review.review_text() (or dicts).
+        maturity:        MaturitySchedule (or dict) from extract.debt_maturity_schedule.
+        covenants:       Covenant objects (or dicts) from footnote_review.
+        loss_provisions: LossProvision objects (or dicts) from footnote_review.
 
     Returns:
         ScoreResult with score, per-rule breakdown, and alert strings.
     """
     if findings is None:
         findings = []
+    if covenants is None:
+        covenants = []
+    if loss_provisions is None:
+        loss_provisions = []
 
     # Accumulate rule → points mappings. All rules are added (even with 0 pts)
     # so the breakdown always shows the full picture, not just the triggered rules.
@@ -156,11 +183,42 @@ def compute_score(
     #   The four ratio rules sum to 90 pts max. The LLM cap of 10 pts means a
     #   qualitative-only signal cannot push an issuer past the 50-pt stress
     #   threshold by itself (max LLM contribution = 10 < 50).
-    high_sev = [f for f in findings if getattr(f, "severity", "") == "high"]
+    high_sev = [f for f in findings if _attr(f, "severity", "") == "high"]
     llm_pts = min(len(high_sev) * 2.0, 10.0)
     breakdown["llm_high_severity"] = llm_pts
     if high_sev:
         alerts.append(f"{len(high_sev)} high-severity qualitative concern(s) flagged")
+
+    # ── Rule 5: Maturity wall (DETERMINISTIC, full weight) ───────────────────
+    # near_term_pct = (y1 + y2) / total scheduled principal, from XBRL maturity
+    # tags. A heavy near-term concentration means a large share of debt must be
+    # refinanced soon — refinancing risk. Because it is XBRL-derived (not LLM),
+    # it carries full weight like the ratio rules. None (no/zero schedule) → skip.
+    near_term_pct = _attr(maturity, "near_term_pct") if maturity is not None else None
+    if near_term_pct is not None and near_term_pct > 0.40:
+        breakdown["maturity_wall"] = 15.0
+        alerts.append(
+            f"Maturity wall: {near_term_pct * 100:.0f}% of debt due within 2 years"
+        )
+    else:
+        breakdown["maturity_wall"] = 0.0
+
+    # ── Rule 6: Covenant proximity (LLM-DERIVED, capped) ─────────────────────
+    # Each covenant the footnote describes the company as close to breaching adds
+    # 3 pts, capped at 6. LLM-derived, so kept marginal.
+    near_cov = [c for c in covenants if _attr(c, "near_limit", False)]
+    cov_pts = min(len(near_cov) * 3.0, 6.0)
+    breakdown["covenant_proximity"] = cov_pts
+    if near_cov:
+        alerts.append(f"{len(near_cov)} covenant(s) near their limit")
+
+    # ── Rule 7: Material loss provisions (LLM-DERIVED, capped) ───────────────
+    # Each material litigation/contingency provision adds 2 pts, capped at 6.
+    material = [p for p in loss_provisions if _attr(p, "is_material", False)]
+    prov_pts = min(len(material) * 2.0, 6.0)
+    breakdown["litigation_provision"] = prov_pts
+    if material:
+        alerts.append(f"{len(material)} material loss provision(s) disclosed")
 
     # Sum all breakdown values and cap at 100 in case future rules push above it.
     score = min(sum(breakdown.values()), 100.0)

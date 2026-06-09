@@ -40,7 +40,7 @@ from datetime import date, datetime
 from typing import Any
 
 from src.ingest import get_cik, get_company_facts, get_filings
-from src.extract import extract_all, _get_available_periods
+from src.extract import extract_all, _get_available_periods, debt_maturity_schedule
 from src.score import compute_score, STRESS_THRESHOLD
 from src.concepts import MissingDataError
 
@@ -155,8 +155,12 @@ def score_issuer_at_date(
     # that existed at eval_date — enforcing the no-look-ahead rule.
     results = extract_all(facts, latest_period, filed_before=eval_str)
 
-    # LLM findings are not used in the backtest (too slow and non-deterministic).
-    score_result = compute_score(results, [])
+    # The maturity wall is XBRL-derived and point-in-time safe (filed_before),
+    # so include it. LLM findings and footnote covenants/provisions are NOT used
+    # in the backtest (too slow, non-deterministic, and not cleanly point-in-time
+    # bounded from filing text).
+    maturity = debt_maturity_schedule(facts, latest_period, filed_before=eval_str)
+    score_result = compute_score(results, [], maturity)
     return score_result.score, score_result.score >= threshold
 
 

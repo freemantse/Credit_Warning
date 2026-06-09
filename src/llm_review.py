@@ -68,6 +68,32 @@ Rules:
 _NUMBER_IN_CONCERN = re.compile(r"\d")
 
 
+def parse_json_array(raw_text: str) -> list:
+    """
+    Strip markdown code fences from an LLM response and parse it as a JSON array.
+
+    Shared by llm_review and footnote_review: both prompt the model for a JSON
+    array and must tolerate the model wrapping it in ```json fences. Returns []
+    on any parse failure or non-list result, so a malformed LLM response degrades
+    to "no findings" rather than crashing the pipeline.
+    """
+    raw_text = raw_text.strip()
+
+    # Strip markdown code fences if the model wrapped the JSON.
+    # e.g. ```json\n[...]\n``` → [...]
+    if raw_text.startswith("```"):
+        raw_text = re.sub(r"^```[a-z]*\n?", "", raw_text)
+        raw_text = re.sub(r"\n?```$", "", raw_text)
+
+    try:
+        parsed = json.loads(raw_text)
+    except json.JSONDecodeError:
+        return []
+
+    # Guard against the model returning a non-list value (e.g. a dict or a string).
+    return parsed if isinstance(parsed, list) else []
+
+
 @dataclass
 class Finding:
     """
@@ -178,26 +204,9 @@ def review_text(
         messages=[{"role": "user", "content": user_prompt}],
     )
 
-    # Extract the text content from the first content block in the response.
-    raw_text = message.content[0].text.strip()
-
-    # Strip markdown code fences if the model wrapped the JSON.
-    # e.g. ```json\n[...]\n``` → [...]
-    # The regex handles optional language specifiers like ```json or just ```.
-    if raw_text.startswith("```"):
-        raw_text = re.sub(r"^```[a-z]*\n?", "", raw_text)
-        raw_text = re.sub(r"\n?```$", "", raw_text)
-
-    # Attempt to parse the cleaned response as JSON.
-    try:
-        raw_findings = json.loads(raw_text)
-    except json.JSONDecodeError:
-        # The model returned non-JSON output. Return empty rather than crashing.
-        return []
-
-    # Guard against the model returning a non-list value (e.g. a dict or a string).
-    if not isinstance(raw_findings, list):
-        return []
+    # Extract the response text, strip any code fences, and parse the JSON array.
+    # Returns [] on any malformed output rather than crashing the pipeline.
+    raw_findings = parse_json_array(message.content[0].text)
 
     # Validate each raw dict individually. Invalid ones are None and filtered out.
     findings = []
