@@ -22,6 +22,7 @@
 export interface IssuerSummary {
   cik: string                      // canonical 10-digit EDGAR id, e.g. "0000320193"
   ticker: string
+  name: string                     // company display name, e.g. "Apple Inc."
   latest_period: string | null    // most recent fiscal year-end, e.g. "2023-09-30"
   period_count: number            // how many annual periods are stored for this issuer
   leverage: number | null         // net_debt / EBITDA (null = XBRL data missing)
@@ -38,9 +39,12 @@ export interface IssuerSummary {
  * Includes the XBRL audit trail so the detail page can show source tags.
  */
 export interface RatioData {
-  value: number
-  inputs: Record<string, number>      // raw dollar inputs, e.g. { total_debt: 5e9 }
-  source_tags: Record<string, string> // XBRL tag per input, e.g. { total_debt: "us-gaap/LongTermDebt" }
+  value: number | null                 // null when the ratio couldn't be computed
+  inputs: Record<string, number>      // raw dollar inputs (subset that resolved, if missing)
+  source_tags: Record<string, string> // XBRL tag per resolved input, e.g. { total_debt: "us-gaap/LongTermDebt" }
+  // Present only for a missing ratio: which raw inputs are absent and the tags tried.
+  missing_inputs?: { field: string; tags_tried: string[] }[]
+  reason?: string                      // why it's missing (e.g. guard "EBITDA is zero")
 }
 
 /**
@@ -114,6 +118,7 @@ export interface PeriodData {
  */
 export interface IssuerDetail {
   ticker: string
+  name: string                     // company display name, e.g. "Apple Inc."
   periods: PeriodData[]
 }
 
@@ -176,7 +181,7 @@ export async function fetchIssuers(): Promise<IssuerSummary[]> {
  * and is skipped by default in the UI to keep the "Track" button responsive.
  * The user can enable it by setting noLlm=false, but the UI doesn't expose this yet.
  */
-export async function trackIssuer(identifier: string, noLlm = true): Promise<void> {
+export async function trackIssuer(identifier: string, noLlm = true): Promise<TrackResult> {
   const res = await fetch('/api/track', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -190,6 +195,21 @@ export async function trackIssuer(identifier: string, noLlm = true): Promise<voi
     const err = await res.json().catch(() => ({ detail: 'Unknown error' }))
     throw new Error(err.detail || 'Failed to track issuer')
   }
+  // The backend echoes the resolved identity (cik, ticker, name) so the UI can
+  // show a confirmation that names the company and its CIK.
+  return res.json()
+}
+
+/**
+ * Identity echoed back by POST /api/track after a successful track.
+ * Used to confirm to the user exactly which company was resolved and added.
+ */
+export interface TrackResult {
+  cik: string
+  ticker: string                  // resolved current ticker, or the input if none
+  name: string                    // company display name, e.g. "Apple Inc."
+  periods_saved: number
+  periods: string[]
 }
 
 /** Fetch full ratio history and scores for one issuer. */

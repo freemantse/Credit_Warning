@@ -58,6 +58,36 @@ class RatioResult:
 
 
 @dataclass
+class MissingRatio:
+    """
+    Audit record for a ratio that could NOT be computed for one period.
+
+    Parallels RatioResult so the source-audit panel can still render a card for the
+    ratio and show the analyst exactly which raw XBRL input is missing.
+
+    Two flavours of "missing":
+      1. An input concept didn't resolve from XBRL — `missing_inputs` lists each
+         such field with the tags that were tried. Any inputs that DID resolve are
+         carried in `inputs`/`source_tags` so the card stays informative.
+      2. All inputs resolved but a guard made the ratio undefined (e.g. zero EBITDA).
+         Then `missing_inputs` is empty and `reason` explains why.
+
+    Example (missing total_debt for leverage):
+        name           = "leverage"
+        inputs         = {"cash": 2e9, "operating_income": 2e9, "depreciation": 0.5e9}
+        source_tags    = {"cash": "us-gaap/CashAndCashEquivalentsAtCarryingValue", ...}
+        missing_inputs = [{"field": "total_debt", "tags_tried": ["us-gaap/LongTermDebt", ...]}]
+        reason         = "Concept 'total_debt' not found for period_end='2023-09-30'. Tried: ..."
+    """
+    name: str                            # ratio identifier, e.g. "leverage"
+    period_end: str                      # fiscal year-end date
+    inputs: dict[str, float]             # the subset of inputs that DID resolve
+    source_tags: dict[str, str]          # winning XBRL tag per resolved input
+    missing_inputs: list[dict]           # [{"field": str, "tags_tried": [str, ...]}]
+    reason: str                          # the original MissingDataError message
+
+
+@dataclass
 class MaturitySchedule:
     """
     Deterministic long-term-debt maturity schedule for one fiscal period.
@@ -368,25 +398,81 @@ def debt_maturity_schedule(
 _RATIO_FUNCTIONS = [leverage, interest_coverage, free_cash_flow, fcf_margin, liquidity]
 
 
+# Maps each ratio name → the ordered list of input concept keys (keys into
+# concepts.TAGS) its formula consumes. Used by diagnose_ratio() to pinpoint which
+# raw input is missing when a ratio can't be computed. Field names equal the concept
+# keys, matching the input names the ratio functions put in RatioResult.inputs.
+RATIO_INPUTS: dict[str, list[str]] = {
+    "leverage":          ["total_debt", "cash", "operating_income", "depreciation"],
+    "interest_coverage": ["operating_income", "depreciation", "interest_expense"],
+    "free_cash_flow":    ["operating_cashflow", "capex"],
+    "fcf_margin":        ["operating_cashflow", "capex", "revenue"],
+    "liquidity":         ["cash", "short_term_debt"],
+}
+
+
+def diagnose_ratio(
+    name: str,
+    facts: dict,
+    period_end: str,
+    reason: str,
+    filed_before: str | None = None,
+) -> MissingRatio:
+    """
+    Build a MissingRatio audit record for a ratio that failed to compute.
+
+    Re-resolves each of the ratio's input concepts independently (via resolve_tag)
+    so we can tell which raw inputs are present and which are genuinely missing:
+      - resolved inputs go into `inputs`/`source_tags`
+      - unresolved inputs are recorded in `missing_inputs` with the tags that were
+        tried (TAGS[concept]) so the analyst can see exactly what was searched for
+
+    `reason` is the original MissingDataError message — important for guard failures
+    (e.g. zero EBITDA) where every input resolves but the ratio is still undefined.
+    """
+    inputs: dict[str, float] = {}
+    source_tags: dict[str, str] = {}
+    missing_inputs: list[dict] = []
+
+    for concept in RATIO_INPUTS.get(name, []):
+        try:
+            value, tag = _resolve(facts, concept, period_end, filed_before)
+        except MissingDataError:
+            missing_inputs.append({"field": concept, "tags_tried": TAGS.get(concept, [])})
+            continue
+        inputs[concept] = value
+        source_tags[concept] = tag
+
+    return MissingRatio(
+        name=name,
+        period_end=period_end,
+        inputs=inputs,
+        source_tags=source_tags,
+        missing_inputs=missing_inputs,
+        reason=reason,
+    )
+
+
 def extract_all(
     facts: dict,
     period_end: str,
     filed_before: str | None = None,
-) -> dict[str, RatioResult | MissingDataError]:
+) -> dict[str, RatioResult | MissingRatio]:
     """
     Run all five ratio functions for one (company, period) combination.
 
-    Design decision — never raises, records errors:
+    Design decision — never raises, records misses:
       If one ratio can't be computed (e.g. missing depreciation tag), the others
-      still run. The failed ratio is stored in the dict as a MissingDataError
-      object. Callers check with isinstance(result, RatioResult) to skip errors.
+      still run. The failed ratio is stored in the dict as a MissingRatio object
+      that records which raw inputs are missing (see diagnose_ratio). Callers check
+      with isinstance(result, RatioResult) to skip misses for scoring.
 
     Returns:
         Dict keyed by ratio name. Values are either a RatioResult (success)
-        or a MissingDataError (explains exactly which XBRL tags were tried).
-        Example: {"leverage": RatioResult(...), "liquidity": MissingDataError(...)}
+        or a MissingRatio (explains which inputs resolved and which are missing).
+        Example: {"leverage": RatioResult(...), "liquidity": MissingRatio(...)}
     """
-    results: dict[str, RatioResult | MissingDataError] = {}
+    results: dict[str, RatioResult | MissingRatio] = {}
 
     for fn in _RATIO_FUNCTIONS:
         try:
@@ -394,9 +480,11 @@ def extract_all(
             # Key by result.name (e.g. "leverage") — the canonical ratio name.
             results[result.name] = result
         except MissingDataError as e:
-            # Key by fn.__name__ (e.g. "leverage") when the function itself raises.
-            # fn.__name__ matches result.name so the dict key is consistent either way.
-            results[fn.__name__] = e
+            # fn.__name__ (e.g. "leverage") matches the canonical ratio name. Build a
+            # per-input diagnostic so the source-audit panel can show what's missing.
+            results[fn.__name__] = diagnose_ratio(
+                fn.__name__, facts, period_end, str(e), filed_before
+            )
 
     return results
 
@@ -495,6 +583,8 @@ if __name__ == "__main__":
             if isinstance(result, RatioResult):
                 print(f"  {name:20s} = {result.value:>10.2f}  (tags: {list(result.source_tags.values())})")
             else:
-                # MissingDataError — print the reason so you can see which tags were tried.
-                print(f"  {name:20s} = MISSING: {result}")
+                # MissingRatio — print which inputs are missing (or the guard reason).
+                missing = [m["field"] for m in result.missing_inputs]
+                detail = f"missing inputs: {missing}" if missing else result.reason
+                print(f"  {name:20s} = MISSING: {detail}")
         print()

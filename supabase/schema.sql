@@ -36,9 +36,10 @@ CREATE TABLE IF NOT EXISTS ratios (
   cik               TEXT NOT NULL,
   period_end        TEXT NOT NULL,                 -- fiscal year-end, e.g. "2023-09-30"
   ratio_name        TEXT NOT NULL,                 -- e.g. "leverage", "free_cash_flow"
-  value             DOUBLE PRECISION NOT NULL,
-  inputs_json       JSONB NOT NULL DEFAULT '{}',   -- raw dollar inputs used in the formula
-  source_tags_json  JSONB NOT NULL DEFAULT '{}',   -- winning XBRL tag per input
+  value             DOUBLE PRECISION,              -- NULL when the ratio couldn't be computed
+  inputs_json       JSONB NOT NULL DEFAULT '{}',   -- raw dollar inputs used (subset that resolved, if missing)
+  source_tags_json  JSONB NOT NULL DEFAULT '{}',   -- winning XBRL tag per resolved input
+  missing_json      JSONB,                         -- NULL if computed; else {missing_inputs:[...], reason:str}
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (cik, period_end, ratio_name)
 );
@@ -154,6 +155,18 @@ CREATE POLICY "Public read covenants" ON covenants FOR SELECT USING (true);
 
 DROP POLICY IF EXISTS "Public read loss_provisions" ON loss_provisions;
 CREATE POLICY "Public read loss_provisions" ON loss_provisions FOR SELECT USING (true);
+
+
+-- ============================================================================
+-- MIGRATION — add missing-ratio support to an existing `ratios` table
+-- ----------------------------------------------------------------------------
+-- Run these once on a DB created before missing ratios were persisted. They are
+-- idempotent and non-destructive. After running, re-track issuers to backfill
+-- the missing-ratio rows (existing computed rows are untouched).
+--
+-- ALTER TABLE ratios ALTER COLUMN value DROP NOT NULL;
+-- ALTER TABLE ratios ADD COLUMN IF NOT EXISTS missing_json JSONB;
+-- ============================================================================
 
 
 -- ============================================================================

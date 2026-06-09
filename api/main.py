@@ -100,6 +100,8 @@ class TrackRequest(BaseModel):
 def _to_ratio_results(full_ratios: dict, period_end: str) -> dict[str, RatioResult]:
     # Reconstruct RatioResult objects from Supabase rows so compute_score can consume them.
     # Supabase returns plain dicts; compute_score expects dataclass instances.
+    # Skip missing ratios (value is None): they must not be scored, matching the
+    # pre-existing behaviour where an absent ratio contributes no stress points.
     return {
         name: RatioResult(
             name=name,
@@ -109,6 +111,7 @@ def _to_ratio_results(full_ratios: dict, period_end: str) -> dict[str, RatioResu
             period_end=period_end,
         )
         for name, data in full_ratios.items()
+        if data.get("value") is not None
     }
 
 

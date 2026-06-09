@@ -1,9 +1,11 @@
 """Tests for src/extract.py — pure, no network. Uses fixture companyfacts."""
 
 import pytest
+import copy
+
 from src.extract import (
     leverage, interest_coverage, free_cash_flow, fcf_margin, liquidity,
-    extract_all, RatioResult,
+    extract_all, RatioResult, MissingRatio,
 )
 from src.concepts import MissingDataError
 
@@ -82,15 +84,44 @@ def test_extract_all_returns_all_ratios():
 
 
 def test_extract_all_records_missing_not_crashes():
-    # Remove cash concept to force a missing error on leverage/liquidity
-    import copy
-    facts_no_cash = copy.deepcopy(FACTS)
-    del facts_no_cash["facts"]["us-gaap"]["CashAndCashEquivalentsAtCarryingValue"]
-    results = extract_all(facts_no_cash, PERIOD)
-    # leverage requires cash → should be a MissingDataError
-    assert isinstance(results["leverage"], MissingDataError)
-    # free_cash_flow doesn't need cash → should still resolve
+    # Remove total_debt concept to force a missing error on leverage only.
+    facts_no_debt = copy.deepcopy(FACTS)
+    del facts_no_debt["facts"]["us-gaap"]["LongTermDebt"]
+    results = extract_all(facts_no_debt, PERIOD)
+    # leverage requires total_debt → should be a MissingRatio
+    assert isinstance(results["leverage"], MissingRatio)
+    # free_cash_flow doesn't need total_debt → should still resolve
     assert isinstance(results["free_cash_flow"], RatioResult)
+
+
+def test_missing_ratio_pinpoints_missing_input():
+    # Removing total_debt should leave the other three leverage inputs resolved and
+    # flag exactly total_debt as missing, with the tags that were tried.
+    facts_no_debt = copy.deepcopy(FACTS)
+    del facts_no_debt["facts"]["us-gaap"]["LongTermDebt"]
+    miss = extract_all(facts_no_debt, PERIOD)["leverage"]
+    assert isinstance(miss, MissingRatio)
+
+    missing_fields = [m["field"] for m in miss.missing_inputs]
+    assert missing_fields == ["total_debt"]
+    # The tags that were searched are surfaced for the audit trail.
+    assert any("LongTermDebt" in t for t in miss.missing_inputs[0]["tags_tried"])
+    # Inputs that DID resolve are still carried so the card stays informative.
+    assert miss.inputs["cash"] == 1_000_000
+    assert "cash" in miss.source_tags
+
+
+def test_missing_ratio_guard_failure_sets_reason():
+    # Zero EBITDA: every leverage input resolves, but the ratio is undefined.
+    # missing_inputs should be empty and reason should explain why.
+    facts_zero_ebitda = copy.deepcopy(FACTS)
+    g = facts_zero_ebitda["facts"]["us-gaap"]
+    g["OperatingIncomeLoss"]["units"]["USD"][0]["val"] = 0
+    g["DepreciationDepletionAndAmortization"]["units"]["USD"][0]["val"] = 0
+    miss = extract_all(facts_zero_ebitda, PERIOD)["leverage"]
+    assert isinstance(miss, MissingRatio)
+    assert miss.missing_inputs == []
+    assert "EBITDA" in miss.reason
 
 
 def test_missing_period_raises():
