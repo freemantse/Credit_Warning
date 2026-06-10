@@ -17,6 +17,7 @@ Data flow per request:
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 from typing import Any
@@ -45,7 +46,6 @@ from src.ingest import (
     get_company_facts,
     get_company_info,
     get_filings,
-    get_filing_text,
     resolve_identifier,
 )
 from src.score import compute_score
@@ -282,31 +282,27 @@ def track_issuer(req: TrackRequest):
     }
     save_maturities_bulk(cik, maturities_by_period)
 
-    # Step 6: Optional LLM review per period (slow; disabled by default). Runs the
-    # MD&A qualitative pass plus the footnote pass (locates the debt &
-    # contingencies sections and extracts covenants + loss provisions).
+    # Step 6: Optional LLM review per period (slow; disabled by default).
+    # review_filing fetches the 10-K once, locates the MD&A / debt /
+    # contingencies sections, and runs the three LLM passes on the located
+    # slices only.
     if not req.no_llm:
+        filings = get_filings(cik, ["10-K"])
         for period in periods:
             try:
-                filings = get_filings(cik, ["10-K"])
-                matching = [f for f in filings if period[:4] in f["filingDate"]]
-                if matching:
-                    filing = matching[0]
-                    text = get_filing_text(
-                        cik, filing["accessionNumber"], filing["primaryDocument"]
-                    )
-                    from src.llm_review import review_text
-                    # Trim to 12 000 chars — enough for MD&A; avoids token-limit errors.
-                    findings_list = review_text(text[:12000], f"10-K {period}")
-                    save_findings(cik, period, findings_list)
-
-                    from src.footnote_review import review_filing_footnotes
-                    covenants, provisions = review_filing_footnotes(cik, period, filings)
-                    save_covenants(cik, period, covenants)
-                    save_loss_provisions(cik, period, provisions)
+                from src.footnote_review import review_filing
+                findings_list, covenants, provisions = review_filing(
+                    cik, period, filings
+                )
+                save_findings(cik, period, findings_list)
+                save_covenants(cik, period, covenants)
+                save_loss_provisions(cik, period, provisions)
             except Exception:
-                # LLM review is best-effort; ratio/maturity data has already been saved.
-                pass
+                # LLM review is best-effort; ratio/maturity data has already been
+                # saved. Log it — silent swallowing previously hid pipeline bugs.
+                logging.warning(
+                    "LLM review skipped for %s %s", cik, period, exc_info=True
+                )
 
     return {
         "cik": cik,
@@ -421,5 +417,111 @@ def start_backtest(background_tasks: BackgroundTasks):
 
 @app.get("/api/backtest/status")
 def backtest_status():
-    """Return the current backtest state: running flag, result dict, or error string."""
+    """
+    Return the current backtest state: running flag, result dict, or error string.
+
+    When no backtest has run in this server process, fall back to the last
+    persisted run on disk (results from the most recent CLI/server run, then
+    the committed baseline). This lets the page show the latest scorecard on
+    load instead of an empty state — marked with saved=True so the UI can say
+    the numbers come from a previous run.
+    """
+    if not _backtest_status["running"] and _backtest_status["result"] is None:
+        import json
+        from src.backtest import RESULTS_PATH, BASELINE_PATH
+
+        for path in (RESULTS_PATH, BASELINE_PATH):
+            if path.exists():
+                try:
+                    saved = json.loads(path.read_text())
+                except ValueError:
+                    continue  # corrupt/partial file — try the next fallback
+                return {**_backtest_status, "result": saved, "saved": True}
     return _backtest_status
+
+
+@app.get("/api/backtest/cases")
+def backtest_cases():
+    """
+    Return the backtest case library: which companies are tested and counts.
+
+    Reads data/cases.csv directly (not run results) so the roster is visible
+    before any backtest has been run.
+    """
+    from src.backtest import load_cases
+
+    try:
+        cases = load_cases()
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+
+    distressed = sum(1 for c in cases if (c.get("label") or "").strip() == "distressed")
+    healthy = sum(1 for c in cases if (c.get("label") or "").strip() == "healthy")
+    return {
+        "total": len(cases),
+        "distressed": distressed,
+        "healthy": healthy,
+        "cases": cases,
+    }
+
+
+class SnapshotRequest(BaseModel):
+    as_of: str  # "YYYY-MM-DD" — the filed-before cutoff to score against
+
+
+@app.post("/api/backtest/snapshot")
+def backtest_snapshot(req: SnapshotRequest):
+    """
+    Score every backtest company point-in-time as of a user-chosen date.
+
+    The date is the filed_before cutoff: only filings with filed <= as_of are
+    used, so the result is exactly what an investor could have known that day.
+    This does NOT re-run or alter the backtest — it's a one-date snapshot.
+
+    Synchronous by design: with the EDGAR cache warm (after any backtest run)
+    this is a few seconds of JSON parsing. On a cold cache (fresh serverless
+    instance) the first call fetches ~28 companies from SEC and is slow.
+    """
+    from datetime import datetime as _dt
+
+    from src.backtest import _resolve_case_cik, load_cases, score_issuer_at_date
+    from src.score import STRESS_THRESHOLD
+
+    try:
+        as_of_date = _dt.strptime(req.as_of.strip(), "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(400, f"Invalid as_of date {req.as_of!r} — expected YYYY-MM-DD")
+
+    try:
+        cases = load_cases()
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+
+    rows = []
+    for case in cases:
+        ticker = (case.get("ticker") or "").strip()
+        row = {
+            "case_id": (case.get("case_id") or "").strip() or ticker,
+            "company_name": (case.get("company_name") or "").strip(),
+            "ticker": ticker,
+            "label": (case.get("label") or "").strip(),
+            "event_date": (case.get("event_date") or "").strip() or None,
+            "error": None,
+        }
+        # Per-case isolation: one bad company must not fail the whole snapshot.
+        try:
+            cik = _resolve_case_cik(case)
+            facts = get_company_facts(cik)
+            snap = score_issuer_at_date(facts, as_of_date, STRESS_THRESHOLD)
+            row.update({
+                "score": round(snap.score, 1),
+                "stressed": snap.stressed,
+                "has_data": snap.has_data,
+                "period_end": snap.period_end,
+                "ratios": snap.ratios,
+            })
+        except Exception as e:
+            row["error"] = str(e)
+        rows.append(row)
+
+    return {"as_of": req.as_of, "threshold": STRESS_THRESHOLD, "rows": rows}

@@ -2,14 +2,16 @@
 Locate specific footnote sections inside a raw 10-K filing document.
 
 Why this module exists:
-  A 10-K's primary HTML document is huge — often 100k–500k characters. The two
-  sections we care about for credit risk live deep in the financial statements:
+  A 10-K's primary HTML document is huge — often 100k–500k characters. The
+  sections we care about for credit risk live deep inside it:
+    - the MD&A (Item 7 — management tone, liquidity, going-concern language),
     - the long-term-DEBT footnote (maturities, interest, covenants), and
     - the COMMITMENTS AND CONTINGENCIES footnote (litigation, loss provisions).
   Naively sending the first N characters to an LLM (as the old pipeline did with
-  text[:12000]) never reaches them. This module strips the HTML to text and
-  slices out just the relevant section so only a small, on-target excerpt is sent
-  to the LLM.
+  text[:12000]) never reaches any of them — the head of a modern inline-XBRL
+  filing is markup and cover-page boilerplate. This module strips the HTML to
+  text and slices out just the relevant sections so only small, on-target
+  excerpts are sent to the LLM.
 
 Strategy (deterministic, no LLM, no extra dependencies):
   1. Convert the HTML to plain text, preserving line breaks at block boundaries.
@@ -30,7 +32,15 @@ from dataclasses import dataclass
 
 # Max characters returned per section. ~20k chars ≈ 5k tokens — enough to cover a
 # debt or contingencies footnote while keeping the LLM call cheap and bounded.
+# The MD&A gets a larger window: it is a long narrative section and the credit-
+# relevant prose (liquidity, capital resources) sits well past its opening.
+# 40k chars ≈ 10k tokens — still trivial against Haiku's 200k-token context.
 _MAX_SECTION_CHARS = 20_000
+_SECTION_MAX_CHARS: dict[str, int] = {
+    "mdna": 40_000,
+    "debt": 20_000,
+    "contingencies": 20_000,
+}
 
 # Fallback chunking parameters (used only when heading anchoring fails).
 _CHUNK_SIZE = 8_000
@@ -40,11 +50,12 @@ _CHUNK_OVERLAP = 1_000
 @dataclass
 class Section:
     """
-    One located footnote section.
+    One located filing section.
 
     Attributes:
-        name:            "debt" or "contingencies".
-        text:            The extracted plain-text slice (≤ _MAX_SECTION_CHARS).
+        name:            "mdna", "debt", or "contingencies".
+        text:            The extracted plain-text slice (≤ the section's max,
+                         see _SECTION_MAX_CHARS).
         char_start:      Start offset in the stripped full text.
         char_end:        End offset in the stripped full text.
         heading_matched: The heading line that anchored the slice, or None when
@@ -64,6 +75,10 @@ class Section:
 # must win over earlier weaker matches like a "Legal Proceedings" Item-3 stub or a
 # table-of-contents line. Each is matched case-insensitively against heading lines.
 _SECTION_HEADING_PATTERNS: dict[str, list[re.Pattern]] = {
+    "mdna": [
+        re.compile(r"management'?s discussion and analysis", re.IGNORECASE),
+        re.compile(r"^\s*item\s*7[\s.:–—-]", re.IGNORECASE),
+    ],
     "debt": [
         re.compile(r"long[\s-]*term debt", re.IGNORECASE),
         re.compile(r"note\s+\d+\s*[–—:.\-]+.*\bdebt\b", re.IGNORECASE),
@@ -81,6 +96,11 @@ _SECTION_HEADING_PATTERNS: dict[str, list[re.Pattern]] = {
 # Density-scoring pattern for the chunk fallback (no headings found): combines all
 # of a section's keywords into one alternation.
 _SECTION_DENSITY_PATTERNS: dict[str, re.Pattern] = {
+    "mdna": re.compile(
+        r"liquidity|capital resources|going concern|covenant|cash flow|"
+        r"refinanc|material weakness|substantial doubt",
+        re.IGNORECASE,
+    ),
     "debt": re.compile(
         r"long[\s-]*term debt|\bborrowings\b|notes?\s+payable|credit facilit|"
         r"maturit|covenant",
@@ -104,6 +124,11 @@ _MIN_SECTION_BODY = 400
 # debt" / "Commitments and contingencies" resolve to the discussion, not the
 # one-line balance-sheet figure.
 _SECTION_CONTENT_PATTERNS: dict[str, re.Pattern] = {
+    "mdna": re.compile(
+        r"liquidity|capital resources|going concern|covenant|cash flow|"
+        r"refinanc|material weakness|substantial doubt",
+        re.IGNORECASE,
+    ),
     "debt": re.compile(
         r"maturit|covenant|interest rate|due\s+(in|within|on)|"
         r"senior notes|principal amount|redeem|indenture|fixed[\s-]*rate",
@@ -116,14 +141,31 @@ _SECTION_CONTENT_PATTERNS: dict[str, re.Pattern] = {
     ),
 }
 
-# A heading line either starts with a "NOTE n" / "n." prefix (optionally followed
-# by a title) or is a short Title/UPPER-case line. Footnote titles in 10-Ks
-# reliably take one of these shapes. The whole line must be ≤ 90 chars so we don't
-# treat a long body sentence as a heading.
+# A heading line either starts with a "NOTE n" / "n." / "Item n" prefix
+# (optionally followed by a title) or is a short Title/UPPER-case line. Footnote
+# titles in 10-Ks reliably take one of these shapes. The whole line must be short
+# so we don't treat a long body sentence as a heading. "Item N." lines get a
+# longer tail allowance (120 chars) because full Item-7 titles run long, e.g.
+# "Item 7. Management's Discussion and Analysis of Financial Condition and
+# Results of Operations" — the unambiguous "Item N" prefix keeps this safe.
 _HEADING_RE = re.compile(
     r"^\s*(?:(?:NOTE\s+\d+|Note\s+\d+|\d{1,2}\.)[\s.–—:-]*[A-Za-z][^\n]{0,80}"
+    r"|(?:ITEM|Item)\s+\d{1,2}[A-Ba-b]?[\s.–—:-][^\n]{0,120}"
     r"|[A-Z][A-Za-z0-9 ,&/'–—.-]{2,80})\s*$"
 )
+
+# Per-section END patterns. Most sections end at the very next heading (footnotes
+# are heading-to-heading). The MD&A is different: it CONTAINS many subheadings
+# ("Overview", "Results of Operations", "Liquidity and Capital Resources"), so
+# slicing to the next heading would cut it off at its first subheading. Instead
+# it runs until the heading that starts the NEXT Item (7A or 8).
+_SECTION_END_PATTERNS: dict[str, re.Pattern] = {
+    "mdna": re.compile(
+        r"item\s*7a[\s.:–—-]|quantitative and qualitative disclosures|"
+        r"item\s*8[\s.:–—-]|financial statements and supplementary",
+        re.IGNORECASE,
+    ),
+}
 
 # Inline-XBRL wrapper tags (<ix:...>) carry no display text — strip the tags but
 # keep their inner content.
@@ -178,16 +220,32 @@ def _heading_index(text: str) -> list[tuple[int, str]]:
     return headings
 
 
-def _slice_to_next_heading(
-    text: str, headings: list[tuple[int, str]], idx: int
+def _slice_section(
+    text: str,
+    headings: list[tuple[int, str]],
+    idx: int,
+    max_chars: int,
+    end_pattern: re.Pattern | None = None,
 ) -> tuple[int, int]:
-    """Return (start, end) char offsets from heading `idx` to the next heading."""
+    """
+    Return (start, end) char offsets for the section anchored at heading `idx`.
+
+    Without an end_pattern the section runs to the next heading (footnote shape).
+    With one (the MD&A case) it runs to the first SUBSEQUENT heading matching the
+    pattern, skipping over the section's own subheadings.
+    """
     start = headings[idx][0]
-    end = headings[idx + 1][0] if idx + 1 < len(headings) else len(text)
-    # Bound the window so token spend is predictable even if the next heading is
+    if end_pattern is not None:
+        end = len(text)
+        for off, heading in headings[idx + 1:]:
+            if end_pattern.search(heading):
+                end = off
+                break
+    else:
+        end = headings[idx + 1][0] if idx + 1 < len(headings) else len(text)
+    # Bound the window so token spend is predictable even if the end boundary is
     # far away (or absent).
-    end = min(end, start + _MAX_SECTION_CHARS)
-    return start, end
+    return start, min(end, start + max_chars)
 
 
 def _anchor_section(
@@ -195,6 +253,8 @@ def _anchor_section(
     headings: list[tuple[int, str]],
     patterns: list[re.Pattern],
     content: re.Pattern,
+    max_chars: int,
+    end_pattern: re.Pattern | None = None,
 ) -> Section | None:
     """
     Find a section by matching an ordered list of heading regexes, then picking
@@ -216,7 +276,7 @@ def _anchor_section(
         for i, (off, heading) in enumerate(headings):
             if off in seen_offsets or not pattern.search(heading):
                 continue
-            start, end = _slice_to_next_heading(text, headings, i)
+            start, end = _slice_section(text, headings, i, max_chars, end_pattern)
             if end - start < _MIN_SECTION_BODY:
                 continue
             seen_offsets.add(off)
@@ -262,14 +322,20 @@ def _chunk_fallback(text: str, pattern: re.Pattern) -> Section | None:
 
 def locate_sections(filing_html: str) -> dict[str, Section | None]:
     """
-    Locate the debt and contingencies footnotes in a raw filing document.
+    Locate the MD&A, debt, and contingencies sections in a raw filing document.
 
     Args:
         filing_html: The raw filing text/HTML from ingest.get_filing_text().
 
     Returns:
-        {"debt": Section|None, "contingencies": Section|None}. A value is None when
-        neither heading anchoring nor the chunk fallback found the section.
+        {"mdna": Section|None, "debt": Section|None, "contingencies": Section|None}.
+        A value is None when neither heading anchoring nor the chunk fallback
+        found the section.
+
+    Table-of-contents safety: a TOC "Item 7 ..." link line also matches the MD&A
+    heading patterns, but its slice ends at the TOC's own next "Item 7A" line —
+    shorter than _MIN_SECTION_BODY — so it is skipped, and content scoring favors
+    the real section over any other stub.
     """
     text = html_to_text(filing_html)
     headings = _heading_index(text)
@@ -277,7 +343,12 @@ def locate_sections(filing_html: str) -> dict[str, Section | None]:
     out: dict[str, Section | None] = {}
     for name, patterns in _SECTION_HEADING_PATTERNS.items():
         section = _anchor_section(
-            text, headings, patterns, _SECTION_CONTENT_PATTERNS[name]
+            text,
+            headings,
+            patterns,
+            _SECTION_CONTENT_PATTERNS[name],
+            _SECTION_MAX_CHARS.get(name, _MAX_SECTION_CHARS),
+            _SECTION_END_PATTERNS.get(name),
         )
         if section is None:
             section = _chunk_fallback(text, _SECTION_DENSITY_PATTERNS[name])

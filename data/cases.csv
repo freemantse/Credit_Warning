@@ -1,8 +1,29 @@
-ticker,label,event_date,notes
-JCP,distressed,2020-05-15,JCPenney bankruptcy filing
-HTZ,distressed,2020-05-22,Hertz bankruptcy filing
-CHK,distressed,2020-06-28,Chesapeake Energy bankruptcy
-BBBY,distressed,2023-04-23,Bed Bath & Beyond bankruptcy
-AAPL,healthy,,Healthy control
-MSFT,healthy,,Healthy control
-JNJ,healthy,,Healthy control
+case_id,company_name,ticker,cik,label,event_date,notes
+peabody-2016,Peabody Energy,BTU,0001064728,distressed,2016-04-13,Chapter 11 petition; coal downturn
+sunedison-2016,SunEdison,SUNE,0000945436,distressed,2016-04-21,Chapter 11 petition; formerly MEMC Electronic Materials
+linn-2016,Linn Energy,LINE,0001326428,distressed,2016-05-11,Chapter 11 petition; CIK later reused by Roan Resources
+iheart-2018,iHeartMedia,IHRT,0001400891,distressed,2018-03-14,Chapter 11 petition; formerly CC Media Holdings
+sears-2018,Sears Holdings,SHLD,0001310067,distressed,2018-10-15,Chapter 11 petition
+pge-2019,PG&E Corp,PCG,0001004980,distressed,2019-01-29,Chapter 11 petition; wildfire liabilities
+windstream-2019,Windstream Holdings,WIN,0001282266,distressed,2019-02-25,Chapter 11 petition after Aurelius bond ruling
+deanfoods-2019,Dean Foods,DF,0000931336,distressed,2019-11-12,Chapter 11 petition
+whiting-2020,Whiting Petroleum,WLL,0001255474,distressed,2020-04-01,Chapter 11 petition; oil price crash
+frontier-2020,Frontier Communications,FTR,0000020520,distressed,2020-04-14,Chapter 11 petition
+jcpenney-2020,J.C. Penney,JCP,0001166126,distressed,2020-05-15,Chapter 11 petition; now Old COPPER Company
+hertz-2020,Hertz Global Holdings,HTZ,0001657853,distressed,2020-05-22,Chapter 11 petition; COVID travel collapse
+gnc-2020,GNC Holdings,GNC,0001502034,distressed,2020-06-23,Chapter 11 petition
+chesapeake-2020,Chesapeake Energy,CHK,0000895126,distressed,2020-06-28,Chapter 11 petition; now Expand Energy
+mallinckrodt-2020,Mallinckrodt,MNK,0001567892,distressed,2020-10-12,Chapter 11 petition; opioid litigation
+revlon-2022,Revlon,REV,0000887921,distressed,2022-06-15,Chapter 11 petition
+partycity-2023,Party City Holdco,PRTY,0001592058,distressed,2023-01-17,Chapter 11 petition
+bbby-2023,Bed Bath & Beyond,BBBY,0000886158,distressed,2023-04-23,Chapter 11 petition
+yellow-2023,Yellow Corp,YELL,0000716006,distressed,2023-08-06,Chapter 11 petition; formerly YRC Worldwide
+riteaid-2023,Rite Aid,RAD,0000084129,distressed,2023-10-15,Chapter 11 petition
+wework-2023,WeWork,WE,0001813756,distressed,2023-11-06,Chapter 11 petition; XBRL history starts 2021 (SPAC)
+aapl,Apple,AAPL,0000320193,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility
+msft,Microsoft,MSFT,0000789019,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility
+jnj,Johnson & Johnson,JNJ,0000200406,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility
+pg,Procter & Gamble,PG,0000080424,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility
+ko,Coca-Cola,KO,0000021344,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility
+wmt,Walmart,WMT,0000104169,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility
+hd,Home Depot,HD,0000354950,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility

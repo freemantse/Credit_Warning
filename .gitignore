@@ -6,6 +6,7 @@ __pycache__/
 tsconfig.tsbuildinfo
 data/store.db
 data/backtest_report.txt
+data/backtest_results.json
 .env
 .env.local
 

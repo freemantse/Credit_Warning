@@ -31,7 +31,7 @@ from dataclasses import dataclass
 
 import anthropic
 
-from src.llm_review import parse_json_array
+from src.llm_review import Finding, parse_json_array, quote_in_text, review_text
 
 # Same fast/cheap model used for the qualitative review — structured extraction
 # from a short, focused excerpt is well within Haiku's capability.
@@ -218,26 +218,35 @@ def _validate_provision(raw: dict, fallback_source: str) -> LossProvision | None
     )
 
 
+# Max section characters sent per footnote LLM call. The located sections are
+# capped at 20k chars by sections.py; this is the single trim applied here.
+MAX_SECTION_CHARS = 20_000
+
+
 def _extract(
     section_text: str,
     filing_label: str,
     system_prompt: str,
     client: anthropic.Anthropic | None,
-) -> list[dict]:
+) -> tuple[list[dict], str]:
     """
-    Shared LLM call: send the located section to Claude, return the raw JSON array.
+    Shared LLM call: send the located section to Claude.
 
-    Returns [] on any failure (no client text, malformed JSON) so a broken call
-    never blocks the rest of the pipeline.
+    Returns (raw JSON array, the exact excerpt the model saw) — the excerpt is
+    what evidence quotes must be verified against, so a genuine quote can never
+    fail verification because of our own truncation. Returns ([], excerpt) on
+    any failure (empty section, malformed JSON) so a broken call never blocks
+    the rest of the pipeline.
     """
-    if not section_text.strip():
-        return []
+    excerpt = section_text[:MAX_SECTION_CHARS]
+    if not excerpt.strip():
+        return [], excerpt
     if client is None:
         client = anthropic.Anthropic()
 
     user_prompt = (
         f"Filing: {filing_label}\n\n"
-        f"Section text:\n{section_text[:12000]}\n\n"
+        f"Section text:\n{excerpt}\n\n"
         "Return your answer as a JSON array only — no other text."
     )
     message = client.messages.create(
@@ -246,7 +255,7 @@ def _extract(
         system=system_prompt,
         messages=[{"role": "user", "content": user_prompt}],
     )
-    return parse_json_array(message.content[0].text)
+    return parse_json_array(message.content[0].text), excerpt
 
 
 def extract_debt_footnote(
@@ -263,11 +272,12 @@ def extract_debt_footnote(
         client:        Optional pre-created Anthropic client (else built from env).
 
     Returns validated Covenant objects (may be empty). Hallucinated numbers are
-    nulled out; covenants without a quotable basis are dropped entirely.
+    nulled out; covenants without a quotable basis — or whose quote does not
+    actually appear in the section text — are dropped entirely.
     """
-    raw = _extract(section_text, filing_label, COVENANT_PROMPT, client)
+    raw, excerpt = _extract(section_text, filing_label, COVENANT_PROMPT, client)
     out = [_validate_covenant(r, filing_label) for r in raw]
-    return [c for c in out if c is not None]
+    return [c for c in out if c is not None and quote_in_text(c.evidence_quote, excerpt)]
 
 
 def extract_loss_provisions(
@@ -279,45 +289,60 @@ def extract_loss_provisions(
     Extract loss provisions/contingencies from a located contingencies slice.
 
     Same validation contract as extract_debt_footnote: amounts must be quote-backed
-    or they are nulled; items without a quote are dropped.
+    or they are nulled; items without a verifiable quote are dropped.
     """
-    raw = _extract(section_text, filing_label, PROVISION_PROMPT, client)
+    raw, excerpt = _extract(section_text, filing_label, PROVISION_PROMPT, client)
     out = [_validate_provision(r, filing_label) for r in raw]
-    return [p for p in out if p is not None]
+    return [p for p in out if p is not None and quote_in_text(p.evidence_quote, excerpt)]
 
 
-def review_filing_footnotes(
+def review_filing(
     cik: str,
     period: str,
     filings: list[dict],
     client: anthropic.Anthropic | None = None,
-) -> tuple[list[Covenant], list[LossProvision]]:
+) -> tuple[list[Finding], list[Covenant], list[LossProvision]]:
     """
-    End-to-end footnote review for one period's 10-K: fetch → locate → extract.
+    End-to-end LLM review for one period's 10-K: fetch → locate → extract.
 
     Shared by the CLI (track.py) and the API (api/main.py) so the locate-then-LLM
-    flow lives in one place. Imports ingest/sections lazily to avoid pulling the
-    HTTP/parsing stack into modules that only need the dataclasses.
+    flow lives in one place. The filing is fetched once and locate_sections runs
+    once; three extraction passes follow:
+      1. MD&A          → qualitative Findings (llm_review.review_text)
+      2. debt footnote → Covenants
+      3. contingencies → LossProvisions
 
-    Matches the 10-K by fiscal year (period[:4]) — filing dates don't align
-    exactly with period_end. Sends only the LOCATED section slices to the LLM
-    (not the truncated first-12k-chars of the old pipeline), so the debt and
-    contingencies footnotes are actually reached. Returns ([], []) if no matching
-    filing or no sections are found.
+    The MD&A pass runs ONLY on the located Item 7 section. If the section can't
+    be found there is no fallback to the head of the raw HTML — that was the old
+    pipeline's bug (the first chars of an inline-XBRL filing are markup, not
+    MD&A), and a silent off-target review is worse than none.
+
+    The filing is matched to the period via ingest.find_filing_for_period
+    (exact fiscal-period reportDate first), not the old calendar-year heuristic
+    that picked the wrong 10-K for off-calendar fiscal years.
+
+    Imports ingest/sections lazily to avoid pulling the HTTP/parsing stack into
+    modules that only need the dataclasses.
+
+    Returns ([], [], []) if no matching filing or no sections are found.
     """
-    from src.ingest import get_filing_text
+    from src.ingest import find_filing_for_period, get_filing_text
     from src.sections import locate_sections
 
-    matching = [f for f in filings if period[:4] in f["filingDate"]]
-    if not matching:
-        return [], []
+    filing = find_filing_for_period(filings, period)
+    if filing is None:
+        return [], [], []
 
-    filing = matching[0]
     text = get_filing_text(cik, filing["accessionNumber"], filing["primaryDocument"])
     sections = locate_sections(text)
 
+    findings: list[Finding] = []
     covenants: list[Covenant] = []
     provisions: list[LossProvision] = []
+    if sections["mdna"] is not None:
+        findings = review_text(
+            sections["mdna"].text, f"10-K {period}, MD&A", client
+        )
     if sections["debt"] is not None:
         covenants = extract_debt_footnote(
             sections["debt"].text, f"10-K {period}, Debt", client
@@ -326,4 +351,4 @@ def review_filing_footnotes(
         provisions = extract_loss_provisions(
             sections["contingencies"].text, f"10-K {period}, Contingencies", client
         )
-    return covenants, provisions
+    return findings, covenants, provisions
