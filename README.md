@@ -21,7 +21,8 @@ There is a strict division between **deterministic parsing** and **LLM review**:
 - **All numbers** come from deterministic XBRL extraction — every ratio carries its raw
   inputs and source tags so it is auditable.
 - **The LLM never produces numbers or scores** — only qualitative findings with evidence
-  quotes.
+  quotes. Every evidence quote is verified to appear verbatim in the filing section the
+  model was shown; unverifiable findings are dropped.
 - Missing data **fails loud** (`MissingDataError`); defaults are never substituted.
 - The backtest is strictly **point-in-time** — no look-ahead bias.
 
@@ -47,7 +48,8 @@ identifier), never ticker.
 ticker → ingest (resolve CIK, fetch XBRL, cached)
        → extract (compute ratios, with audit trail)
        → store   (bulk insert to Supabase)
-       → optional LLM review (10-K text → qualitative findings + covenants)
+       → optional LLM review (located 10-K MD&A + footnote sections
+                              → quote-verified findings, covenants, provisions)
        → score   (ratios + findings + maturities → 0–100)
        → frontend renders portfolio table + issuer detail
 ```
@@ -122,9 +124,18 @@ python3 -m src.track AAPL
 python3 -m src.track AAPL --no-llm        # skip the LLM pass
 python3 -m src.track AAPL --periods 8     # show 8 most recent annual periods
 
-# Point-in-time backtest over data/cases.csv
-python3 -m src.backtest
+# Point-in-time backtest over data/cases.csv (21 real bankruptcies + 7 healthy controls)
+python3 -m src.backtest                   # run + compare against the frozen baseline
+python3 -m src.backtest --save-baseline   # freeze this run as the new reference
 python3 -m src.backtest --threshold 40    # try a different stress threshold
+python3 -m src.backtest --early-months 12 # stricter early-warning bar
+
+# Outputs: data/backtest_report.txt (human), data/backtest_results.json (per-case
+# score trajectories), data/backtest_baseline.json (frozen reference).
+# Exit codes: 0 = ok, 1 = regression vs baseline (CI-friendly), 2 = harness failure.
+
+# Look up a delisted/bankrupt company's CIK by name
+python3 -m src.ingest --name "Sears Holdings"
 ```
 
 ### Tests
@@ -162,10 +173,15 @@ section location validated/tuned across more filers; broader format coverage
 labeled set to evaluate extraction accuracy; finalized scoring weight; and LLM
 result caching.
 
-**2. Backtesting** — the point-in-time harness exists (`src/backtest.py`) but
-needs a vetted case library (`data/cases.csv`), threshold tuning against
-catch rate / lead time / false positives, a decision on including LLM findings,
-and CI wiring.
+**2. Backtesting** — the eval system is in place: a vetted case library of 21
+bankruptcies (2016–2023) + 7 healthy controls (`data/cases.csv`, keyed on CIK
+so delisted companies resolve), per-case score trajectories
+(`data/backtest_results.json`), and a baseline-regression mode that exits
+nonzero when a change makes the model worse. Current benchmark: **16/21 caught
+(76%), 13/21 with ≥6-month early warning, 0% false positives.** Remaining:
+threshold tuning using the trajectories, quarterly 10-Q periods (lead-time
+resolution is capped at annual filing cadence today), a decision on including
+LLM findings, and wiring `python3 -m src.backtest` into CI.
 
 **3. Broader ingestion (future)** — 8-K event filings, earnings-call
 transcripts, and sell-side reports are planned but not started.

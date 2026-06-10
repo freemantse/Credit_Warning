@@ -10,43 +10,75 @@ What is a point-in-time backtest?
   evaluation date. For EDGAR filings, that means: only use XBRL entries whose
   "filed" date is on or before the evaluation date.
 
-For each case in data/cases.csv:
+For each case in data/cases.csv (case_id, company_name, ticker, cik, label,
+event_date, notes — CIK is the authoritative identifier so delisted companies
+resolve too):
+
   Distressed issuers:
-    Step backward in 90-day increments from the event_date, up to 3 years.
+    Score at the event date itself plus 12 backward 90-day steps (~3 years).
     At each step, score the issuer using only data available at that moment.
-    Record whether the score ever crossed the threshold, and how early.
+    Outcomes:
+      caught    — the score crossed the threshold at some snapshot; lead time
+                  is measured from the EARLIEST such snapshot to the event.
+      missed    — data existed but the score never crossed the threshold.
+      data_gap  — no filings were available at ANY snapshot (counted
+                  separately from "missed" — the model never had a chance).
+      error     — resolution/fetch failed.
 
   Healthy controls:
-    Step backward in 90-day increments from today, up to 3 years.
-    Count how many of those 12 snapshots produced a "stressed" score (false positives).
+    Score 12 quarterly snapshots backward from the case's pinned event_date
+    (pinning the anchor keeps runs reproducible for baseline comparison).
+    Any stressed snapshot is a false positive.
 
-Key output metrics:
-  Catch rate         — % of distressed cases that were flagged before the event
-  Median lead time   — how many months early the model flagged caught cases
-  False-positive rate— % of healthy-issuer quarterly snapshots that were flagged
+Outputs:
+  data/backtest_report.txt    — human-readable scorecard
+  data/backtest_results.json  — machine-readable per-case detail incl. the full
+                                score trajectory (for threshold tuning / jq)
+  data/backtest_baseline.json — frozen reference run (via --save-baseline);
+                                later runs diff against it and exit 1 on
+                                regression, so this can gate CI.
 
 Usage:
-    python -m src.backtest
-    python -m src.backtest --threshold 40   # experiment with a different threshold
+    python -m src.backtest                      # run + compare to baseline
+    python -m src.backtest --save-baseline      # freeze current results
+    python -m src.backtest --threshold 40       # experiment with the threshold
+
+Exit codes: 0 = ok, 1 = regression vs baseline, 2 = harness failure.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import json
 import pathlib
+import statistics
+import sys
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
 
-from src.ingest import get_cik, get_company_facts
-from src.extract import extract_all, debt_maturity_schedule
+from src.ingest import resolve_identifier, get_company_facts
+from src.extract import extract_all, debt_maturity_schedule, RatioResult
+from src.concepts import TAGS
 from src.score import compute_score, STRESS_THRESHOLD
 
 
 # ── File paths ───────────────────────────────────────────────────────────────
-# cases.csv columns: ticker, label ("distressed" or "healthy"), event_date (YYYY-MM-DD)
-CASES_PATH = pathlib.Path(__file__).parent.parent / "data" / "cases.csv"
-REPORT_PATH = pathlib.Path(__file__).parent.parent / "data" / "backtest_report.txt"
+DATA_DIR = pathlib.Path(__file__).parent.parent / "data"
+CASES_PATH = DATA_DIR / "cases.csv"
+REPORT_PATH = DATA_DIR / "backtest_report.txt"
+RESULTS_PATH = DATA_DIR / "backtest_results.json"
+BASELINE_PATH = DATA_DIR / "backtest_baseline.json"
+
+# A case is an "early warning" only if flagged at least this many months
+# before the event. Catching a bankruptcy 2 weeks out is technically a catch,
+# but far too late to act on — this stricter bar is the metric to improve.
+DEFAULT_EARLY_MONTHS = 6.0
+
+# Lead time can wobble between runs by one snapshot step (~3 months) without
+# the model genuinely regressing, so the baseline diff tolerates this much.
+DEFAULT_LEAD_TOLERANCE_MONTHS = 3.0
 
 
 # ── Utility helpers ──────────────────────────────────────────────────────────
@@ -96,31 +128,91 @@ def _filter_periods_point_in_time(facts: dict, eval_date: date) -> list[str]:
     eval_str = eval_date.isoformat()
 
     us_gaap = facts.get("facts", {}).get("us-gaap", {})
+
+    def _valid(entry: dict) -> bool:
+        return (
+            entry.get("form") == "10-K"
+            and bool(entry.get("end"))      # has a period-end date
+            and bool(entry.get("filed"))    # has a filing date
+            and entry["filed"] <= eval_str  # was filed on or before eval_date
+            # A real fiscal period must have ENDED before it was filed. 10-Ks
+            # also carry facts about FUTURE periods (e.g. expected debt
+            # maturities tagged with end dates years ahead) and stray
+            # subsequent-event dates — without this guard the "most recent
+            # period" can be a date with no actual financials, scoring 0.
+            and entry["end"] <= entry["filed"]
+        )
+
+    # ── Primary path: anchor on total_assets ─────────────────────────────────
+    # Same approach as extract._get_available_periods: total assets is reported
+    # exactly once per fiscal year-end in a 10-K, so its 'end' dates ARE the
+    # fiscal year-ends. Scanning all concepts instead would pick up quarterly
+    # comparatives, cover-page dates and subsequent-event facts.
+    anchor_tags = [t.split("/", 1)[1] for t in TAGS["total_assets"]]
     valid_periods: set[str] = set()
 
-    # Scan all concepts and all their entries to find 10-K periods that were
-    # already filed by eval_date. We use a set to avoid counting the same period
-    # multiple times (many concepts repeat the same period_end date).
+    for tag in anchor_tags:
+        concept_data = us_gaap.get(tag)
+        if not concept_data:
+            continue
+        for entries in concept_data.get("units", {}).values():
+            for entry in entries:
+                if _valid(entry):
+                    valid_periods.add(entry["end"])
+
+    if valid_periods:
+        # Return newest-first so callers can take periods[0] as the most recent available.
+        return sorted(valid_periods, reverse=True)
+
+    # ── Fallback path (issuers that don't tag total assets): scan everything,
+    # but require duration entries to span ≥ 350 days so quarterly comparative
+    # periods (~90 days) inside the 10-K are excluded.
     for concept_data in us_gaap.values():
         for entries in concept_data.get("units", {}).values():
             for entry in entries:
-                if (
-                    entry.get("form") == "10-K"
-                    and entry.get("end")       # has a period-end date
-                    and entry.get("filed")     # has a filing date
-                    and entry["filed"] <= eval_str  # was filed on or before eval_date
-                ):
-                    valid_periods.add(entry["end"])
+                if not _valid(entry):
+                    continue
+                start = entry.get("start")
+                if start:
+                    try:
+                        span = date.fromisoformat(entry["end"]) - date.fromisoformat(start)
+                    except ValueError:
+                        continue  # malformed date string — skip this entry
+                    if span.days < 350:
+                        continue
+                valid_periods.add(entry["end"])
 
-    # Return newest-first so callers can take periods[0] as the most recent available.
     return sorted(valid_periods, reverse=True)
+
+
+# ── Point-in-time scoring ────────────────────────────────────────────────────
+
+@dataclass
+class Snapshot:
+    """
+    The result of scoring one issuer at one simulated date.
+
+    has_data distinguishes "the model saw the filings and scored 0" from
+    "no filings existed yet at this date" — conflating the two would let a
+    company with no data count as a healthy-looking miss.
+    """
+    eval_date: date
+    score: float
+    stressed: bool
+    has_data: bool
+    period_end: str | None   # fiscal period the score was computed against
+    missing_ratios: int      # how many of the core ratios could not be computed
+    # Ratio name → value as seen at this point in time (None = not computable).
+    # Captured so the backtest output can show each metric's history per
+    # company, not just the composite score.
+    ratios: dict = field(default_factory=dict)
 
 
 def score_issuer_at_date(
     facts: dict,
     eval_date: date,
     threshold: int,
-) -> tuple[float, bool]:
+) -> Snapshot:
     """
     Score an issuer using ONLY data that was publicly available at eval_date.
 
@@ -135,8 +227,9 @@ def score_issuer_at_date(
         threshold: The stress threshold (usually STRESS_THRESHOLD = 50).
 
     Returns:
-        (score, is_stressed) — e.g. (75.0, True) or (20.0, False)
-        Returns (0.0, False) if no filings were available at eval_date.
+        A Snapshot. When no filings were available at eval_date, the Snapshot
+        has has_data=False (and score 0.0 — but callers must check has_data,
+        not the score, to detect that situation).
     """
     eval_str = eval_date.isoformat()
 
@@ -144,7 +237,8 @@ def score_issuer_at_date(
     periods = _filter_periods_point_in_time(facts, eval_date)
     if not periods:
         # No filings available at this eval_date — cannot assess stress.
-        return 0.0, False
+        return Snapshot(eval_date, 0.0, False, has_data=False,
+                        period_end=None, missing_ratios=0)
 
     # Score against the most recently filed fiscal year-end available at eval_date.
     latest_period = periods[0]
@@ -152,6 +246,7 @@ def score_issuer_at_date(
     # Pass filed_before so extract_all only uses XBRL values from filings
     # that existed at eval_date — enforcing the no-look-ahead rule.
     results = extract_all(facts, latest_period, filed_before=eval_str)
+    missing = sum(1 for r in results.values() if not isinstance(r, RatioResult))
 
     # The maturity wall is XBRL-derived and point-in-time safe (filed_before),
     # so include it. LLM findings and footnote covenants/provisions are NOT used
@@ -159,184 +254,531 @@ def score_issuer_at_date(
     # bounded from filing text).
     maturity = debt_maturity_schedule(facts, latest_period, filed_before=eval_str)
     score_result = compute_score(results, [], maturity)
-    return score_result.score, score_result.score >= threshold
+
+    # Preserve the individual metric values, not just the composite score, so
+    # the eval output can show how each ratio evolved per fiscal year.
+    ratio_values = {
+        name: (r.value if isinstance(r, RatioResult) else None)
+        for name, r in results.items()
+    }
+    ratio_values["maturity_near_term_pct"] = (
+        getattr(maturity, "near_term_pct", None) if maturity else None
+    )
+
+    return Snapshot(eval_date, score_result.score, score_result.score >= threshold,
+                    has_data=True, period_end=latest_period, missing_ratios=missing,
+                    ratios=ratio_values)
+
+
+# ── Case library ─────────────────────────────────────────────────────────────
+
+def load_cases(cases_path: pathlib.Path | str = CASES_PATH) -> list[dict]:
+    """
+    Load the case-library rows from CSV.
+
+    Keys: case_id, company_name, ticker, cik, label, event_date, notes.
+    Rows from the old 4-column schema simply lack the newer keys — callers
+    treat missing keys as blank. Shared by run_backtest and the API endpoints
+    (/api/backtest/cases, /api/backtest/snapshot).
+
+    Raises:
+        FileNotFoundError — if the CSV doesn't exist (fail loud).
+    """
+    cases_path = pathlib.Path(cases_path)
+    if not cases_path.exists():
+        raise FileNotFoundError(f"Case library not found: {cases_path}")
+    with open(cases_path, newline="") as f:
+        return list(csv.DictReader(f))
+
+
+# ── Case resolution ──────────────────────────────────────────────────────────
+
+def _resolve_case_cik(case: dict) -> str:
+    """
+    Resolve a cases.csv row to a zero-padded CIK.
+
+    Prefers the explicit "cik" column — the authoritative identifier, required
+    for delisted/bankrupt companies whose tickers vanished from SEC's current
+    tickers list. Falls back to ticker resolution for rows without a CIK
+    (including rows from the old 4-column schema).
+    """
+    cik = (case.get("cik") or "").strip()
+    if cik:
+        return resolve_identifier(cik)
+    return resolve_identifier(case["ticker"].strip())
+
+
+# ── Per-case evaluation ──────────────────────────────────────────────────────
+
+def _take_snapshots(facts: dict, anchor: date, threshold: int, steps: int) -> list[Snapshot]:
+    """
+    Score at the anchor date and then backward in 90-day increments.
+
+    Returns `steps` snapshots, newest-first. 13 steps from an event date is
+    the anchor plus ~3 years of roughly-quarterly history.
+    """
+    snapshots: list[Snapshot] = []
+    scan = anchor
+    for i in range(steps):
+        if i > 0:
+            # Step back 90 days using ordinal arithmetic (avoids month boundary issues).
+            scan = date.fromordinal(scan.toordinal() - 90)
+        snapshots.append(score_issuer_at_date(facts, scan, threshold))
+    return snapshots
+
+
+def evaluate_distressed_case(facts: dict, event_date: date, threshold: int) -> dict:
+    """
+    Walk a distressed issuer's history and decide caught / missed / data_gap.
+
+    Evaluates at the event date itself (T-0) plus 12 backward 90-day steps,
+    so the trajectory spans ~3 years before the bankruptcy.
+    """
+    snapshots = _take_snapshots(facts, event_date, threshold, steps=13)
+
+    flagged = [s for s in snapshots if s.has_data and s.stressed]
+    had_any_data = any(s.has_data for s in snapshots)
+
+    if flagged:
+        earliest = min(s.eval_date for s in flagged)
+        return {
+            "status": "caught",
+            "earliest_flag_date": earliest,
+            "lead_months": _months_between(earliest, event_date),
+            "trajectory": snapshots,
+        }
+    return {
+        "status": "missed" if had_any_data else "data_gap",
+        "earliest_flag_date": None,
+        "lead_months": None,
+        "trajectory": snapshots,
+    }
+
+
+def evaluate_healthy_case(facts: dict, anchor_date: date, threshold: int) -> dict:
+    """
+    Score a healthy control at 12 quarterly snapshots backward from anchor_date.
+
+    Any stressed snapshot is a false positive. The FP-rate denominator is the
+    number of snapshots that actually had data (periods_evaluated), not a
+    hardcoded 12 — otherwise sparse data would dilute the rate.
+    """
+    snapshots = _take_snapshots(facts, anchor_date, threshold, steps=12)
+
+    evaluated = [s for s in snapshots if s.has_data]
+    fp_count = sum(1 for s in evaluated if s.stressed)
+
+    if not evaluated:
+        status = "data_gap"
+    elif fp_count:
+        status = "false_positive"
+    else:
+        status = "clean"
+    return {
+        "status": status,
+        "fp_count": fp_count,
+        "periods_evaluated": len(evaluated),
+        "trajectory": snapshots,
+    }
+
+
+# ── Scorecard ────────────────────────────────────────────────────────────────
+
+def build_scorecard(case_results: list[dict], threshold: int, early_months: float) -> dict:
+    """
+    Aggregate per-case results into the summary scorecard.
+
+    Denominator rules:
+      - catch_rate is over caught + missed. data_gap and error cases are
+        counted separately — the model never saw data for them, so including
+        them would punish (or flatter) changes that have nothing to do with
+        scoring quality.
+      - fp_rate is over healthy snapshots that actually had data.
+
+    Legacy keys (catch_rate, caught, total_distressed, median_lead_months,
+    fp_rate) are kept intact — api/main.py and the frontend read them.
+    """
+    distressed = [c for c in case_results if c["label"] == "distressed"]
+    healthy = [c for c in case_results if c["label"] == "healthy"]
+
+    caught_cases = [c for c in distressed if c.get("status") == "caught"]
+    missed = sum(1 for c in distressed if c.get("status") == "missed")
+    data_gaps = sum(1 for c in case_results if c.get("status") == "data_gap")
+    errors = sum(1 for c in case_results if c.get("status") == "error")
+
+    caught = len(caught_cases)
+    total_d = caught + missed
+    catch_rate = (caught / total_d * 100) if total_d else 0.0
+
+    lead_times = [c["lead_months"] for c in caught_cases]
+    median_lead = statistics.median(lead_times) if lead_times else 0.0
+    mean_lead = statistics.mean(lead_times) if lead_times else 0.0
+
+    # The stricter bar: caught AND with enough lead time to act on.
+    early_caught = sum(1 for c in caught_cases if c["lead_months"] >= early_months)
+    early_rate = (early_caught / total_d * 100) if total_d else 0.0
+
+    fp_periods = sum(c.get("fp_count", 0) for c in healthy)
+    healthy_periods = sum(c.get("periods_evaluated", 0) for c in healthy)
+    fp_rate = (fp_periods / healthy_periods * 100) if healthy_periods else 0.0
+
+    return {
+        # Legacy keys — consumed by api/main.py and app/backtest/page.tsx.
+        "catch_rate": round(catch_rate, 1),
+        "caught": caught,
+        "total_distressed": total_d,
+        "median_lead_months": round(median_lead, 1),
+        "fp_rate": round(fp_rate, 1),
+        # Additive keys.
+        "missed": missed,
+        "data_gaps": data_gaps,
+        "errors": errors,
+        "mean_lead_months": round(mean_lead, 1),
+        "early_warning_caught": early_caught,
+        "early_warning_rate": round(early_rate, 1),
+        "early_months": early_months,
+        "fp_periods": fp_periods,
+        "healthy_periods_evaluated": healthy_periods,
+        "threshold": threshold,
+    }
+
+
+# ── Baseline comparison ──────────────────────────────────────────────────────
+
+def compare_to_baseline(
+    current: dict,
+    baseline: dict,
+    lead_tolerance_months: float = DEFAULT_LEAD_TOLERANCE_MONTHS,
+) -> dict:
+    """
+    Diff a backtest run against a frozen baseline, case by case.
+
+    Regressions (any one makes the run "regressed", which exits 1 — the CI
+    gate for future model changes):
+      - a case caught in the baseline is now missed / data_gap / error
+      - a caught case's lead time fell by more than lead_tolerance_months
+      - a healthy case produced more false positives than before
+      - a baseline case is missing from the current run
+
+    Improvements (newly caught, longer lead, fewer FPs) are reported but never
+    fail the run. Cases new to the library are listed as neutral.
+    """
+    def _index(results: dict) -> dict[str, dict]:
+        # Old baselines may predate case_id — fall back to ticker as the key.
+        return {(c.get("case_id") or c.get("ticker")): c for c in results["cases"]}
+
+    cur_by_id = _index(current)
+    base_by_id = _index(baseline)
+
+    regressions: list[str] = []
+    improvements: list[str] = []
+    new_cases: list[str] = []
+
+    for case_id, base in base_by_id.items():
+        cur = cur_by_id.get(case_id)
+        if cur is None:
+            regressions.append(f"{case_id}: present in baseline but missing from this run")
+            continue
+
+        if base["label"] == "distressed":
+            base_caught = base.get("status") == "caught" or base.get("caught") is True
+            cur_caught = cur.get("status") == "caught" or cur.get("caught") is True
+            if base_caught and not cur_caught:
+                regressions.append(
+                    f"{case_id}: was caught in baseline, now {cur.get('status', 'missed')}"
+                )
+            elif not base_caught and cur_caught:
+                improvements.append(
+                    f"{case_id}: newly caught ({cur.get('lead_months', 0):.1f} months early)"
+                )
+            elif base_caught and cur_caught:
+                base_lead = base.get("lead_months") or 0
+                cur_lead = cur.get("lead_months") or 0
+                if cur_lead < base_lead - lead_tolerance_months:
+                    regressions.append(
+                        f"{case_id}: lead time fell {base_lead:.1f} → {cur_lead:.1f} months"
+                    )
+                elif cur_lead > base_lead + lead_tolerance_months:
+                    improvements.append(
+                        f"{case_id}: lead time rose {base_lead:.1f} → {cur_lead:.1f} months"
+                    )
+        else:  # healthy
+            base_fp = base.get("fp_count", 0) or 0
+            cur_fp = cur.get("fp_count", 0) or 0
+            if cur_fp > base_fp:
+                regressions.append(f"{case_id}: false positives rose {base_fp} → {cur_fp}")
+            elif cur_fp < base_fp:
+                improvements.append(f"{case_id}: false positives fell {base_fp} → {cur_fp}")
+
+    for case_id in cur_by_id:
+        if case_id not in base_by_id:
+            new_cases.append(f"{case_id}: new case, no baseline yet")
+
+    return {
+        "regressed": bool(regressions),
+        "regressions": regressions,
+        "improvements": improvements,
+        "new_cases": new_cases,
+    }
+
+
+# ── Serialization helpers ────────────────────────────────────────────────────
+
+def _trajectory_dicts(snapshots: list[Snapshot], reference: date) -> list[dict]:
+    """JSON-friendly trajectory, with each point's distance from the event/anchor."""
+    return [
+        {
+            "eval_date": s.eval_date.isoformat(),
+            "months_before_event": round(_months_between(s.eval_date, reference), 1),
+            "score": round(s.score, 1),
+            "stressed": s.stressed,
+            "has_data": s.has_data,
+            "period_end": s.period_end,
+            "missing_ratios": s.missing_ratios,
+            "ratios": s.ratios,
+        }
+        for s in snapshots
+    ]
+
+
+def _trajectory_line(snapshots: list[Snapshot], reference: date) -> str:
+    """Compact one-line trajectory for the text report, oldest-first."""
+    parts = []
+    for s in reversed(snapshots):  # snapshots are newest-first
+        months = _months_between(s.eval_date, reference)
+        score = f"{s.score:.0f}" if s.has_data else "—"
+        parts.append(f"T-{months:.0f}:{score}")
+    return " ".join(parts)
 
 
 # ── Main backtest loop ───────────────────────────────────────────────────────
 
-def run_backtest(threshold: int = STRESS_THRESHOLD) -> dict:
+def run_backtest(
+    threshold: int = STRESS_THRESHOLD,
+    early_months: float = DEFAULT_EARLY_MONTHS,
+    cases_path: pathlib.Path | str = CASES_PATH,
+) -> dict:
     """
-    Run the full backtest over all cases in data/cases.csv.
+    Run the full backtest over the case library.
 
-    For each case:
-      - distressed: walk backward 90 days at a time up to 3 years before the
-        event_date and record whether the stress flag was ever triggered.
-      - healthy: walk backward 90 days at a time for the past 3 years from today
-        and count how many snapshots were falsely flagged as stressed.
-
-    Writes a text report to data/backtest_report.txt and returns a structured
-    dict that the API serves to the backtest page.
+    Writes data/backtest_report.txt (human) and data/backtest_results.json
+    (machine), and returns the same structured dict the JSON contains. The
+    API serves this dict to the backtest page.
     """
-    if not CASES_PATH.exists():
-        raise FileNotFoundError(f"Case library not found: {CASES_PATH}")
+    cases = load_cases(cases_path)
 
-    with open(CASES_PATH, newline="") as f:
-        cases = list(csv.DictReader(f))
-
-    # Accumulate report lines for the text file.
     lines = []
-    lines.append(f"Credit Warning Backtest — threshold={threshold}")
-    lines.append("=" * 70)
+    lines.append(
+        f"Credit Warning Backtest — threshold={threshold}, "
+        f"early-warning ≥ {early_months:g} months"
+    )
+    lines.append("=" * 100)
 
-    # Structured results for the API response.
     cases_output: list[dict] = []
-    # Track per-issuer results for aggregate statistics.
-    distressed_results: list[dict] = []   # {"caught": bool, "lead_months": float}
-    healthy_fp_counts: list[int] = []     # one int per healthy issuer
 
     for case in cases:
-        ticker = case["ticker"].strip()
-        label = case["label"].strip()  # "distressed" or "healthy"
+        ticker = (case.get("ticker") or "").strip()
+        label = (case.get("label") or "").strip()  # "distressed" or "healthy"
+        case_id = (case.get("case_id") or "").strip() or ticker
+        company_name = (case.get("company_name") or "").strip()
         event_date = _parse_date(case.get("event_date", ""))
 
-        print(f"  Processing {ticker} ({label})...", end=" ", flush=True)
+        print(f"  Processing {case_id} ({label})...", end=" ", flush=True)
+
+        # Identity fields shared by every outcome below.
+        out: dict[str, Any] = {
+            "case_id": case_id,
+            "company_name": company_name,
+            "ticker": ticker,
+            "cik": (case.get("cik") or "").strip() or None,
+            "label": label,
+            "event_date": str(event_date) if event_date else None,
+            "error": None,
+        }
 
         # Fetch EDGAR data. If this fails, record the error and skip to next case.
         try:
-            cik = get_cik(ticker)
+            cik = _resolve_case_cik(case)
+            out["cik"] = cik
             facts = get_company_facts(cik)
         except Exception as e:
-            err = f"ERROR: {e}"
-            print(err)
-            lines.append(f"{ticker:<8} {label:<12} {err}")
-            cases_output.append({"ticker": ticker, "label": label, "error": str(e)})
+            out.update({"status": "error", "error": str(e)})
+            cases_output.append(out)
+            line = f"{case_id:<18} {ticker:<6} {label:<11} ERROR: {e}"
+            print(f"ERROR: {e}")
+            lines.append(line)
             continue
 
         # ── Distressed case ──────────────────────────────────────────────────
         if label == "distressed" and event_date:
-            first_flag_date: date | None = None
-            scan_date = event_date
-
-            # Walk backward in 90-day steps (roughly quarterly snapshots).
-            # 12 steps × 90 days ≈ 3 years of history before the event date.
-            # The explicit date boundary check guards against edge cases where
-            # a leap year or different month causes the 12th step to overshoot.
-            for _ in range(12):
-                # Step back 90 days using ordinal arithmetic (avoids month boundary issues).
-                scan_date = date.fromordinal(scan_date.toordinal() - 90)
-
-                # Stop if we've gone back more than 3 years before the event.
-                if scan_date < date(event_date.year - 3, event_date.month, event_date.day):
-                    break
-
-                score, stressed = score_issuer_at_date(facts, scan_date, threshold)
-
-                if stressed:
-                    # Keep overwriting first_flag_date so that at the end of the loop
-                    # it holds the EARLIEST date the flag was triggered.
-                    # (We scan newest-to-oldest, so the last assignment = earliest date.)
-                    first_flag_date = scan_date
-
-            if first_flag_date:
-                # The model flagged this issuer before the event. Compute lead time.
-                lead = _months_between(first_flag_date, event_date)
-                line = f"{ticker:<8} {label:<12} FLAGGED {lead:.0f} months early ✓  (event: {event_date})"
-                distressed_results.append({"caught": True, "lead_months": lead})
-                cases_output.append({
-                    "ticker": ticker, "label": label,
-                    "event_date": str(event_date), "caught": True,
-                    "lead_months": round(lead, 1), "error": None,
-                })
+            result = evaluate_distressed_case(facts, event_date, threshold)
+            caught = result["status"] == "caught"
+            lead = result["lead_months"]
+            early = bool(caught and lead >= early_months)
+            out.update({
+                "status": result["status"],
+                "caught": caught,
+                "lead_months": round(lead, 1) if lead is not None else 0,
+                "earliest_flag_date": (
+                    result["earliest_flag_date"].isoformat()
+                    if result["earliest_flag_date"] else None
+                ),
+                "early_warning": early,
+                "trajectory": _trajectory_dicts(result["trajectory"], event_date),
+            })
+            if caught:
+                marker = "✓ EARLY" if early else "✓ (late)"
+                line = (f"{case_id:<18} {ticker:<6} {label:<11} "
+                        f"CAUGHT {lead:.1f} months early {marker}  (event: {event_date})")
+            elif result["status"] == "missed":
+                line = (f"{case_id:<18} {ticker:<6} {label:<11} "
+                        f"MISSED — never reached threshold ✗  (event: {event_date})")
             else:
-                # The model never crossed the threshold in the 3 years before the event.
-                line = f"{ticker:<8} {label:<12} MISSED — never reached threshold ✗  (event: {event_date})"
-                distressed_results.append({"caught": False, "lead_months": 0})
-                cases_output.append({
-                    "ticker": ticker, "label": label,
-                    "event_date": str(event_date), "caught": False,
-                    "lead_months": 0, "error": None,
-                })
+                line = (f"{case_id:<18} {ticker:<6} {label:<11} "
+                        f"DATA-GAP — no filings in window  (event: {event_date})")
+            lines.append(line)
+            lines.append(f"{'':<18} score: {_trajectory_line(result['trajectory'], event_date)}")
 
         # ── Healthy control case ─────────────────────────────────────────────
         elif label == "healthy":
-            fp_count = 0  # count of false-positive quarters for this issuer
-            eval_date_h = date.today()
-
-            # Score the healthy issuer at 12 quarterly snapshots going back 3 years.
-            # Any snapshot that produces a "stressed" score is a false positive.
-            for _ in range(12):
-                score, stressed = score_issuer_at_date(facts, eval_date_h, threshold)
-                if stressed:
-                    fp_count += 1
-                # Step back 90 days for the next snapshot.
-                eval_date_h = date.fromordinal(eval_date_h.toordinal() - 90)
-
-            line = f"{ticker:<8} {label:<12} {fp_count} false-positive periods"
-            healthy_fp_counts.append(fp_count)
-            cases_output.append({"ticker": ticker, "label": label, "fp_count": fp_count, "error": None})
+            # Pinned anchor (from cases.csv) keeps runs reproducible; without
+            # one we fall back to today, which makes baselines drift over time.
+            anchor = event_date or date.today()
+            if not event_date:
+                print("(no pinned anchor date — results not baseline-stable)", end=" ")
+            result = evaluate_healthy_case(facts, anchor, threshold)
+            out.update({
+                "status": result["status"],
+                "fp_count": result["fp_count"],
+                "periods_evaluated": result["periods_evaluated"],
+                "trajectory": _trajectory_dicts(result["trajectory"], anchor),
+            })
+            line = (f"{case_id:<18} {ticker:<6} {label:<11} "
+                    f"{result['fp_count']} false-positive periods "
+                    f"({result['periods_evaluated']} evaluated)")
+            lines.append(line)
 
         else:
             # Distressed case with no event_date — can't measure lead time.
-            line = f"{ticker:<8} {label:<12} SKIPPED (no event_date for distressed)"
-            cases_output.append({"ticker": ticker, "label": label, "error": "no event_date"})
+            out.update({"status": "error", "error": "no event_date"})
+            line = f"{case_id:<18} {ticker:<6} {label:<11} SKIPPED (no event_date for distressed)"
+            lines.append(line)
 
-        print(line.split("  ")[-1] if "  " in line else "done")
-        lines.append(line)
+        cases_output.append(out)
+        print(line.split(maxsplit=3)[-1] if len(line.split()) > 3 else "done")
 
-    lines.append("-" * 70)
+    lines.append("-" * 100)
 
-    # ── Aggregate statistics ─────────────────────────────────────────────────
+    # ── Aggregate scorecard ──────────────────────────────────────────────────
+    summary = build_scorecard(cases_output, threshold, early_months)
 
-    caught = sum(1 for r in distressed_results if r["caught"])
-    total_d = len(distressed_results)
-    # Avoid ZeroDivisionError if no distressed cases were processed.
-    catch_rate = (caught / total_d * 100) if total_d else 0
+    summary_lines = [
+        (f"Caught {summary['caught']}/{summary['total_distressed']} "
+         f"({summary['catch_rate']:.0f}%)  |  "
+         f"early-warning (≥{early_months:g} mo): {summary['early_warning_caught']}"
+         f"/{summary['total_distressed']} ({summary['early_warning_rate']:.0f}%)  |  "
+         f"median lead {summary['median_lead_months']:.1f} mo  |  "
+         f"mean lead {summary['mean_lead_months']:.1f} mo"),
+        (f"False positives: {summary['fp_periods']}/{summary['healthy_periods_evaluated']} "
+         f"healthy periods ({summary['fp_rate']:.1f}%)  |  "
+         f"data gaps: {summary['data_gaps']}  |  errors: {summary['errors']}"),
+    ]
+    lines.extend(summary_lines)
 
-    # Median lead time: sort all caught lead times and take the middle value.
-    lead_times = [r["lead_months"] for r in distressed_results if r["caught"]]
-    median_lead = sorted(lead_times)[len(lead_times) // 2] if lead_times else 0
-
-    total_fp = sum(healthy_fp_counts)
-    # Each healthy issuer contributes 12 snapshots to the denominator.
-    total_healthy_periods = len(healthy_fp_counts) * 12
-    fp_rate = (total_fp / total_healthy_periods * 100) if total_healthy_periods else 0
-
-    summary = (
-        f"Catch rate: {catch_rate:.0f}% ({caught}/{total_d})  |  "
-        f"Median lead: {median_lead:.0f} months  |  "
-        f"False-positive rate: {fp_rate:.1f}%"
-    )
-    lines.append(summary)
-
-    # Write the full human-readable report to disk for offline review.
-    report_text = "\n".join(lines)
-    REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    REPORT_PATH.write_text(report_text)
-
-    print(f"\n{summary}")
-    print(f"Report written to {REPORT_PATH}")
-
-    return {
+    results = {
+        "run_at": datetime.now().isoformat(timespec="seconds"),
+        "threshold": threshold,
+        "early_months": early_months,
         "cases": cases_output,
-        "summary": {
-            "catch_rate": round(catch_rate, 1),
-            "caught": caught,
-            "total_distressed": total_d,
-            "median_lead_months": round(median_lead, 1),
-            "fp_rate": round(fp_rate, 1),
-        },
+        "summary": summary,
     }
+
+    # Write both outputs. The JSON is the canonical artifact (baseline diffs,
+    # jq analysis); the text report is for humans.
+    REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    REPORT_PATH.write_text("\n".join(lines))
+    RESULTS_PATH.write_text(json.dumps(results, indent=2))
+
+    print()
+    for s in summary_lines:
+        print(s)
+    print(f"Report written to {REPORT_PATH}")
+    print(f"Results JSON written to {RESULTS_PATH}")
+
+    return results
 
 
 # ── CLI entry point ──────────────────────────────────────────────────────────
-# Usage:  python -m src.backtest
-#         python -m src.backtest --threshold 40
 
-if __name__ == "__main__":
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the credit warning backtest")
     parser.add_argument(
         "--threshold", type=int, default=STRESS_THRESHOLD,
-        help=f"Stress score threshold (default: {STRESS_THRESHOLD})"
+        help=f"Stress score threshold (default: {STRESS_THRESHOLD})")
+    parser.add_argument(
+        "--early-months", type=float, default=DEFAULT_EARLY_MONTHS,
+        help=f"Lead time required to count as an early warning "
+             f"(default: {DEFAULT_EARLY_MONTHS:g} months)")
+    parser.add_argument(
+        "--cases", type=pathlib.Path, default=CASES_PATH,
+        help=f"Case library CSV (default: {CASES_PATH})")
+    parser.add_argument(
+        "--save-baseline", action="store_true",
+        help=f"Save this run as the baseline ({BASELINE_PATH}) instead of comparing")
+    parser.add_argument(
+        "--baseline", type=pathlib.Path, default=BASELINE_PATH,
+        help=f"Baseline JSON to compare against (default: {BASELINE_PATH})")
+    parser.add_argument(
+        "--no-compare", action="store_true",
+        help="Skip the baseline comparison")
+    parser.add_argument(
+        "--lead-tolerance", type=float, default=DEFAULT_LEAD_TOLERANCE_MONTHS,
+        help=f"Months of lead-time slack before a drop counts as a regression "
+             f"(default: {DEFAULT_LEAD_TOLERANCE_MONTHS:g})")
+    args = parser.parse_args(argv)
+
+    results = run_backtest(
+        threshold=args.threshold,
+        early_months=args.early_months,
+        cases_path=args.cases,
     )
-    args = parser.parse_args()
-    run_backtest(threshold=args.threshold)
+
+    if args.save_baseline:
+        args.baseline.write_text(json.dumps(results, indent=2))
+        print(f"Baseline saved to {args.baseline}")
+        return 0
+
+    if args.no_compare:
+        return 0
+
+    if not args.baseline.exists():
+        print(f"No baseline at {args.baseline} — run with --save-baseline to create one.")
+        return 0
+
+    baseline = json.loads(args.baseline.read_text())
+    diff = compare_to_baseline(results, baseline, args.lead_tolerance)
+
+    diff_lines = ["", f"Baseline comparison (vs {args.baseline.name}):"]
+    for r in diff["regressions"]:
+        diff_lines.append(f"  REGRESSION  {r}")
+    for i in diff["improvements"]:
+        diff_lines.append(f"  improvement {i}")
+    for n in diff["new_cases"]:
+        diff_lines.append(f"  new         {n}")
+    if not (diff["regressions"] or diff["improvements"] or diff["new_cases"]):
+        diff_lines.append("  no changes vs baseline")
+
+    diff_text = "\n".join(diff_lines)
+    print(diff_text)
+    # Append the diff to the text report so it's part of the artifact.
+    REPORT_PATH.write_text(REPORT_PATH.read_text() + "\n" + diff_text + "\n")
+
+    return 1 if diff["regressed"] else 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception as e:  # harness failure (missing cases file, etc.)
+        print(f"backtest harness failure: {e}", file=sys.stderr)
+        sys.exit(2)

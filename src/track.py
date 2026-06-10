@@ -32,7 +32,6 @@ from src.ingest import (
     get_company_facts,
     get_company_info,
     get_filings,
-    get_filing_text,
     resolve_identifier,
 )
 from src.extract import (
@@ -193,27 +192,16 @@ def track(ticker: str, n_periods: int | None = None, include_llm: bool = True) -
         provisions = []
         if include_llm:
             try:
-                # Step 4c: Locate and review the period's 10-K. The MD&A pass uses
-                # the first 12 000 chars; the footnote pass locates the debt and
-                # contingencies sections deep in the document (which the 12k slice
-                # never reaches) and extracts covenants + loss provisions.
+                # Step 4c: Review the period's 10-K. review_filing fetches the
+                # filing once, locates the MD&A / debt / contingencies sections,
+                # and runs the three LLM passes on the located slices only.
                 filings = get_filings(cik, ["10-K"])
-                matching = [f for f in filings if period[:4] in f["filingDate"]]
 
-                if matching:
-                    filing = matching[0]  # use the first (most recent) match for this year
-                    text = get_filing_text(
-                        cik, filing["accessionNumber"], filing["primaryDocument"]
-                    )
-
-                    from src.llm_review import review_text
-                    findings = review_text(text[:12000], f"10-K {period}")
-                    save_findings(cik, period, findings)
-
-                    from src.footnote_review import review_filing_footnotes
-                    covenants, provisions = review_filing_footnotes(cik, period, filings)
-                    save_covenants(cik, period, covenants)
-                    save_loss_provisions(cik, period, provisions)
+                from src.footnote_review import review_filing
+                findings, covenants, provisions = review_filing(cik, period, filings)
+                save_findings(cik, period, findings)
+                save_covenants(cik, period, covenants)
+                save_loss_provisions(cik, period, provisions)
 
             except Exception as e:
                 # LLM review is best-effort — ratio data is already saved.

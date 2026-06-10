@@ -131,33 +131,121 @@ export interface BacktestStatus {
   running: boolean
   result: BacktestResult | null  // populated when the task completes successfully
   error: string | null           // populated if the task threw an exception
+  saved?: boolean                // true when result was loaded from a previous run on disk
+}
+
+/**
+ * One point-in-time scoring snapshot in a case's backtest trajectory.
+ * Snapshots are ordered newest-first (T-0 first, then back in ~90-day steps).
+ */
+export interface TrajectoryPoint {
+  eval_date: string            // the simulated "today" the score was computed at
+  months_before_event: number  // distance from the event/anchor date, e.g. 35.5
+  score: number                // 0–100 stress score at this snapshot
+  stressed: boolean            // score ≥ threshold at this snapshot
+  has_data: boolean            // false = no filings existed yet at this date
+  period_end: string | null    // fiscal period the score was computed against
+  missing_ratios: number       // core ratios that couldn't be computed
+  // Per-metric values as seen at this snapshot (null = not computable then).
+  // Keys: leverage, interest_coverage, free_cash_flow, fcf_margin,
+  // ebitda_margin, liquidity, maturity_near_term_pct.
+  ratios?: Record<string, number | null>
 }
 
 /**
  * One row in the backtest results table.
  * The label field determines which columns are relevant:
- *   "distressed" → event_date, caught, lead_months
- *   "healthy"    → fp_count
+ *   "distressed" → event_date, status, caught, lead_months, early_warning
+ *   "healthy"    → fp_count, periods_evaluated
  */
 export interface BacktestCase {
   ticker: string
   label: string                // "distressed" or "healthy"
+  case_id?: string             // stable slug, e.g. "hertz-2020"
+  company_name?: string        // display name, e.g. "Hertz Global Holdings"
+  cik?: string | null
+  // "caught" | "missed" | "data_gap" | "clean" | "false_positive" | "error"
+  status?: string
   event_date?: string          // ISO date of the credit event (distressed only)
   caught?: boolean             // true if the model flagged it before the event
   lead_months?: number         // months from first flag to event (distressed + caught)
+  earliest_flag_date?: string | null  // first snapshot that crossed the threshold
+  early_warning?: boolean      // caught with lead_months ≥ early_months
   fp_count?: number            // count of false-positive quarters (healthy only)
+  periods_evaluated?: number   // healthy snapshots that actually had data
+  trajectory?: TrajectoryPoint[]  // full point-in-time score history
   error: string | null         // non-null if EDGAR fetch or scoring failed
 }
 
 export interface BacktestResult {
+  run_at?: string               // ISO timestamp of the run
+  threshold?: number            // stress threshold the run used
+  early_months?: number         // early-warning cutoff the run used
   cases: BacktestCase[]
   summary: {
     catch_rate: number          // percentage of distressed cases that were caught
     caught: number              // absolute count of caught cases
-    total_distressed: number    // total distressed cases evaluated
+    total_distressed: number    // caught + missed (data gaps / errors excluded)
     median_lead_months: number  // median months of advance warning for caught cases
     fp_rate: number             // false-positive rate across all healthy control periods
+    // Additive fields (present from the scorecard rework onward).
+    missed?: number
+    data_gaps?: number          // cases with no filings in the whole window
+    errors?: number             // cases that failed to resolve/fetch
+    mean_lead_months?: number
+    early_warning_caught?: number  // caught with lead ≥ early_months
+    early_warning_rate?: number    // … as % of total_distressed
+    early_months?: number
+    fp_periods?: number
+    healthy_periods_evaluated?: number
+    threshold?: number
   }
+}
+
+
+/**
+ * One row of the backtest case library (data/cases.csv) — identity only,
+ * no run results. Served by GET /api/backtest/cases.
+ */
+export interface BacktestCaseInfo {
+  case_id: string
+  company_name: string
+  ticker: string
+  cik: string
+  label: string                // "distressed" or "healthy"
+  event_date: string           // Chapter 11 petition date / pinned anchor for controls
+  notes: string
+}
+
+export interface CaseLibrary {
+  total: number
+  distressed: number
+  healthy: number
+  cases: BacktestCaseInfo[]
+}
+
+/**
+ * One company scored point-in-time at a user-chosen as-of date.
+ * Returned by POST /api/backtest/snapshot.
+ */
+export interface SnapshotRow {
+  case_id: string
+  company_name: string
+  ticker: string
+  label: string
+  event_date: string | null
+  score?: number
+  stressed?: boolean
+  has_data?: boolean           // false = the company had no filings yet at that date
+  period_end?: string | null   // fiscal year the score was computed against
+  ratios?: Record<string, number | null>
+  error: string | null
+}
+
+export interface SnapshotResult {
+  as_of: string                // the filed-before cutoff that was applied
+  threshold: number
+  rows: SnapshotRow[]
 }
 
 
@@ -246,6 +334,31 @@ export async function startBacktest(): Promise<void> {
 export async function fetchBacktestStatus(): Promise<BacktestStatus> {
   const res = await fetch('/api/backtest/status')
   if (!res.ok) throw new Error('Failed to fetch backtest status')
+  return res.json()
+}
+
+/** Fetch the backtest case library (which companies are tested, with counts). */
+export async function fetchBacktestCases(): Promise<CaseLibrary> {
+  const res = await fetch('/api/backtest/cases')
+  if (!res.ok) throw new Error('Failed to fetch backtest case library')
+  return res.json()
+}
+
+/**
+ * Score every backtest company point-in-time as of a chosen date — only
+ * filings with filed ≤ asOf are used. Synchronous on the server; takes a few
+ * seconds with a warm EDGAR cache (longer on the first ever call).
+ */
+export async function fetchSnapshot(asOf: string): Promise<SnapshotResult> {
+  const res = await fetch('/api/backtest/snapshot', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ as_of: asOf }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Unknown error' }))
+    throw new Error(err.detail || 'Failed to compute snapshot')
+  }
   return res.json()
 }
 
