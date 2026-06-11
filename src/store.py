@@ -47,8 +47,10 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
 from supabase import Client, create_client
 
 from src.extract import RatioResult, MissingRatio
@@ -82,6 +84,13 @@ def _client() -> Client:
     global _cached_client
     if _cached_client is not None:
         return _cached_client
+
+    # Load .env.local (gitignored) so CLI entry points — scripts.seed_cases, the
+    # backtest, track — pick up Supabase creds without each calling load_dotenv.
+    # Mirrors the explicit load in api/main.py and is idempotent: load_dotenv does
+    # NOT override env vars already set (e.g. Vercel's platform env), and silently
+    # no-ops when the file is absent.
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env.local")
 
     url = os.environ.get("SUPABASE_URL")
     # Accept either key name for backward compatibility with older .env.local files.
@@ -166,6 +175,111 @@ def _companies_map(ciks: list[str]) -> dict[str, dict]:
         return {}
     res = _client().table("companies").select("*").in_("cik", ciks).execute()
     return {row["cik"]: row for row in res.data}
+
+
+# ── Case library (backtest roster) ───────────────────────────────────────────
+# The `cases` table is the editable roster the point-in-time backtest evaluates
+# (migrated from data/cases.csv). list_cases returns CSV-compatible dicts so the
+# backtest and /api/backtest/cases stay unchanged.
+
+# The canonical case columns, in the order the CSV used.
+_CASE_COLUMNS = ("case_id", "company_name", "ticker", "cik", "label", "event_date", "notes")
+
+
+def _case_row(row: dict[str, Any]) -> dict[str, Any]:
+    """
+    Shape one DB row into the CSV-compatible dict (every value a string, never
+    None) that csv.DictReader produced — the invariant load_cases relies on.
+    """
+    return {col: (row.get(col) or "") for col in _CASE_COLUMNS}
+
+
+def list_cases(**_) -> list[dict[str, Any]]:
+    """
+    Return every backtest case as a CSV-compatible dict (keys: case_id,
+    company_name, ticker, cik, label, event_date, notes — all strings).
+
+    Sorted by label then case_id so the order is stable across runs.
+    """
+    res = (
+        _client()
+        .table("cases")
+        .select(",".join(_CASE_COLUMNS))
+        .order("label")
+        .order("case_id")
+        .execute()
+    )
+    return [_case_row(row) for row in res.data]
+
+
+def get_case(case_id: str, **_) -> dict[str, Any] | None:
+    """Return one case row (CSV-shaped) or None — used to 409 on a duplicate slug."""
+    res = (
+        _client()
+        .table("cases")
+        .select(",".join(_CASE_COLUMNS))
+        .eq("case_id", case_id)
+        .limit(1)
+        .execute()
+    )
+    return _case_row(res.data[0]) if res.data else None
+
+
+def add_case(row: dict[str, Any], **_) -> dict[str, Any]:
+    """
+    Insert (upsert on case_id) one case row; returns it in CSV-compatible shape.
+
+    Upsert-on-case_id keeps the seed script and re-adds idempotent. The caller
+    (API) resolves the CIK/name and generates the case_id; cik is zero-padded
+    here defensively.
+    """
+    record = {col: (row.get(col) or "") for col in _CASE_COLUMNS}
+    record["cik"] = record["cik"].zfill(10)
+    _client().table("cases").upsert(record).execute()
+    return record
+
+
+def delete_case(case_id: str, **_) -> bool:
+    """
+    Hard-delete one case by case_id. Returns True if a row existed (so the API
+    can 404 an unknown case_id). Checks existence first to stay correct
+    regardless of whether the client returns the deleted rows.
+    """
+    existed = get_case(case_id) is not None
+    _client().table("cases").delete().eq("case_id", case_id).execute()
+    return existed
+
+
+# ── Scoring config ───────────────────────────────────────────────────────────
+# A single active stress-score parameter set (one row, id='active'). Absent row
+# → src.score.DEFAULT_CONFIG (reproduces the original hard-coded behavior).
+
+def get_score_config(**_) -> dict[str, Any]:
+    """Return the active score-config dict, or DEFAULT_CONFIG when no row exists."""
+    res = (
+        _client()
+        .table("score_config")
+        .select("config")
+        .eq("id", "active")
+        .limit(1)
+        .execute()
+    )
+    if res.data and res.data[0].get("config"):
+        return res.data[0]["config"]
+    from src.score import DEFAULT_CONFIG  # lazy import avoids any import-order coupling
+    return DEFAULT_CONFIG
+
+
+def save_score_config(cfg: dict[str, Any], **_) -> None:
+    """Upsert the single active score-config row with `cfg`."""
+    from datetime import datetime, timezone
+    _client().table("score_config").upsert({
+        "id": "active",
+        "config": cfg,
+        # DEFAULT NOW() only fires on insert, so set updated_at explicitly so it
+        # refreshes on every apply.
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }).execute()
 
 
 # ── Write operations ─────────────────────────────────────────────────────────

@@ -4,6 +4,7 @@ import pytest
 from datetime import date
 
 from src.backtest import (
+    DEFAULT_STEPS,
     _filter_periods_point_in_time,
     _resolve_case_cik,
     load_cases,
@@ -181,8 +182,8 @@ def test_distressed_case_data_gap():
     result = evaluate_distressed_case(facts, event_date=date(2020, 6, 1), threshold=50)
     assert result["status"] == "data_gap"
     assert result["lead_months"] is None
-    # T-0 plus 12 backward steps
-    assert len(result["trajectory"]) == 13
+    # Anchor (T-0) plus DEFAULT_STEPS-1 backward steps.
+    assert len(result["trajectory"]) == DEFAULT_STEPS
 
 
 def test_healthy_case_counts_evaluated_periods():
@@ -191,9 +192,9 @@ def test_healthy_case_counts_evaluated_periods():
     )
     assert result["status"] == "clean"
     assert result["fp_count"] == 0
-    # Not all 12 snapshots had data (filings start Feb 2023), so the
-    # denominator must be the evaluated count, not 12.
-    assert 0 < result["periods_evaluated"] < 12
+    # Not all snapshots had data (filings start Feb 2023), so the denominator
+    # must be the evaluated count, not the full step count.
+    assert 0 < result["periods_evaluated"] < DEFAULT_STEPS
 
 
 # ── Scorecard math ───────────────────────────────────────────────────────────

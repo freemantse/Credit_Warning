@@ -186,6 +186,8 @@ export interface BacktestResult {
   run_at?: string               // ISO timestamp of the run
   threshold?: number            // stress threshold the run used
   early_months?: number         // early-warning cutoff the run used
+  steps?: number                // point-in-time snapshots per case (~90 days apart)
+  config?: ScoreConfig          // scoring parameters this run was scored with (provenance)
   cases: BacktestCase[]
   summary: {
     catch_rate: number          // percentage of distressed cases that were caught
@@ -209,8 +211,8 @@ export interface BacktestResult {
 
 
 /**
- * One row of the backtest case library (data/cases.csv) — identity only,
- * no run results. Served by GET /api/backtest/cases.
+ * One row of the backtest case library (Supabase `cases` table) — identity only,
+ * no run results. Served by GET /api/backtest/cases and returned by POST /api/cases.
  */
 export interface BacktestCaseInfo {
   case_id: string
@@ -229,30 +231,48 @@ export interface CaseLibrary {
   cases: BacktestCaseInfo[]
 }
 
+/** Payload for POST /api/cases — add a case to the backtest library. */
+export interface AddCasePayload {
+  identifier: string            // ticker (e.g. "BTU") or CIK
+  label: 'distressed' | 'healthy'
+  event_date?: string           // "YYYY-MM-DD"; required for distressed
+  notes?: string
+  case_id?: string              // optional explicit slug; auto-generated when omitted
+}
+
 /**
- * One company scored point-in-time at a user-chosen as-of date.
- * Returned by POST /api/backtest/snapshot.
+ * One quantitative scoring rule: max points (weight) plus the ramp endpoints.
+ * The ramp awards 0 pts at `healthy`, rising linearly to `weight` at `severe`.
  */
-export interface SnapshotRow {
-  case_id: string
-  company_name: string
-  ticker: string
-  label: string
-  event_date: string | null
-  score?: number
-  stressed?: boolean
-  has_data?: boolean           // false = the company had no filings yet at that date
-  period_end?: string | null   // fiscal year the score was computed against
-  ratios?: Record<string, number | null>
-  error: string | null
+export interface ScoreRule {
+  weight: number
+  healthy: number
+  severe: number
 }
 
-export interface SnapshotResult {
-  as_of: string                // the filed-before cutoff that was applied
+/**
+ * The full set of tunable stress-score parameters. Mirrors src/score.py's
+ * DEFAULT_CONFIG. `rules` is keyed by the breakdown keys (e.g. "leverage>5x").
+ */
+export interface ScoreConfig {
+  rules: Record<string, ScoreRule>
+  ebitda_override: Record<string, number>   // points forced when EBITDA ≤ 0
+  llm: {
+    high_severity_per: number; high_severity_cap: number
+    covenant_per: number; covenant_cap: number
+    provision_per: number; provision_cap: number
+    combined_cap: number
+  }
+  score_cap: number
+  escalation: { min_severe: number; severe_frac: number; floor: number }
   threshold: number
-  rows: SnapshotRow[]
 }
 
+/** Response from GET /api/score-config: the applied config + the built-in defaults. */
+export interface ScoreConfigResponse {
+  active: ScoreConfig
+  defaults: ScoreConfig
+}
 
 // ── API fetch functions ───────────────────────────────────────────────────────
 // Each function throws an Error on non-OK responses so calling code can catch
@@ -363,9 +383,23 @@ export async function fetchLlmReviewStatus(ticker: string): Promise<LlmReviewSta
  * Kick off the backtest as a server-side background task.
  * Returns immediately — poll fetchBacktestStatus() to watch for completion.
  * Throws if a backtest is already running (409 Conflict).
+ *
+ * `steps` sets the point-in-time history depth (snapshots per case, ~90 days
+ * apart). Omitted → the server's default. The server clamps it to a safe range.
+ *
+ * `config` TESTS the backtest with a draft scoring parameter set WITHOUT applying
+ * it to the live portfolio (transient — not persisted). Omitted → the active
+ * applied config, so the backtest matches the dashboard.
  */
-export async function startBacktest(): Promise<void> {
-  const res = await fetch('/api/backtest', { method: 'POST' })
+export async function startBacktest(steps?: number, config?: ScoreConfig): Promise<void> {
+  const body: { steps?: number; config?: ScoreConfig } = {}
+  if (steps != null) body.steps = steps
+  if (config != null) body.config = config
+  const res = await fetch('/api/backtest', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: 'Unknown error' }))
     throw new Error(err.detail || 'Failed to start backtest')
@@ -390,19 +424,55 @@ export async function fetchBacktestCases(): Promise<CaseLibrary> {
 }
 
 /**
- * Score every backtest company point-in-time as of a chosen date — only
- * filings with filed ≤ asOf are used. Synchronous on the server; takes a few
- * seconds with a warm EDGAR cache (longer on the first ever call).
+ * Add a case to the backtest library. The backend resolves the ticker/CIK to a
+ * canonical CIK + name via EDGAR, so the returned row carries the resolved
+ * identity. Throws on a bad ticker (404), missing event_date for distressed
+ * (400), or a duplicate case_id (409).
  */
-export async function fetchSnapshot(asOf: string): Promise<SnapshotResult> {
-  const res = await fetch('/api/backtest/snapshot', {
+export async function addCase(payload: AddCasePayload): Promise<BacktestCaseInfo> {
+  const res = await fetch('/api/cases', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ as_of: asOf }),
+    body: JSON.stringify(payload),
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: 'Unknown error' }))
-    throw new Error(err.detail || 'Failed to compute snapshot')
+    throw new Error(err.detail || 'Failed to add case')
+  }
+  return res.json()
+}
+
+/** Remove a case from the backtest library by case_id. */
+export async function deleteCase(caseId: string): Promise<void> {
+  const res = await fetch(`/api/cases/${encodeURIComponent(caseId)}`, { method: 'DELETE' })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Unknown error' }))
+    throw new Error(err.detail || 'Failed to delete case')
+  }
+}
+
+/** Fetch the active (applied) scoring parameters plus the built-in defaults. */
+export async function fetchScoreConfig(): Promise<ScoreConfigResponse> {
+  const res = await fetch('/api/score-config')
+  if (!res.ok) throw new Error('Failed to fetch scoring parameters')
+  return res.json()
+}
+
+/**
+ * Apply scoring parameters to the live portfolio (the "Apply to portfolio"
+ * action): validates and persists them as the active config. After this, the
+ * portfolio dashboard and detail pages recompute scores with these parameters.
+ * Throws with the validation message on a bad config (400).
+ */
+export async function saveScoreConfig(config: ScoreConfig): Promise<{ active: ScoreConfig }> {
+  const res = await fetch('/api/score-config', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ config }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Unknown error' }))
+    throw new Error(err.detail || 'Failed to apply scoring parameters')
   }
   return res.json()
 }

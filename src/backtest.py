@@ -1,15 +1,6 @@
 """
 Point-in-time backtest harness.
 
-What is a point-in-time backtest?
-  A naive backtest would use all available data to score an issuer, then check
-  whether it would have been flagged before a known credit event. This suffers
-  from "look-ahead bias" — using information that wasn't available at the time.
-
-  A point-in-time backtest only uses data that was publicly available at each
-  evaluation date. For EDGAR filings, that means: only use XBRL entries whose
-  "filed" date is on or before the evaluation date.
-
 For each case in data/cases.csv (case_id, company_name, ticker, cik, label,
 event_date, notes — CIK is the authoritative identifier so delisted companies
 resolve too):
@@ -61,7 +52,7 @@ from typing import Any
 from src.ingest import resolve_identifier, get_company_facts
 from src.extract import extract_all, debt_maturity_schedule, RatioResult
 from src.concepts import TAGS
-from src.score import compute_score, STRESS_THRESHOLD
+from src.score import compute_score, STRESS_THRESHOLD, ScoreConfig, DEFAULT
 
 
 # ── File paths ───────────────────────────────────────────────────────────────
@@ -79,6 +70,11 @@ DEFAULT_EARLY_MONTHS = 6.0
 # Lead time can wobble between runs by one snapshot step (~3 months) without
 # the model genuinely regressing, so the baseline diff tolerates this much.
 DEFAULT_LEAD_TOLERANCE_MONTHS = 3.0
+
+# Number of point-in-time snapshots per case (anchor + steps-1 backward 90-day
+# steps). 40 × 90 days ≈ 9.9 years of roughly-quarterly history. Configurable
+# via run_backtest(steps=…), the --steps CLI flag, and the API request body.
+DEFAULT_STEPS = 40
 
 
 # ── Utility helpers ──────────────────────────────────────────────────────────
@@ -212,6 +208,8 @@ def score_issuer_at_date(
     facts: dict,
     eval_date: date,
     threshold: int,
+    *,
+    config: ScoreConfig = DEFAULT,
 ) -> Snapshot:
     """
     Score an issuer using ONLY data that was publicly available at eval_date.
@@ -253,7 +251,7 @@ def score_issuer_at_date(
     # in the backtest (too slow, non-deterministic, and not cleanly point-in-time
     # bounded from filing text).
     maturity = debt_maturity_schedule(facts, latest_period, filed_before=eval_str)
-    score_result = compute_score(results, [], maturity)
+    score_result = compute_score(results, [], maturity, config=config)
 
     # Preserve the individual metric values, not just the composite score, so
     # the eval output can show how each ratio evolved per fiscal year.
@@ -274,17 +272,38 @@ def score_issuer_at_date(
 
 def load_cases(cases_path: pathlib.Path | str = CASES_PATH) -> list[dict]:
     """
-    Load the case-library rows from CSV.
+    Load the case-library rows.
 
-    Keys: case_id, company_name, ticker, cik, label, event_date, notes.
-    Rows from the old 4-column schema simply lack the newer keys — callers
-    treat missing keys as blank. Shared by run_backtest and the API endpoints
-    (/api/backtest/cases, /api/backtest/snapshot).
+    When called with the DEFAULT path, the primary source is the Supabase `cases`
+    table (so the roster is editable from the UI), falling back to the CSV when
+    Supabase is unavailable (no credentials, a connection error, or an empty /
+    not-yet-seeded table) — this keeps the CLI backtest runnable offline/in CI.
+
+    When called with an EXPLICIT path (e.g. the `--cases somefile.csv` flag, or a
+    test fixture), that CSV is read directly and Supabase is bypassed.
+
+    Keys: case_id, company_name, ticker, cik, label, event_date, notes (all
+    strings). Shared by run_backtest and the /api/backtest/cases endpoint.
 
     Raises:
-        FileNotFoundError — if the CSV doesn't exist (fail loud).
+        FileNotFoundError — when the chosen CSV is missing (fail loud, same as
+        before): always for an explicit path, or for the default path only when
+        Supabase is also unavailable.
     """
     cases_path = pathlib.Path(cases_path)
+    explicit = cases_path != CASES_PATH
+
+    if not explicit:
+        try:
+            from src.store import list_cases as _list_cases  # lazy: don't require Supabase at import
+            cases = _list_cases()
+            if cases:
+                return cases
+            # Empty table (fresh DB, pre-seed) → fall through to the CSV.
+        except Exception:
+            # Supabase not configured / unreachable → fall back to the CSV.
+            pass
+
     if not cases_path.exists():
         raise FileNotFoundError(f"Case library not found: {cases_path}")
     with open(cases_path, newline="") as f:
@@ -310,12 +329,20 @@ def _resolve_case_cik(case: dict) -> str:
 
 # ── Per-case evaluation ──────────────────────────────────────────────────────
 
-def _take_snapshots(facts: dict, anchor: date, threshold: int, steps: int) -> list[Snapshot]:
+def _take_snapshots(
+    facts: dict,
+    anchor: date,
+    threshold: int,
+    steps: int,
+    *,
+    config: ScoreConfig = DEFAULT,
+) -> list[Snapshot]:
     """
     Score at the anchor date and then backward in 90-day increments.
 
-    Returns `steps` snapshots, newest-first. 13 steps from an event date is
-    the anchor plus ~3 years of roughly-quarterly history.
+    Returns `steps` snapshots, newest-first. 40 steps from an event date is the
+    anchor plus ~10 years of roughly-quarterly history; the expanded case card
+    collapses this to one column per fiscal year.
     """
     snapshots: list[Snapshot] = []
     scan = anchor
@@ -323,18 +350,21 @@ def _take_snapshots(facts: dict, anchor: date, threshold: int, steps: int) -> li
         if i > 0:
             # Step back 90 days using ordinal arithmetic (avoids month boundary issues).
             scan = date.fromordinal(scan.toordinal() - 90)
-        snapshots.append(score_issuer_at_date(facts, scan, threshold))
+        snapshots.append(score_issuer_at_date(facts, scan, threshold, config=config))
     return snapshots
 
 
-def evaluate_distressed_case(facts: dict, event_date: date, threshold: int) -> dict:
+def evaluate_distressed_case(
+    facts: dict, event_date: date, threshold: int, steps: int = DEFAULT_STEPS,
+    *, config: ScoreConfig = DEFAULT,
+) -> dict:
     """
     Walk a distressed issuer's history and decide caught / missed / data_gap.
 
-    Evaluates at the event date itself (T-0) plus 12 backward 90-day steps,
-    so the trajectory spans ~3 years before the bankruptcy.
+    Evaluates at the event date itself (T-0) plus steps-1 backward 90-day steps,
+    so the trajectory spans ~(steps × 90 days) before the bankruptcy.
     """
-    snapshots = _take_snapshots(facts, event_date, threshold, steps=13)
+    snapshots = _take_snapshots(facts, event_date, threshold, steps=steps, config=config)
 
     flagged = [s for s in snapshots if s.has_data and s.stressed]
     had_any_data = any(s.has_data for s in snapshots)
@@ -355,15 +385,18 @@ def evaluate_distressed_case(facts: dict, event_date: date, threshold: int) -> d
     }
 
 
-def evaluate_healthy_case(facts: dict, anchor_date: date, threshold: int) -> dict:
+def evaluate_healthy_case(
+    facts: dict, anchor_date: date, threshold: int, steps: int = DEFAULT_STEPS,
+    *, config: ScoreConfig = DEFAULT,
+) -> dict:
     """
-    Score a healthy control at 12 quarterly snapshots backward from anchor_date.
+    Score a healthy control at `steps` quarterly snapshots backward from anchor_date.
 
     Any stressed snapshot is a false positive. The FP-rate denominator is the
-    number of snapshots that actually had data (periods_evaluated), not a
-    hardcoded 12 — otherwise sparse data would dilute the rate.
+    number of snapshots that actually had data (periods_evaluated), not the
+    snapshot count — otherwise sparse data would dilute the rate.
     """
-    snapshots = _take_snapshots(facts, anchor_date, threshold, steps=12)
+    snapshots = _take_snapshots(facts, anchor_date, threshold, steps=steps, config=config)
 
     evaluated = [s for s in snapshots if s.has_data]
     fp_count = sum(1 for s in evaluated if s.stressed)
@@ -554,23 +587,36 @@ def _trajectory_line(snapshots: list[Snapshot], reference: date) -> str:
 # ── Main backtest loop ───────────────────────────────────────────────────────
 
 def run_backtest(
-    threshold: int = STRESS_THRESHOLD,
+    threshold: int | None = None,
     early_months: float = DEFAULT_EARLY_MONTHS,
     cases_path: pathlib.Path | str = CASES_PATH,
+    steps: int = DEFAULT_STEPS,
+    *,
+    config: ScoreConfig = DEFAULT,
 ) -> dict:
     """
     Run the full backtest over the case library.
+
+    `steps` is the number of point-in-time snapshots per case (anchor + steps-1
+    backward 90-day steps), so the trajectory spans ~(steps × 90 days).
+
+    `config` is the stress-score parameter set (weights, ramp thresholds, caps).
+    `threshold` defaults to config.threshold; pass it explicitly (e.g. the CLI
+    --threshold flag) to override just the stressed cutoff.
 
     Writes data/backtest_report.txt (human) and data/backtest_results.json
     (machine), and returns the same structured dict the JSON contains. The
     API serves this dict to the backtest page.
     """
+    if threshold is None:
+        threshold = config.threshold
     cases = load_cases(cases_path)
 
     lines = []
     lines.append(
         f"Credit Warning Backtest — threshold={threshold}, "
-        f"early-warning ≥ {early_months:g} months"
+        f"early-warning ≥ {early_months:g} months, "
+        f"steps={steps} (~{steps * 90 / 365.25:.1f}y)"
     )
     lines.append("=" * 100)
 
@@ -611,7 +657,7 @@ def run_backtest(
 
         # ── Distressed case ──────────────────────────────────────────────────
         if label == "distressed" and event_date:
-            result = evaluate_distressed_case(facts, event_date, threshold)
+            result = evaluate_distressed_case(facts, event_date, threshold, steps, config=config)
             caught = result["status"] == "caught"
             lead = result["lead_months"]
             early = bool(caught and lead >= early_months)
@@ -646,7 +692,7 @@ def run_backtest(
             anchor = event_date or date.today()
             if not event_date:
                 print("(no pinned anchor date — results not baseline-stable)", end=" ")
-            result = evaluate_healthy_case(facts, anchor, threshold)
+            result = evaluate_healthy_case(facts, anchor, threshold, steps, config=config)
             out.update({
                 "status": result["status"],
                 "fp_count": result["fp_count"],
@@ -689,6 +735,9 @@ def run_backtest(
         "run_at": datetime.now().isoformat(timespec="seconds"),
         "threshold": threshold,
         "early_months": early_months,
+        "steps": steps,
+        # Provenance: which scoring parameters produced this run.
+        "config": config.to_dict(),
         "cases": cases_output,
         "summary": summary,
     }
@@ -720,6 +769,10 @@ def main(argv: list[str] | None = None) -> int:
         help=f"Lead time required to count as an early warning "
              f"(default: {DEFAULT_EARLY_MONTHS:g} months)")
     parser.add_argument(
+        "--steps", type=int, default=DEFAULT_STEPS,
+        help=f"Point-in-time snapshots per case, ~90 days apart "
+             f"(default: {DEFAULT_STEPS}, ≈ {DEFAULT_STEPS * 90 / 365.25:.1f} years)")
+    parser.add_argument(
         "--cases", type=pathlib.Path, default=CASES_PATH,
         help=f"Case library CSV (default: {CASES_PATH})")
     parser.add_argument(
@@ -741,6 +794,7 @@ def main(argv: list[str] | None = None) -> int:
         threshold=args.threshold,
         early_months=args.early_months,
         cases_path=args.cases,
+        steps=args.steps,
     )
 
     if args.save_baseline:
