@@ -12,11 +12,15 @@ How the module fits into the system:
   score.py   →  compute_score(results, findings)  →  ScoreResult
 
 Ratios computed:
-  leverage          = net_debt / EBITDA
-  interest_coverage = EBITDA / interest_expense
-  free_cash_flow    = operating_cashflow - capex
-  fcf_margin        = free_cash_flow / revenue
-  liquidity         = cash / short_term_debt
+  leverage              = net_debt / EBITDA
+  interest_coverage     = EBITDA / interest_expense
+  free_cash_flow        = operating_cashflow - capex
+  fcf_margin            = free_cash_flow / revenue
+  ebitda_margin         = EBITDA / revenue
+  liquidity             = cash / short_term_debt
+  cash_flow_to_debt     = operating_cashflow / gross_debt   (FFO/Debt proxy)
+  debt_to_assets        = gross_debt / total_assets         (gearing)
+  current_ratio         = current_assets / current_liabilities
 """
 
 from __future__ import annotations
@@ -194,6 +198,38 @@ def net_debt(facts: dict, period_end: str, filed_before: str | None = None) -> t
     )
 
 
+def gross_debt(facts: dict, period_end: str, filed_before: str | None = None) -> tuple[float, dict, dict]:
+    """
+    Compute gross debt = total_debt + short_term_debt for a given period.
+
+    Unlike net_debt (which nets out cash and uses long-term debt only), gross debt
+    is the full interest-bearing obligation — the denominator credit analysts use
+    for cash-flow-to-debt (FFO/Debt proxy) and debt-to-assets (gearing).
+
+    total_debt (typically the long-term figure) is required and raises if missing.
+    short_term_debt is OPTIONAL: many issuers legitimately carry none, so when it
+    can't be resolved we treat it as 0 and record that 0 explicitly in the inputs
+    (with no source tag) — keeping the audit trail honest rather than silently
+    dropping the ratio.
+
+    Returns:
+        (gross_debt_value, inputs_dict, source_tags_dict)
+    """
+    debt, debt_tag = _resolve(facts, "total_debt", period_end, filed_before)
+    try:
+        st_debt, st_tag = _resolve(facts, "short_term_debt", period_end, filed_before)
+    except MissingDataError:
+        # No short-term-debt tag for this filer/period — treat as zero (recorded so
+        # the source-audit panel shows it was considered, not skipped).
+        st_debt, st_tag = 0.0, None
+    value = debt + st_debt
+    inputs = {"total_debt": debt, "short_term_debt": st_debt}
+    tags = {"total_debt": debt_tag}
+    if st_tag is not None:
+        tags["short_term_debt"] = st_tag
+    return value, inputs, tags
+
+
 # ── Public ratio functions ───────────────────────────────────────────────────
 #
 # Each function takes the same three parameters (facts, period_end, filed_before)
@@ -207,7 +243,7 @@ def leverage(facts: dict, period_end: str, filed_before: str | None = None) -> R
     Interpretation:
       < 3×  — typical investment-grade issuer
       3–5×  — watch territory (elevated but manageable)
-      > 5×  — stress rule triggers (+25 pts to the stress score)
+      > 5×  — stress; the leverage rule ramps toward its full penalty (see score.py)
 
     The dict-merge pattern {**nd_inputs, **ebit_inputs} combines the raw inputs
     from both net_debt and ebitda into a single flat dict for the audit trail.
@@ -239,7 +275,7 @@ def interest_coverage(facts: dict, period_end: str, filed_before: str | None = N
     Interpretation:
       > 4×  — comfortable — EBITDA covers interest many times over
       2–4×  — watch territory
-      < 2×  — stress rule triggers (+25 pts to the stress score)
+      < 2×  — stress; the coverage rule ramps toward its full penalty (see score.py)
 
     Raises MissingDataError if interest expense is zero (company has no
     interest-bearing debt, making the ratio undefined/meaningless).
@@ -265,7 +301,7 @@ def free_cash_flow(facts: dict, period_end: str, filed_before: str | None = None
 
     FCF measures how much real cash the company generates after maintaining/expanding
     its asset base. Negative FCF means the company spent more cash on operations
-    and investment than it brought in — a stress signal (+20 pts).
+    and investment than it brought in — a stress signal (scored via FCF margin in score.py).
 
     Note: EDGAR reports capex (PaymentsToAcquirePropertyPlantAndEquipment) as a
     POSITIVE outflow number, so we subtract it from OCF.
@@ -352,8 +388,8 @@ def liquidity(facts: dict, period_end: str, filed_before: str | None = None) -> 
 
     Interpretation:
       > 1×  — cash exceeds near-term debt (healthy)
-      < 1×  — stress rule triggers (+20 pts); company may need to refinance
-               or draw on credit lines to meet maturities
+      < 1×  — stress; the liquidity rule ramps toward its full penalty (see score.py);
+               company may need to refinance or draw on credit lines to meet maturities
 
     Raises MissingDataError if short-term debt is zero — not necessarily bad,
     it just means the ratio is undefined (no short-term debt to cover).
@@ -370,6 +406,96 @@ def liquidity(facts: dict, period_end: str, filed_before: str | None = None) -> 
         value=cash / st_debt,
         inputs={"cash": cash, "short_term_debt": st_debt},
         source_tags={"cash": cash_tag, "short_term_debt": st_tag},
+        period_end=period_end,
+    )
+
+
+def cash_flow_to_debt(facts: dict, period_end: str, filed_before: str | None = None) -> RatioResult:
+    """
+    Cash flow to debt = operating_cashflow / gross_debt.
+
+    A proxy for the rating agencies' FFO/Debt — the single most predictive distress
+    ratio in the academic literature (Beaver 1966, Jooste 2007). Measures how much
+    of the company's debt it could repay from one year of operating cash flow.
+
+    Interpretation (anchored to S&P's FFO/Debt financial-risk bands):
+      >= 30% — investment-grade cash-flow adequacy (Intermediate or better)
+      20–30% — speculative (~BB)
+      < 10%  — highly leveraged / distress (stress rule maxes out)
+
+    Higher is healthier. Raises MissingDataError if gross debt is zero (no debt to
+    measure against — the ratio is undefined, not a stress signal).
+    """
+    ocf, ocf_tag = _resolve(facts, "operating_cashflow", period_end, filed_before)
+    gd, gd_inputs, gd_tags = gross_debt(facts, period_end, filed_before)
+
+    if gd == 0:
+        raise MissingDataError(f"Gross debt is zero for {period_end}, cannot compute cash flow to debt")
+
+    return RatioResult(
+        name="cash_flow_to_debt",
+        value=ocf / gd,
+        inputs={"operating_cashflow": ocf, **gd_inputs},
+        source_tags={"operating_cashflow": ocf_tag, **gd_tags},
+        period_end=period_end,
+    )
+
+
+def debt_to_assets(facts: dict, period_end: str, filed_before: str | None = None) -> RatioResult:
+    """
+    Debt to assets = gross_debt / total_assets.
+
+    Capital-structure leverage (gearing): the share of the asset base funded by
+    interest-bearing debt. Complements net-debt/EBITDA by anchoring leverage to the
+    balance sheet rather than earnings (so it stays meaningful when EBITDA is volatile).
+
+    Interpretation:
+      <= 40% — conservatively geared
+      40–65% — rising leverage
+      >= 65% — heavily debt-funded; distress models flag the 0.6–0.7 band (rule maxes out)
+
+    Higher is worse. Raises MissingDataError if total assets is zero.
+    """
+    gd, gd_inputs, gd_tags = gross_debt(facts, period_end, filed_before)
+    assets, assets_tag = _resolve(facts, "total_assets", period_end, filed_before)
+
+    if assets == 0:
+        raise MissingDataError(f"Total assets is zero for {period_end}, cannot compute debt to assets")
+
+    return RatioResult(
+        name="debt_to_assets",
+        value=gd / assets,
+        inputs={**gd_inputs, "total_assets": assets},
+        source_tags={**gd_tags, "total_assets": assets_tag},
+        period_end=period_end,
+    )
+
+
+def current_ratio(facts: dict, period_end: str, filed_before: str | None = None) -> RatioResult:
+    """
+    Current ratio = current_assets / current_liabilities.
+
+    The classic working-capital liquidity test: can the company cover obligations
+    due within a year from assets convertible to cash within a year?
+
+    Interpretation:
+      >= 1.5× — comfortable working-capital cushion
+      ~1.0×  — can just cover current liabilities (already meaningful stress)
+      < 0.75× — acute working-capital deficit; <0.6× is used in distress classification
+
+    Lower is worse. Raises MissingDataError if current liabilities is zero.
+    """
+    ca, ca_tag = _resolve(facts, "current_assets", period_end, filed_before)
+    cl, cl_tag = _resolve(facts, "current_liabilities", period_end, filed_before)
+
+    if cl == 0:
+        raise MissingDataError(f"Current liabilities is zero for {period_end}, current ratio undefined")
+
+    return RatioResult(
+        name="current_ratio",
+        value=ca / cl,
+        inputs={"current_assets": ca, "current_liabilities": cl},
+        source_tags={"current_assets": ca_tag, "current_liabilities": cl_tag},
         period_end=period_end,
     )
 
@@ -427,7 +553,10 @@ def debt_maturity_schedule(
 
 # This list drives extract_all(). Adding a new ratio function here is all
 # that's needed to include it in every batch extraction run.
-_RATIO_FUNCTIONS = [leverage, interest_coverage, free_cash_flow, fcf_margin, ebitda_margin, liquidity]
+_RATIO_FUNCTIONS = [
+    leverage, interest_coverage, free_cash_flow, fcf_margin, ebitda_margin, liquidity,
+    cash_flow_to_debt, debt_to_assets, current_ratio,
+]
 
 
 # Maps each ratio name → the ordered list of input concept keys (keys into
@@ -435,12 +564,15 @@ _RATIO_FUNCTIONS = [leverage, interest_coverage, free_cash_flow, fcf_margin, ebi
 # raw input is missing when a ratio can't be computed. Field names equal the concept
 # keys, matching the input names the ratio functions put in RatioResult.inputs.
 RATIO_INPUTS: dict[str, list[str]] = {
-    "leverage":          ["total_debt", "cash", "operating_income", "depreciation"],
-    "interest_coverage": ["operating_income", "depreciation", "interest_expense"],
-    "free_cash_flow":    ["operating_cashflow", "capex"],
-    "fcf_margin":        ["operating_cashflow", "capex", "revenue"],
-    "ebitda_margin":     ["operating_income", "depreciation", "revenue"],
-    "liquidity":         ["cash", "short_term_debt"],
+    "leverage":              ["total_debt", "cash", "operating_income", "depreciation"],
+    "interest_coverage":     ["operating_income", "depreciation", "interest_expense"],
+    "free_cash_flow":        ["operating_cashflow", "capex"],
+    "fcf_margin":            ["operating_cashflow", "capex", "revenue"],
+    "ebitda_margin":         ["operating_income", "depreciation", "revenue"],
+    "liquidity":             ["cash", "short_term_debt"],
+    "cash_flow_to_debt":     ["operating_cashflow", "total_debt", "short_term_debt"],
+    "debt_to_assets":        ["total_debt", "short_term_debt", "total_assets"],
+    "current_ratio":         ["current_assets", "current_liabilities"],
 }
 
 
@@ -492,7 +624,7 @@ def extract_all(
     filed_before: str | None = None,
 ) -> dict[str, RatioResult | MissingRatio]:
     """
-    Run all five ratio functions for one (company, period) combination.
+    Run every ratio function in _RATIO_FUNCTIONS for one (company, period) combination.
 
     Design decision — never raises, records misses:
       If one ratio can't be computed (e.g. missing depreciation tag), the others

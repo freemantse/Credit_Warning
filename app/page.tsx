@@ -269,20 +269,46 @@ export default function Dashboard() {
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            {/* w-full keeps the overview within the viewport (no horizontal scroll).
+                The many ratio columns use tight px-2 padding so all of them fit;
+                overflow-x-auto remains only as a safety net on very narrow screens. */}
+            <table className="w-full table-fixed text-sm">
+              {/* Fixed column widths keep the table balanced: the 8 ratio columns are
+                  equal-width regardless of how long each heading is, instead of each
+                  column sizing itself to its content. */}
+              <colgroup>
+                <col className="w-[10%]" />  {/* Ticker */}
+                <col className="w-[7%]" />   {/* Latest Period */}
+                <col className="w-[8.25%]" />{/* EBITDA Margin */}
+                <col className="w-[8.25%]" />{/* Leverage */}
+                <col className="w-[8.25%]" />{/* Interest Coverage */}
+                <col className="w-[8.25%]" />{/* FCF */}
+                <col className="w-[8.25%]" />{/* Liquidity */}
+                <col className="w-[8.25%]" />{/* Cash Flow / Debt */}
+                <col className="w-[8.25%]" />{/* Current Ratio */}
+                <col className="w-[8.25%]" />{/* Debt / Assets */}
+                <col className="w-[4%]" />   {/* Score */}
+                <col className="w-[7%]" />   {/* Status */}
+                <col className="w-[6%]" />   {/* Remove */}
+              </colgroup>
               <thead>
-                <tr className="bg-gray-50 text-xs font-medium text-slate-500 uppercase tracking-wide">
-                  <th className="px-6 py-3 text-left">Ticker</th>
-                  <th className="px-4 py-3 text-left">Latest Period</th>
-                  <th className="px-4 py-3 text-right">EBITDA Margin</th>
-                  <th className="px-4 py-3 text-right">Leverage</th>
-                  <th className="px-4 py-3 text-right">Interest Coverage</th>
-                  <th className="px-4 py-3 text-right">FCF</th>
-                  <th className="px-4 py-3 text-right">Liquidity</th>
-                  <th className="px-4 py-3 text-center">Score</th>
-                  <th className="px-4 py-3 text-center">Status</th>
+                {/* Bottom-align headers so single-line and wrapped (two-line) headings
+                    share the same baseline — keeps the header row visually even. */}
+                <tr className="bg-gray-50 text-xs font-medium text-slate-500 uppercase tracking-wide [&>th]:align-bottom">
+                  <th className="px-4 py-3 text-left">Ticker</th>
+                  <th className="px-2 py-3 text-left">Latest Period</th>
+                  <th className="px-2 py-3 text-right">EBITDA Margin</th>
+                  <th className="px-2 py-3 text-right">Leverage</th>
+                  <th className="px-2 py-3 text-right">Interest Coverage</th>
+                  <th className="px-2 py-3 text-right">FCF</th>
+                  <th className="px-2 py-3 text-right">Liquidity</th>
+                  <th className="px-2 py-3 text-right">Cash Flow / Debt</th>
+                  <th className="px-2 py-3 text-right">Current Ratio</th>
+                  <th className="px-2 py-3 text-right">Debt / Assets</th>
+                  <th className="px-2 py-3 text-center">Score</th>
+                  <th className="px-2 py-3 text-center">Status</th>
                   {/* Remove button column, no header */}
-                  <th className="px-6 py-3"></th>
+                  <th className="px-4 py-3"></th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
@@ -293,70 +319,69 @@ export default function Dashboard() {
                   return (
                   <tr key={iss.cik} className="hover:bg-gray-50 transition-colors">
 
-                    {/* Ticker cell: links to the full issuer detail page + shows period count. */}
-                    <td className="px-6 py-4">
-                      {iss.ticker ? (
+                    {/* Ticker cell: links to the full issuer detail page + shows period count.
+                        Ticker and name share a `group` wrapper so hovering either one
+                        turns both of them blue together. */}
+                    <td className="px-4 py-4">
+                      <div className="group">
+                        {/* Ticker — or the CIK as a fallback for delisted issuers
+                            that have no current ticker. */}
                         <Link
                           href={href}
-                          className="font-bold text-slate-800 hover:text-blue-600 font-mono"
+                          className="font-bold text-slate-800 group-hover:text-blue-600 transition-colors font-mono"
                         >
-                          {iss.ticker}
+                          {iss.ticker || iss.cik}
                         </Link>
-                      ) : (
-                        // No ticker (delisted) — show the CIK as the monospace identifier.
-                        <Link
-                          href={href}
-                          className="font-bold text-slate-800 hover:text-blue-600 font-mono"
-                        >
-                          {iss.cik}
-                        </Link>
-                      )}
-                      {/* Company name beneath — also a link, so issuers without a
-                          ticker (delisted) remain reachable via their name. */}
-                      {iss.name && (
-                        <Link
-                          href={href}
-                          className="block text-xs text-slate-600 hover:text-blue-600 mt-0.5 max-w-[16rem] truncate"
-                          title={iss.name}
-                        >
-                          {iss.name}
-                        </Link>
-                      )}
+                        {/* Company name beneath — also a link, so issuers without a
+                            ticker (delisted) remain reachable via their name. */}
+                        {iss.name && (
+                          <Link
+                            href={href}
+                            className="block text-xs text-slate-600 group-hover:text-blue-600 transition-colors mt-0.5 truncate"
+                            title={iss.name}
+                          >
+                            {iss.name}
+                          </Link>
+                        )}
+                      </div>
                       <div className="text-xs text-slate-400 mt-0.5">{iss.period_count} periods</div>
                     </td>
 
                     {/* Most recent fiscal year-end date in monospace for alignment. */}
-                    <td className="px-4 py-4 text-slate-500 font-mono text-xs">
+                    <td className="px-2 py-4 text-slate-500 font-mono text-xs whitespace-nowrap">
                       {iss.latest_period ?? '—'}
                     </td>
 
                     {/* Ratio cells use fmtRatio() which adds the × suffix and handles nulls. */}
-                    <td className="px-4 py-4 text-right font-mono text-slate-700">{fmtPct(iss.ebitda_margin)}</td>
-                    <td className="px-4 py-4 text-right font-mono text-slate-700">{fmtRatio(iss.leverage)}</td>
-                    <td className="px-4 py-4 text-right font-mono text-slate-700">{fmtRatio(iss.interest_coverage)}</td>
+                    <td className="px-2 py-4 text-right font-mono text-slate-700">{fmtPct(iss.ebitda_margin)}</td>
+                    <td className="px-2 py-4 text-right font-mono text-slate-700">{fmtRatio(iss.leverage)}</td>
+                    <td className="px-2 py-4 text-right font-mono text-slate-700">{fmtRatio(iss.interest_coverage)}</td>
 
                     {/* FCF is in raw dollars from EDGAR — fmtFCF converts to $M/$B. */}
-                    <td className="px-4 py-4 text-right font-mono text-slate-700">{fmtFCF(iss.free_cash_flow)}</td>
-                    <td className="px-4 py-4 text-right font-mono text-slate-700">{fmtRatio(iss.liquidity)}</td>
+                    <td className="px-2 py-4 text-right font-mono text-slate-700">{fmtFCF(iss.free_cash_flow)}</td>
+                    <td className="px-2 py-4 text-right font-mono text-slate-700">{fmtRatio(iss.liquidity)}</td>
+                    <td className="px-2 py-4 text-right font-mono text-slate-700">{fmtPct(iss.cash_flow_to_debt)}</td>
+                    <td className="px-2 py-4 text-right font-mono text-slate-700">{fmtRatio(iss.current_ratio)}</td>
+                    <td className="px-2 py-4 text-right font-mono text-slate-700">{fmtPct(iss.debt_to_assets)}</td>
 
                     {/* Score as a rounded integer — the exact value is shown in the detail page. */}
-                    <td className="px-4 py-4 text-center font-mono font-bold text-slate-800">
+                    <td className="px-2 py-4 text-center font-mono font-bold text-slate-800">
                       {Math.round(iss.score)}
                     </td>
 
                     {/* Colour-coded status badge. scoreBg() returns Tailwind classes. */}
-                    <td className="px-4 py-4 text-center">
-                      <span className={`inline-block text-xs font-medium px-2.5 py-1 rounded-full ${scoreBg(iss.score)}`}>
+                    <td className="px-2 py-4 text-center">
+                      <span className={`inline-block text-xs font-medium px-2.5 py-1 rounded-full whitespace-nowrap ${scoreBg(iss.score)}`}>
                         {scoreLabel(iss.score)}
                       </span>
                     </td>
 
                     {/* Remove button. Shows "…" while the delete for THIS row is in-flight. */}
-                    <td className="px-6 py-4 text-right">
+                    <td className="px-4 py-4 text-right">
                       <button
                         onClick={() => { setError(''); setPendingDelete(iss) }}
                         disabled={deletingCik === iss.cik}
-                        className="inline-flex items-center gap-1 text-xs text-slate-300 hover:text-red-400 transition-colors disabled:opacity-50"
+                        className="inline-flex items-center gap-1 text-xs text-slate-300 hover:text-red-400 transition-colors disabled:opacity-50 whitespace-nowrap"
                       >
                         <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                           <path d="M3 6h18" />

@@ -131,6 +131,39 @@ def test_review_text_returns_findings():
     assert findings[0].severity == "high"
 
 
+def test_review_text_stamps_source_url():
+    # source_url is pipeline-supplied (not from the LLM) and must land on every
+    # surviving finding so the UI can deep-link back to the filing.
+    response = json.dumps([
+        {
+            "concern": "covenant proximity warning",
+            "severity": "high",
+            "evidence_quote": "we are approaching our maximum leverage covenant",
+            "source": "10-K 2023-12-31, MD&A",
+        },
+    ])
+    client = _make_mock_client(response)
+    url = "https://www.sec.gov/Archives/edgar/data/320193/000032019323000106/aapl-20230930.htm"
+    findings = review_text(_SOURCE_TEXT, "10-K 2023-12-31", client=client, source_url=url)
+    assert len(findings) == 1
+    assert findings[0].source_url == url
+
+
+def test_review_text_source_url_defaults_empty():
+    # Omitting source_url leaves it as "" (backward-compatible default).
+    response = json.dumps([
+        {
+            "concern": "litigation exposure",
+            "severity": "medium",
+            "evidence_quote": "we face material litigation risk",
+            "source": "10-K 2023-12-31, MD&A",
+        },
+    ])
+    client = _make_mock_client(response)
+    findings = review_text(_SOURCE_TEXT, "10-K 2023-12-31", client=client)
+    assert findings[0].source_url == ""
+
+
 def test_review_text_filters_invalid_findings():
     response = json.dumps([
         {
@@ -191,3 +224,76 @@ def test_review_text_handles_markdown_fences():
     client = _make_mock_client(response)
     findings = review_text(_SOURCE_TEXT, "10-K 2023-12-31", client=client)
     assert len(findings) == 1
+
+
+def test_review_text_handles_uppercase_fence():
+    response = "```JSON\n" + json.dumps([
+        {
+            "concern": "litigation exposure",
+            "severity": "medium",
+            "evidence_quote": "we face material litigation risk",
+            "source": "10-K 2023-12-31",
+        }
+    ]) + "\n```"
+    client = _make_mock_client(response)
+    findings = review_text(_SOURCE_TEXT, "10-K 2023-12-31", client=client)
+    assert len(findings) == 1
+
+
+# --- malformed-element robustness ---
+
+def test_validate_finding_non_dict_element():
+    # A JSON array of strings must be dropped per-element, not crash the review.
+    assert _validate_finding("just a string") is None
+    assert _validate_finding(42) is None
+    assert _validate_finding(None) is None
+
+
+def test_validate_finding_non_string_fields():
+    raw = {
+        "concern": None,            # null instead of string
+        "severity": 3,              # number instead of string
+        "evidence_quote": "we face material litigation risk",
+        "source": "10-K 2023-12-31",
+    }
+    assert _validate_finding(raw) is None
+
+
+def test_review_text_survives_non_dict_elements():
+    # One garbage element must not discard the valid finding alongside it.
+    response = json.dumps([
+        "garbage element",
+        {
+            "concern": "litigation exposure",
+            "severity": "medium",
+            "evidence_quote": "we face material litigation risk",
+            "source": "10-K 2023-12-31",
+        },
+    ])
+    client = _make_mock_client(response)
+    findings = review_text(_SOURCE_TEXT, "10-K 2023-12-31", client=client)
+    assert len(findings) == 1
+    assert findings[0].concern == "litigation exposure"
+
+
+# --- truncation visibility ---
+
+def test_review_text_warns_when_response_truncated(caplog):
+    import logging
+
+    client = _make_mock_client("[")  # cut off mid-array
+    client.messages.create.return_value.stop_reason = "max_tokens"
+    with caplog.at_level(logging.WARNING, logger="src.llm_review"):
+        findings = review_text(_SOURCE_TEXT, "10-K 2023-12-31", client=client)
+    assert findings == []  # degrades gracefully...
+    assert any("max_tokens" in r.message for r in caplog.records)  # ...but loudly
+
+
+def test_review_text_no_warning_on_normal_stop(caplog):
+    import logging
+
+    client = _make_mock_client("[]")
+    client.messages.create.return_value.stop_reason = "end_turn"
+    with caplog.at_level(logging.WARNING, logger="src.llm_review"):
+        review_text(_SOURCE_TEXT, "10-K 2023-12-31", client=client)
+    assert not caplog.records

@@ -567,6 +567,9 @@ const METRICS: { key: string; label: string; fmt: (v: number | null) => string }
   { key: 'fcf_margin',             label: 'FCF Margin',                   fmt: v => fmtPct(v) },
   { key: 'free_cash_flow',         label: 'Free Cash Flow',               fmt: v => fmtFCF(v) },
   { key: 'liquidity',              label: 'Liquidity (cash / ST debt)',   fmt: v => fmtRatio(v) },
+  { key: 'cash_flow_to_debt',      label: 'Cash Flow / Debt (FFO proxy)', fmt: v => fmtPct(v) },
+  { key: 'current_ratio',          label: 'Current Ratio',                fmt: v => fmtRatio(v) },
+  { key: 'debt_to_assets',         label: 'Debt / Assets',                fmt: v => fmtPct(v) },
   { key: 'maturity_near_term_pct', label: 'Maturity Wall (≤3y due)',      fmt: v => fmtPct(v) },
 ]
 

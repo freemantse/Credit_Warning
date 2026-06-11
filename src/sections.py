@@ -1,26 +1,13 @@
 """
 Locate specific footnote sections inside a raw 10-K filing document.
 
-Why this module exists:
-  A 10-K's primary HTML document is huge — often 100k–500k characters. The
-  sections we care about for credit risk live deep inside it:
-    - the MD&A (Item 7 — management tone, liquidity, going-concern language),
-    - the long-term-DEBT footnote (maturities, interest, covenants), and
-    - the COMMITMENTS AND CONTINGENCIES footnote (litigation, loss provisions).
-  Naively sending the first N characters to an LLM (as the old pipeline did with
-  text[:12000]) never reaches any of them — the head of a modern inline-XBRL
-  filing is markup and cover-page boilerplate. This module strips the HTML to
-  text and slices out just the relevant sections so only small, on-target
-  excerpts are sent to the LLM.
-
 Strategy (deterministic, no LLM, no extra dependencies):
   1. Convert the HTML to plain text, preserving line breaks at block boundaries.
   2. Build an index of candidate heading lines (note titles).
   3. For each target section, find the first heading whose nearby text matches the
-     section's keyword pattern, then slice from that heading to the next heading
-     (bounded to a max window so token spend stays predictable).
-  4. If no heading anchors, fall back to keyword-density chunk scoring and return
-     the best chunk, flagged with heading_matched=None to signal lower confidence.
+     section's keyword pattern, then slice from that heading to the section's end
+     boundary (bounded to a max window so token spend stays predictable).
+  4. If no heading anchors, fall back to keyword-density chunk scoring and return the best chunk, flagged with heading_matched=None to signal lower confidence.
 """
 
 from __future__ import annotations
@@ -30,16 +17,17 @@ import re
 from dataclasses import dataclass
 
 
-# Max characters returned per section. ~20k chars ≈ 5k tokens — enough to cover a
-# debt or contingencies footnote while keeping the LLM call cheap and bounded.
-# The MD&A gets a larger window: it is a long narrative section and the credit-
-# relevant prose (liquidity, capital resources) sits well past its opening.
-# 40k chars ≈ 10k tokens — still trivial against Haiku's 200k-token context.
-_MAX_SECTION_CHARS = 20_000
+# Max characters returned per section. ~40k chars ≈ 10k tokens — covers a debt
+# or contingencies footnote even for large issuers with many instruments.
+# The MD&A gets a larger window: it averages ~7,000 words (~45k chars) and the
+# credit-relevant prose (liquidity, capital resources) sits well past its
+# opening, so 100k chars ≈ 25k tokens covers nearly all MD&As in full — still
+# trivial against the review model's context window.
+_MAX_SECTION_CHARS = 40_000
 _SECTION_MAX_CHARS: dict[str, int] = {
-    "mdna": 40_000,
-    "debt": 20_000,
-    "contingencies": 20_000,
+    "mdna": 100_000,
+    "debt": 40_000,
+    "contingencies": 40_000,
 }
 
 # Fallback chunking parameters (used only when heading anchoring fails).
@@ -58,9 +46,7 @@ class Section:
                          see _SECTION_MAX_CHARS).
         char_start:      Start offset in the stripped full text.
         char_end:        End offset in the stripped full text.
-        heading_matched: The heading line that anchored the slice, or None when
-                         the slice came from the chunk-density fallback (lower
-                         confidence — downstream may treat it more cautiously).
+        heading_matched: The heading line that anchored the slice, or None when the slice came from the chunk-density fallback (lower confidence — downstream may treat it more cautiously).
     """
     name: str
     text: str
@@ -72,8 +58,7 @@ class Section:
 # ── Section heading patterns ───────────────────────────────────────────────────
 # Per section, an ORDERED list of heading regexes tried most-specific first. The
 # canonical footnote title ("Commitments and contingencies", "Note N – Debt")
-# must win over earlier weaker matches like a "Legal Proceedings" Item-3 stub or a
-# table-of-contents line. Each is matched case-insensitively against heading lines.
+# must win over earlier weaker matches like a "Legal Proceedings" Item-3 stub or a table-of-contents line. Each is matched case-insensitively against heading lines.
 _SECTION_HEADING_PATTERNS: dict[str, list[re.Pattern]] = {
     "mdna": [
         re.compile(r"management'?s discussion and analysis", re.IGNORECASE),
@@ -82,13 +67,27 @@ _SECTION_HEADING_PATTERNS: dict[str, list[re.Pattern]] = {
     "debt": [
         re.compile(r"long[\s-]*term debt", re.IGNORECASE),
         re.compile(r"note\s+\d+\s*[–—:.\-]+.*\bdebt\b", re.IGNORECASE),
+        re.compile(r"financing arrangements|borrowing arrangements", re.IGNORECASE),
+        re.compile(r"\bindebtedness\b", re.IGNORECASE),
+        re.compile(r"credit agreements?|senior notes", re.IGNORECASE),
         re.compile(r"^\s*(term\s+)?debt\s*$", re.IGNORECASE),
         re.compile(r"\bborrowings\b|notes?\s+payable|credit facilit", re.IGNORECASE),
     ],
     "contingencies": [
-        re.compile(r"commitments?\s+and\s+contingenc", re.IGNORECASE),
+        # Optional comma covers titles like "Commitments, Contingencies and
+        # Guarantees" / "... and Supply Concentrations".
+        re.compile(r"commitments?,?\s+(and\s+)?contingenc", re.IGNORECASE),
         re.compile(r"loss conting", re.IGNORECASE),
-        re.compile(r"^\s*(other\s+)?legal proceedings\s*$", re.IGNORECASE),
+        # Anchored to the full line (modulo an optional "NOTE n" prefix) so a
+        # heading like "Risks Related to Legal Proceedings" doesn't match.
+        re.compile(
+            r"^\s*(note\s+\d+[\s.–—:-]*)?(other\s+)?legal (proceedings|matters)\s*$",
+            re.IGNORECASE,
+        ),
+        re.compile(r"^\s*(note\s+\d+[\s.–—:-]*)?contingenc(ies|y)\s*$", re.IGNORECASE),
+        # Requires "matters/proceedings" so a Risk-Factors heading like
+        # "Legal and Regulatory Compliance Risks" doesn't match.
+        re.compile(r"legal and regulatory (matters|proceedings)", re.IGNORECASE),
         re.compile(r"\blitigation\b", re.IGNORECASE),
     ],
 }
@@ -103,12 +102,13 @@ _SECTION_DENSITY_PATTERNS: dict[str, re.Pattern] = {
     ),
     "debt": re.compile(
         r"long[\s-]*term debt|\bborrowings\b|notes?\s+payable|credit facilit|"
+        r"financing arrangements|\bindebtedness\b|senior notes|"
         r"maturit|covenant",
         re.IGNORECASE,
     ),
     "contingencies": re.compile(
-        r"commitments?\s+and\s+contingenc|legal proceedings|\blitigation\b|"
-        r"loss conting",
+        r"commitments?,?\s+(and\s+)?contingenc|legal (proceedings|matters)|"
+        r"\blitigation\b|loss conting",
         re.IGNORECASE,
     ),
 }
@@ -154,17 +154,24 @@ _HEADING_RE = re.compile(
     r"|[A-Z][A-Za-z0-9 ,&/'–—.-]{2,80})\s*$"
 )
 
-# Per-section END patterns. Most sections end at the very next heading (footnotes
-# are heading-to-heading). The MD&A is different: it CONTAINS many subheadings
-# ("Overview", "Results of Operations", "Liquidity and Capital Resources"), so
-# slicing to the next heading would cut it off at its first subheading. Instead
-# it runs until the heading that starts the NEXT Item (7A or 8).
+# Per-section END patterns. Sections CONTAIN their own subheadings, so slicing
+# to the very next heading would cut them off after a few hundred chars. The
+# MD&A ("Overview", "Results of Operations", ...) runs until the heading that
+# starts the NEXT Item (7A or 8). Footnotes ("Term Debt", "U.S. Cell Phone
+# Litigation", ...) run until the heading that starts the NEXT numbered note or
+# Item. Filings whose notes carry no "NOTE n" / "n." prefix find no boundary and
+# run to the max-chars cap instead — the relevant note still leads the slice.
+_NOTE_OR_ITEM_BOUNDARY_RE = re.compile(
+    r"^\s*(note\s+\d+\b|item\s+\d{1,2}[ab]?\b|\d{1,2}\.\s)", re.IGNORECASE
+)
 _SECTION_END_PATTERNS: dict[str, re.Pattern] = {
     "mdna": re.compile(
         r"item\s*7a[\s.:–—-]|quantitative and qualitative disclosures|"
         r"item\s*8[\s.:–—-]|financial statements and supplementary",
         re.IGNORECASE,
     ),
+    "debt": _NOTE_OR_ITEM_BOUNDARY_RE,
+    "contingencies": _NOTE_OR_ITEM_BOUNDARY_RE,
 }
 
 # Inline-XBRL wrapper tags (<ix:...>) carry no display text — strip the tags but
@@ -230,9 +237,10 @@ def _slice_section(
     """
     Return (start, end) char offsets for the section anchored at heading `idx`.
 
-    Without an end_pattern the section runs to the next heading (footnote shape).
-    With one (the MD&A case) it runs to the first SUBSEQUENT heading matching the
-    pattern, skipping over the section's own subheadings.
+    Without an end_pattern the section runs to the next heading. With one it
+    runs to the first SUBSEQUENT heading matching the pattern (the next Item for
+    MD&A, the next numbered note/Item for footnotes), skipping over the
+    section's own subheadings.
     """
     start = headings[idx][0]
     if end_pattern is not None:

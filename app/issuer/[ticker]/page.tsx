@@ -11,7 +11,7 @@
 // The ticker comes from the dynamic route segment: useParams<{ ticker: string }>().
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { Fragment, useEffect, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import {
@@ -20,7 +20,7 @@ import {
 } from 'recharts'
 import {
   IssuerDetail, PeriodData, Finding, Covenant, LossProvision,
-  fetchIssuer, trackIssuer,
+  fetchIssuer, trackIssuer, startLlmReview, fetchLlmReviewStatus,
   fmtRatio, fmtFCF, fmtPct, scoreBg, scoreLabel, severityDot,
 } from '@/lib/api'
 
@@ -46,6 +46,9 @@ const TREND_METRICS: {
   { key: 'free_cash_flow',    label: 'FCF',               accessor: p => p.ratios.free_cash_flow?.value,    fmt: fmtFCF },
   { key: 'fcf_margin',        label: 'FCF Margin',        accessor: p => p.ratios.fcf_margin?.value,        fmt: fmtPct },
   { key: 'liquidity',         label: 'Liquidity',         accessor: p => p.ratios.liquidity?.value,         fmt: fmtRatio },
+  { key: 'cash_flow_to_debt',     label: 'Cash Flow / Debt',   accessor: p => p.ratios.cash_flow_to_debt?.value,     fmt: fmtPct },
+  { key: 'current_ratio',         label: 'Current Ratio',      accessor: p => p.ratios.current_ratio?.value,         fmt: fmtRatio },
+  { key: 'debt_to_assets',        label: 'Debt / Assets',      accessor: p => p.ratios.debt_to_assets?.value,        fmt: fmtPct },
 ]
 
 export default function IssuerPage() {
@@ -58,6 +61,20 @@ export default function IssuerPage() {
 
   // True while POST /api/track (re-fetch from EDGAR) is running.
   const [refreshing, setRefreshing] = useState(false)
+
+  // On-demand LLM review state. `llmRunning` drives the poll effect below;
+  // `llmProgress` tracks periods_done/periods_total for the progress label.
+  const [llmRunning, setLlmRunning] = useState(false)
+  const [llmProgress, setLlmProgress] = useState<{ done: number; total: number } | null>(null)
+  const [llmError, setLlmError] = useState('')
+
+  // Holds the status poll interval ID without triggering re-renders (see the
+  // backtest page for the same rationale — a ref avoids a clear/re-arm loop).
+  const llmPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Used to scroll the viewport to the qualitative-analysis section when the
+  // user triggers the LLM review from the top-right button.
+  const llmSectionRef = useRef<HTMLDivElement>(null)
 
   // The period_end string of the row currently showing the inline audit panel.
   // null = no row is expanded.
@@ -75,6 +92,47 @@ export default function IssuerPage() {
 
   // Re-fetch whenever the ticker changes (handles browser back/forward navigation).
   useEffect(() => { load() }, [ticker])
+
+  // On mount / ticker change, restore the LLM-review UI if a review is already
+  // running for this issuer (e.g. the user navigated away and back mid-run).
+  // The cleanup clears any poll interval on unmount or ticker change.
+  useEffect(() => {
+    fetchLlmReviewStatus(ticker).then(s => {
+      if (s.running) {
+        setLlmRunning(true)
+        setLlmProgress({ done: s.periods_done, total: s.periods_total })
+      }
+    }).catch(() => {})
+    return () => { if (llmPollRef.current) clearInterval(llmPollRef.current) }
+  }, [ticker])
+
+  // Scroll to the qualitative-analysis section when a review starts so the
+  // user sees progress without having to manually scroll down.
+  useEffect(() => {
+    if (llmRunning) {
+      llmSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+  }, [llmRunning])
+
+  // While a review is running, poll its status every 3 s. When it finishes,
+  // stop polling, reload the issuer data to show the new findings, and surface
+  // any error the run reported.
+  useEffect(() => {
+    if (llmRunning) {
+      llmPollRef.current = setInterval(async () => {
+        const s = await fetchLlmReviewStatus(ticker).catch(() => null)
+        if (!s) return
+        setLlmProgress({ done: s.periods_done, total: s.periods_total })
+        if (!s.running) {
+          if (llmPollRef.current) clearInterval(llmPollRef.current)
+          setLlmRunning(false)
+          if (s.error) setLlmError(s.error)
+          await load()  // reload so the LLM sections populate with the new data
+        }
+      }, 3000)
+    }
+    return () => { if (llmPollRef.current) clearInterval(llmPollRef.current) }
+  }, [llmRunning, ticker])
 
   /** Fetch the issuer's full period history from the API. */
   async function load() {
@@ -104,6 +162,28 @@ export default function IssuerPage() {
     }
   }
 
+  /**
+   * Start the on-demand LLM qualitative review for the latest filings. Tracking
+   * skips this pass for speed, so this is how the user populates the findings,
+   * covenants, and loss-provisions sections. The poll effect picks up
+   * llmRunning=true and reloads the data when the background task completes.
+   */
+  async function handleRunLlm() {
+    setLlmError('')
+    setLlmProgress(null)
+    setLlmRunning(true)
+    try {
+      await startLlmReview(ticker)
+      // Fetch status once immediately so the progress label appears without
+      // waiting for the first poll tick.
+      const s = await fetchLlmReviewStatus(ticker)
+      setLlmProgress({ done: s.periods_done, total: s.periods_total })
+    } catch (e: unknown) {
+      setLlmError(e instanceof Error ? e.message : 'Failed to start LLM analysis')
+      setLlmRunning(false)
+    }
+  }
+
   // ── Chart data preparation ─────────────────────────────────────────────────
   // The API returns periods newest-first, but the Recharts line chart plots
   // left-to-right chronologically — so we reverse before mapping.
@@ -120,6 +200,13 @@ export default function IssuerPage() {
   const allPeriods = data?.periods ?? []
   const totalPages = Math.max(1, Math.ceil(allPeriods.length / PAGE_SIZE))
   const pagedPeriods = allPeriods.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE)
+
+  // Whether any LLM-derived data exists across all periods. Drives the empty-state
+  // hint: the three LLM sections each render null when empty, so without this the
+  // page would be silent about why there's nothing to show.
+  const hasLlmData = allPeriods.some(
+    p => p.findings.length > 0 || (p.covenants?.length ?? 0) > 0 || (p.loss_provisions?.length ?? 0) > 0
+  )
 
 
   // ── Render ──────────────────────────────────────────────────────────────────
@@ -144,17 +231,35 @@ export default function IssuerPage() {
             </p>
           )}
         </div>
-        <button
-          onClick={handleRefresh}
-          disabled={refreshing}
-          className="mt-6 inline-flex items-center gap-2 text-sm bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-lg disabled:opacity-50 transition-colors"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={refreshing ? 'animate-spin' : ''}>
-            <path d="M21 12a9 9 0 1 1-2.64-6.36" />
-            <path d="M21 3v6h-6" />
-          </svg>
-          {refreshing ? 'Refreshing…' : 'Refresh from EDGAR'}
-        </button>
+        <div className="mt-6 flex items-center gap-2">
+          {/* Run the LLM qualitative pass on demand (tracking skips it for speed). */}
+          <button
+            onClick={handleRunLlm}
+            disabled={llmRunning || refreshing}
+            className="inline-flex items-center gap-2 text-sm bg-slate-800 hover:bg-slate-700 text-white px-4 py-2 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={llmRunning ? 'animate-pulse' : ''}>
+              <path d="M12 3a6 6 0 0 0-6 6c0 2 1 3 1.5 4 .5.8.5 1.5.5 2h8c0-.5 0-1.2.5-2 .5-1 1.5-2 1.5-4a6 6 0 0 0-6-6Z" />
+              <path d="M9 21h6" />
+            </svg>
+            {llmRunning
+              ? llmProgress && llmProgress.total > 0
+                ? `Analysing… ${llmProgress.done}/${llmProgress.total}`
+                : 'Analysing…'
+              : 'Run LLM analysis'}
+          </button>
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className="inline-flex items-center gap-2 text-sm bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-lg disabled:opacity-50 transition-colors"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={refreshing ? 'animate-spin' : ''}>
+              <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+              <path d="M21 3v6h-6" />
+            </svg>
+            {refreshing ? 'Refreshing…' : 'Refresh from EDGAR'}
+          </button>
+        </div>
       </div>
 
       {/* ── Error banner ── */}
@@ -265,7 +370,11 @@ export default function IssuerPage() {
               </p>
             </div>
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+              {/* min-w-max + whitespace-nowrap: this detailed table carries 12 columns
+                  (6 original ratios + 3 new ones + period/score/status), so let it grow
+                  to its natural width and scroll horizontally rather than cram. The
+                  portfolio overview (app/page.tsx) instead fits within the viewport. */}
+              <table className="w-full min-w-max text-sm whitespace-nowrap">
                 <thead>
                   <tr className="bg-gray-50 text-xs font-medium text-slate-500 uppercase tracking-wide">
                     <th className="px-6 py-3 text-left">Period</th>
@@ -275,6 +384,9 @@ export default function IssuerPage() {
                     <th className="px-4 py-3 text-right">FCF</th>
                     <th className="px-4 py-3 text-right">FCF Margin</th>
                     <th className="px-4 py-3 text-right">Liquidity</th>
+                    <th className="px-4 py-3 text-right">Cash Flow / Debt</th>
+                    <th className="px-4 py-3 text-right">Current Ratio</th>
+                    <th className="px-4 py-3 text-right">Debt / Assets</th>
                     <th className="px-4 py-3 text-center">Score</th>
                     <th className="px-6 py-3 text-center">Status</th>
                   </tr>
@@ -302,6 +414,9 @@ export default function IssuerPage() {
                         <td className="px-4 py-3 text-right font-mono text-slate-700">{fmtFCF(p.ratios.free_cash_flow?.value)}</td>
                         <td className="px-4 py-3 text-right font-mono text-slate-700">{fmtPct(p.ratios.fcf_margin?.value)}</td>
                         <td className="px-4 py-3 text-right font-mono text-slate-700">{fmtRatio(p.ratios.liquidity?.value)}</td>
+                        <td className="px-4 py-3 text-right font-mono text-slate-700">{fmtPct(p.ratios.cash_flow_to_debt?.value)}</td>
+                        <td className="px-4 py-3 text-right font-mono text-slate-700">{fmtRatio(p.ratios.current_ratio?.value)}</td>
+                        <td className="px-4 py-3 text-right font-mono text-slate-700">{fmtPct(p.ratios.debt_to_assets?.value)}</td>
 
                         <td className="px-4 py-3 text-center font-mono font-bold text-slate-800">
                           {Math.round(p.score)}
@@ -315,12 +430,12 @@ export default function IssuerPage() {
 
                       {/*
                         Audit panel row — rendered only when this period's row is open.
-                        Uses colSpan={9} to span the full table width.
+                        Uses colSpan={12} to span the full table width.
                         The AuditPanel component handles the detailed display.
                       */}
                       {openAudit === p.period_end && (
                         <tr>
-                          <td colSpan={9} className="bg-slate-50 px-6 py-4 border-t border-slate-100">
+                          <td colSpan={12} className="bg-slate-50 px-6 py-4 border-t border-slate-100">
                             <AuditPanel period={p} />
                           </td>
                         </tr>
@@ -362,6 +477,48 @@ export default function IssuerPage() {
 
           {/* Debt maturity wall — XBRL-derived, shown for the latest period. */}
           <MaturityWallSection periods={data.periods} />
+
+          {/* ── Qualitative analysis status / empty state ──────────────────
+              The three LLM sections below each render null when empty, so this
+              card explains the absence and offers the trigger. It's shown while
+              a review runs, on error, or when no LLM data exists yet. Once data
+              is present (and no run is active), it disappears. */}
+          {(llmRunning || llmError || !hasLlmData) && (
+            <div ref={llmSectionRef} className="bg-white rounded-xl border border-gray-200 shadow-sm px-6 py-5">
+              <h2 className="font-semibold text-slate-800">Qualitative Analysis</h2>
+              {llmRunning ? (
+                <div className="mt-2 flex items-center gap-2 text-sm text-slate-500">
+                  <span className="w-3 h-3 rounded-full bg-orange-400 animate-pulse inline-block" />
+                  Reading the latest 10-K filings with the LLM
+                  {llmProgress && llmProgress.total > 0 ? ` — ${llmProgress.done}/${llmProgress.total} done` : ''}
+                  {' '}(~30 s per filing).
+                </div>
+              ) : (
+                <>
+                  <p className="mt-1 text-sm text-slate-500">
+                    {hasLlmData
+                      ? 'Re-run to refresh findings, covenants, and loss provisions from the latest filings.'
+                      : 'No LLM findings yet — tracking skips this pass for speed. Run it to scan the latest 10-K MD&A and footnotes for qualitative credit signals.'}
+                  </p>
+                  <button
+                    onClick={handleRunLlm}
+                    disabled={refreshing}
+                    className="mt-3 inline-flex items-center gap-2 text-sm bg-slate-800 hover:bg-slate-700 text-white px-4 py-2 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    Run LLM analysis
+                  </button>
+                  {llmError && (
+                    <p className="mt-3 text-sm text-red-600">{llmError}</p>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Anchor for the scroll-on-LLM-start when hasLlmData is already true
+              (the status card above is hidden in that case, so we need a target
+              that is always in the DOM once data is loaded). */}
+          {hasLlmData && <div ref={llmSectionRef} />}
 
           {/* Maintenance covenants — LLM-extracted from the debt footnote. */}
           <CovenantsSection periods={data.periods} />
@@ -411,9 +568,29 @@ function AuditPanel({ period }: { period: PeriodData }) {
 
       {/* XBRL source audit grid — one card per ratio. */}
       <div>
-        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">
-          Source Audit (XBRL inputs)
-        </p>
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+            Source Audit (XBRL inputs)
+          </p>
+          {/* Deep link to the SEC 10-K these ratios were extracted from, so an
+              analyst can trace any figure back to the filing. Omitted when the
+              backend couldn't match a filing to this period. */}
+          {period.source_url && (
+            <a
+              href={period.source_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded-md shadow-sm transition-colors"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M15 3h6v6" />
+                <path d="M10 14 21 3" />
+                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+              </svg>
+              View source 10-K on SEC EDGAR
+            </a>
+          )}
+        </div>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {Object.entries(period.ratios).map(([name, data]) => (
             <div key={name} className="bg-white rounded-lg border border-gray-200 p-3">
@@ -458,16 +635,30 @@ function AuditPanel({ period }: { period: PeriodData }) {
               })}
 
               {/* Missing inputs: each absent raw datum, flagged red, with the XBRL
-                  tags that were searched so the analyst sees exactly what's missing. */}
+                  tags that were searched so the analyst sees exactly what's missing.
+                  Tried tags wrap as chips (whitespace-normal overrides the history
+                  table's whitespace-nowrap), packing 2-3 per line when the card has
+                  room instead of overflowing on a single clipped line. */}
               {data.missing_inputs?.map(({ field, tags_tried }) => (
                 <div key={field} className="text-xs mt-1">
                   <span className="text-red-400">{field}:</span>{' '}
                   <span className="font-mono text-red-600 font-semibold">missing</span>
-                  <div
-                    className="text-red-300 text-[10px] truncate"
-                    title={`tried: ${tags_tried.join(', ')}`}
-                  >
-                    tried: {tags_tried.join(', ') || '—'}
+                  <div className="text-red-300 text-[10px] mt-0.5">
+                    tried:
+                    {tags_tried.length ? (
+                      // max-w caps the wrap width — without it the history table's
+                      // min-w-max lets this row grow to fit every chip on one line.
+                      <div className="mt-0.5 flex flex-wrap gap-1 font-mono max-w-[20rem]">
+                        {tags_tried.map(tag => (
+                          <span
+                            key={tag}
+                            className="whitespace-normal break-words rounded bg-red-50 px-1 py-0.5 text-red-400"
+                          >
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
+                    ) : ' —'}
                   </div>
                 </div>
               ))}
@@ -498,6 +689,38 @@ function AuditPanel({ period }: { period: PeriodData }) {
 //   - The verbatim evidence quote from the filing
 //   - The source label (e.g. "10-K 2023-12-31, MD&A")
 
+// Builds a deep link to the source filing that scrolls to and highlights the
+// evidence quote using a browser text fragment (https://...#:~:text=...).
+//
+// Returns the bare source_url if no usable quote is available, and null if there
+// is no source_url at all (older findings predate the field — see lib/api.ts).
+//
+// Text fragments must match the rendered text exactly, and long single matches
+// are brittle across HTML element boundaries. So for longer quotes we emit a
+// `text=start,end` range (first/last few words) which the browser matches by
+// anchoring on both ends — far more robust than one long string.
+function findingSourceLink(sourceUrl: string | undefined, quote: string): string | null {
+  if (!sourceUrl) return null
+
+  // Normalize: drop surrounding quotes / leading-or-trailing ellipses, collapse
+  // whitespace. Mirrors the spirit of llm_review._normalize_for_match.
+  const clean = quote
+    .replace(/^[\s"“”'']+|[\s"“”'']+$/g, '')
+    .replace(/^[.…]+|[.…]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!clean) return sourceUrl
+
+  const words = clean.split(' ')
+  if (words.length <= 12) {
+    return `${sourceUrl}#:~:text=${encodeURIComponent(clean)}`
+  }
+  // Range match: anchor on the first 6 and last 6 words.
+  const start = encodeURIComponent(words.slice(0, 6).join(' '))
+  const end = encodeURIComponent(words.slice(-6).join(' '))
+  return `${sourceUrl}#:~:text=${start},${end}`
+}
+
 function FindingsSection({ periods }: { periods: PeriodData[] }) {
   // Flatten findings from all periods into one array.
   // The spread {…f, period: p.period_end} adds the period_end date to each finding
@@ -512,8 +735,36 @@ function FindingsSection({ periods }: { periods: PeriodData[] }) {
       <div className="px-6 py-4 border-b border-gray-100">
         <h2 className="font-semibold text-slate-800">Qualitative Findings</h2>
         <p className="text-xs text-slate-400 mt-0.5">
-          LLM-identified signals from MD&amp;A and footnotes. Each includes a verbatim quote.
+          LLM-identified signals from MD&amp;A and footnotes. Each includes a verbatim quote;
+          click the source label to open the filing on SEC EDGAR and jump to the quote.
         </p>
+
+        {/* Severity legend — explains what the high/medium/low badges mean. The
+            dot colours mirror severityDot() so the legend matches each finding. */}
+        <dl className="mt-3 flex flex-col gap-1.5 sm:flex-row sm:flex-wrap sm:gap-x-5 sm:gap-y-1">
+          <div className="flex items-start gap-1.5">
+            <span className="mt-1 w-2 h-2 rounded-full flex-shrink-0 bg-red-500" />
+            <span className="text-xs text-slate-500">
+              <dt className="inline font-medium text-slate-700">High</dt>
+              {' '}— serious credit-risk language (e.g. going-concern doubt, covenant
+              breach or waiver); adds up to 10 points to the stress score.
+            </span>
+          </div>
+          <div className="flex items-start gap-1.5">
+            <span className="mt-1 w-2 h-2 rounded-full flex-shrink-0 bg-yellow-500" />
+            <span className="text-xs text-slate-500">
+              <dt className="inline font-medium text-slate-700">Medium</dt>
+              {' '}— a notable concern worth monitoring.
+            </span>
+          </div>
+          <div className="flex items-start gap-1.5">
+            <span className="mt-1 w-2 h-2 rounded-full flex-shrink-0 bg-blue-400" />
+            <span className="text-xs text-slate-500">
+              <dt className="inline font-medium text-slate-700">Low</dt>
+              {' '}— a minor or contextual signal.
+            </span>
+          </div>
+        </dl>
       </div>
       <div className="divide-y divide-gray-100">
         {all.map((f, i) => (
@@ -541,8 +792,39 @@ function FindingsSection({ periods }: { periods: PeriodData[] }) {
                   "{f.evidence_quote}"
                 </blockquote>
 
-                {/* Source label (e.g. "10-K 2023-12-31, MD&A"). */}
-                <p className="mt-1 text-xs text-slate-400">{f.source}</p>
+                {/* Source label (e.g. "10-K 2023-12-31, MD&A"). Links to the
+                    filing on SEC EDGAR (scrolling to the quote) when a source_url
+                    is present; falls back to plain text for older findings stored
+                    before the source_url field existed, or periods with no matched
+                    filing. Styled as an explicit link to match the Source Audit
+                    button above (external-link icon + "View source on SEC EDGAR"),
+                    since the bare label read as plain text. */}
+                {findingSourceLink(f.source_url, f.evidence_quote)
+                  ? (
+                    <p className="mt-1.5 flex items-center gap-1.5 text-xs">
+                      {/* Gray source label first, then the blue link on the right —
+                          mirrors the "source link unavailable" layout below. */}
+                      <span className="text-slate-400">{f.source} ·</span>
+                      <a
+                        href={findingSourceLink(f.source_url, f.evidence_quote)!}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="group inline-flex items-center gap-1.5 font-medium text-blue-600 hover:text-blue-700 transition-colors"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d="M15 3h6v6" />
+                          <path d="M10 14 21 3" />
+                          <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                        </svg>
+                        <span className="group-hover:underline underline-offset-2">View source on SEC EDGAR</span>
+                      </a>
+                    </p>
+                  )
+                  : (
+                    <p className="mt-1.5 text-xs text-slate-400">
+                      {f.source} <span className="text-slate-300">· source link unavailable</span>
+                    </p>
+                  )}
               </div>
             </div>
           </div>

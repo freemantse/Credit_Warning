@@ -41,34 +41,36 @@ def test_all_thresholds_triggered():
     # Ratios at or past their severe edges → each rule maxes out. Positive EBITDA
     # in the inputs keeps the sign-aware override OFF so the ramps are exercised.
     ratios = {
-        "leverage": make_ratio("leverage", 6.0, ebitda_inputs(1_000_000)),   # >= 6× → 20
-        "interest_coverage": make_ratio("interest_coverage", 1.0, ebitda_inputs(1_000_000)),  # <= 1× → 20
+        "leverage": make_ratio("leverage", 6.0, ebitda_inputs(1_000_000)),   # >= 6× → 16
+        "interest_coverage": make_ratio("interest_coverage", 1.0, ebitda_inputs(1_000_000)),  # <= 1× → 14
         "free_cash_flow": make_ratio("free_cash_flow", -500_000),
-        "fcf_margin": make_ratio("fcf_margin", -0.10),   # <= -10% → 15
-        "liquidity": make_ratio("liquidity", 0.25),      # <= 0.25× → 15
+        "fcf_margin": make_ratio("fcf_margin", -0.10),   # <= -10% → 10
+        "liquidity": make_ratio("liquidity", 0.25),      # <= 0.25× → 8
     }
     result = compute_score(ratios, [])
-    # 20+20+15+15 = 70 core; 4 severe signals also trigger the floor (60 < 70).
-    assert result.score == 70.0
-    assert result.breakdown["leverage>5x"] == 20.0
-    assert result.breakdown["coverage<2x"] == 20.0
+    # 17+14+10+9 = 50 core; 4 severe signals trigger the escalation floor → 60.
+    assert result.breakdown["leverage>5x"] == 17.0
+    assert result.breakdown["coverage<2x"] == 14.0
+    assert result.breakdown["fcf_negative"] == 10.0
+    assert result.breakdown["liquidity<1x"] == 9.0
+    assert result.score == 60.0
 
 
 def test_ratios_ramp_partially():
     # Each ratio sits at the midpoint of its ramp → half points. Positive EBITDA
     # keeps the sign-aware override off.
     ratios = {
-        "leverage": make_ratio("leverage", 4.5, ebitda_inputs(1_000_000)),   # midpoint 3→6 → 10.0
-        "interest_coverage": make_ratio("interest_coverage", 2.5, ebitda_inputs(1_000_000)),  # midpoint 4→1 → 10.0
-        "fcf_margin": make_ratio("fcf_margin", -0.05),   # midpoint 0→-0.10 → 7.5
-        "liquidity": make_ratio("liquidity", 0.625),     # midpoint 1→0.25 → 7.5
+        "leverage": make_ratio("leverage", 4.5, ebitda_inputs(1_000_000)),   # midpoint 3→6 → 8.5
+        "interest_coverage": make_ratio("interest_coverage", 2.5, ebitda_inputs(1_000_000)),  # midpoint 4→1 → 7.0
+        "fcf_margin": make_ratio("fcf_margin", -0.05),   # midpoint 0→-0.10 → 5.0
+        "liquidity": make_ratio("liquidity", 0.625),     # midpoint 1→0.25 → 4.5
     }
     result = compute_score(ratios, [])
-    assert result.breakdown["leverage>5x"] == 10.0
-    assert result.breakdown["coverage<2x"] == 10.0
-    assert result.breakdown["fcf_negative"] == 7.5
-    assert result.breakdown["liquidity<1x"] == 7.5
-    assert result.score == 35.0
+    assert result.breakdown["leverage>5x"] == 8.5
+    assert result.breakdown["coverage<2x"] == 7.0
+    assert result.breakdown["fcf_negative"] == 5.0
+    assert result.breakdown["liquidity<1x"] == 4.5
+    assert result.score == 25.0
 
 
 def test_negative_ebitda_forces_full_leverage_and_coverage():
@@ -82,11 +84,12 @@ def test_negative_ebitda_forces_full_leverage_and_coverage():
         "fcf_margin": make_ratio("fcf_margin", -0.15),
     }
     result = compute_score(ratios, [])
-    assert result.breakdown["leverage>5x"] == 20.0
-    assert result.breakdown["coverage<2x"] == 20.0
-    assert result.breakdown["profitability"] == 20.0
-    assert result.breakdown["fcf_negative"] == 15.0
-    assert result.score >= 75.0  # High Risk — no longer "healthy"
+    assert result.breakdown["leverage>5x"] == 17.0
+    assert result.breakdown["coverage<2x"] == 14.0
+    assert result.breakdown["profitability"] == 14.0
+    assert result.breakdown["fcf_negative"] == 10.0
+    # 17+14+14+10 = 55 core; 4 severe signals → escalation floor lifts to 60.
+    assert result.score == 60.0  # High Risk — no longer "healthy"
 
 
 def test_net_cash_negative_leverage_not_penalised():
@@ -103,24 +106,27 @@ def test_net_cash_negative_leverage_not_penalised():
     assert result.score == 0.0
 
 
-def test_escalation_floor_three_severe_signals():
-    # Three severe core signals (none individually catastrophic on sum) → floor 60.
+def test_escalation_floor_four_severe_signals():
+    # Four severe core signals (sum well under 60) prove the floor lifts the score
+    # to 60. With 9 core rules the trigger is >= 4 severe.
     ratios = {
-        "leverage": make_ratio("leverage", 6.0, ebitda_inputs(1_000_000)),   # severe → 20
-        "interest_coverage": make_ratio("interest_coverage", 1.0, ebitda_inputs(1_000_000)),  # severe → 20
-        "ebitda_margin": make_ratio("ebitda_margin", -0.05, ebitda_inputs(1_000_000)),  # severe → 20
+        "liquidity": make_ratio("liquidity", 0.25),              # severe → 9
+        "current_ratio": make_ratio("current_ratio", 0.75),      # severe → 6
+        "debt_to_assets": make_ratio("debt_to_assets", 0.65),    # severe → 9
+        "fcf_margin": make_ratio("fcf_margin", -0.10),           # severe → 10
     }
     result = compute_score(ratios, [])
-    assert result.score == 60.0  # 20+20+20 = 60, floor also satisfied
-    # Drop one severe signal → floor no longer applies.
-    ratios.pop("ebitda_margin")
-    assert compute_score(ratios, []).score == 40.0
+    # Raw core sum is 9+6+9+10 = 34, but 4 severe signals floor it at 60.
+    assert result.score == 60.0
+    # Drop one severe signal → only 3 severe → floor no longer applies → raw sum.
+    ratios.pop("fcf_margin")
+    assert compute_score(ratios, []).score == 24.0  # 9+6+9
 
 
 def test_profitability_ramp_endpoints():
     assert compute_score({"ebitda_margin": make_ratio("ebitda_margin", 0.10)}).breakdown["profitability"] == 0.0
-    assert compute_score({"ebitda_margin": make_ratio("ebitda_margin", -0.05)}).breakdown["profitability"] == 20.0
-    assert compute_score({"ebitda_margin": make_ratio("ebitda_margin", 0.025)}).breakdown["profitability"] == 10.0
+    assert compute_score({"ebitda_margin": make_ratio("ebitda_margin", -0.05)}).breakdown["profitability"] == 14.0
+    assert compute_score({"ebitda_margin": make_ratio("ebitda_margin", 0.025)}).breakdown["profitability"] == 7.0
 
 
 def test_ratios_clamp_at_healthy_edge():
@@ -162,18 +168,36 @@ def test_low_severity_findings_ignored():
     assert result.breakdown["llm_high_severity"] == 0.0
 
 
-def test_score_capped_at_100():
-    ratios = {
+def all_severe_ratios():
+    """Every core ratio pushed at/past its severe edge (positive EBITDA so the
+    sign-aware override stays off and the ramps are exercised)."""
+    return {
         "leverage": make_ratio("leverage", 12.0, ebitda_inputs(1_000_000)),
         "interest_coverage": make_ratio("interest_coverage", 0.0, ebitda_inputs(1_000_000)),
         "ebitda_margin": make_ratio("ebitda_margin", -0.20, ebitda_inputs(1_000_000)),
-        "free_cash_flow": make_ratio("free_cash_flow", -1_000_000),
         "fcf_margin": make_ratio("fcf_margin", -0.20),
         "liquidity": make_ratio("liquidity", 0.0),
+        "cash_flow_to_debt": make_ratio("cash_flow_to_debt", 0.0),
+        "current_ratio": make_ratio("current_ratio", 0.0),
+        "debt_to_assets": make_ratio("debt_to_assets", 0.95),
     }
-    # Core sums to 90; 10 high findings add 10 → 100 (combined LLM cap is 15).
+
+
+def test_core_maxima_sum_to_100():
+    # Maturity wall is the 9th core rule; feed it via the maturity arg at severe.
+    @dataclass
+    class Mat:
+        near_term_pct: float = 0.90
+    result = compute_score(all_severe_ratios(), [], maturity=Mat())
+    # Every core rule maxed → the 9 rules sum to exactly the 100-pt budget.
+    assert result.score == 100.0
+
+
+def test_score_capped_at_100():
+    # Core already maxes to 100; 10 high findings would add 10 more but the
+    # total is capped at 100 (and the combined LLM cap is 15).
     findings = [MockFinding("x", "high") for _ in range(10)]
-    result = compute_score(ratios, findings)
+    result = compute_score(all_severe_ratios(), findings)
     assert result.score == 100.0
 
 
@@ -197,11 +221,33 @@ def test_combined_llm_cap_cannot_cross_threshold():
 
 
 def test_breakdown_is_auditable():
-    # Leverage 4.5× is the midpoint of the 3→6 ramp → 0.5 × 20 = 10.0 pts.
+    # Leverage 4.5× is the midpoint of the 3→6 ramp → 0.5 × 17 = 8.5 pts.
     ratios = {"leverage": make_ratio("leverage", 4.5, ebitda_inputs(1_000_000))}
     result = compute_score(ratios)
     assert "leverage>5x" in result.breakdown
-    assert result.breakdown["leverage>5x"] == 10.0
+    assert result.breakdown["leverage>5x"] == 8.5
+
+
+# ── New ratio rules: ramp endpoints (calibrated, not lenient) ───────────────
+
+def test_cash_flow_to_debt_ramp():
+    # healthy 0.30 → 0; severe 0.10 → full 15; 0.20 (≈BB) → half.
+    assert compute_score({"cash_flow_to_debt": make_ratio("cash_flow_to_debt", 0.30)}).breakdown["cash_flow_to_debt<30%"] == 0.0
+    assert compute_score({"cash_flow_to_debt": make_ratio("cash_flow_to_debt", 0.10)}).breakdown["cash_flow_to_debt<30%"] == 15.0
+    assert compute_score({"cash_flow_to_debt": make_ratio("cash_flow_to_debt", 0.20)}).breakdown["cash_flow_to_debt<30%"] == 7.5
+
+
+def test_debt_to_assets_ramp():
+    # healthy 0.40 → 0; severe 0.65 → full 9.
+    assert compute_score({"debt_to_assets": make_ratio("debt_to_assets", 0.40)}).breakdown["debt_to_assets>40%"] == 0.0
+    assert compute_score({"debt_to_assets": make_ratio("debt_to_assets", 0.65)}).breakdown["debt_to_assets>40%"] == 9.0
+
+
+def test_current_ratio_ramp():
+    # healthy 1.5 → 0; severe 0.75 → full 6; 1.0× → ~67% (4.0 pts).
+    assert compute_score({"current_ratio": make_ratio("current_ratio", 1.5)}).breakdown["current_ratio<1.5x"] == 0.0
+    assert compute_score({"current_ratio": make_ratio("current_ratio", 0.75)}).breakdown["current_ratio<1.5x"] == 6.0
+    assert compute_score({"current_ratio": make_ratio("current_ratio", 1.0)}).breakdown["current_ratio<1.5x"] == 4.0
 
 
 def test_missing_ratios_skip_gracefully():

@@ -29,19 +29,23 @@ Contribution to the stress score:
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 
 import anthropic
 
+logger = logging.getLogger(__name__)
+
 # claude-haiku is fast and cheap — appropriate for structured extraction tasks
 # where we send a constrained prompt and expect JSON output.
 MODEL = "claude-haiku-4-5-20251001"
 
-# The single truncation point for review input. 40k chars ≈ 10k tokens — covers
-# a located MD&A section (including Liquidity and Capital Resources) and is
-# trivial against the model's 200k-token context window.
-MAX_REVIEW_CHARS = 40_000
+# The single truncation point for review input. 100k chars ≈ 25k tokens — covers
+# nearly all MD&A sections in full (including Liquidity and Capital Resources,
+# which sits in the latter half) and is small against the model's 200k-token
+# context window.
+MAX_REVIEW_CHARS = 100_000
 
 # The system prompt is carefully worded to:
 #   1. Focus the LLM on qualitative language signals only (not repeating numbers).
@@ -119,6 +123,23 @@ def quote_in_text(quote: str, source_text: str) -> bool:
     )
 
 
+def warn_if_truncated(message, filing_label: str) -> None:
+    """
+    Log a warning when the model stopped because it hit max_tokens.
+
+    A truncated response is cut off mid-JSON, so parse_json_array returns [] and
+    the period silently stores zero findings — indistinguishable from "no
+    concerns found". The caps are sized generously (~100 items per call), so
+    this firing means something unusual; surface it instead of hiding it.
+    """
+    if getattr(message, "stop_reason", None) == "max_tokens":
+        logger.warning(
+            "LLM response for %s hit max_tokens and was truncated; "
+            "findings for this call are likely incomplete or empty",
+            filing_label,
+        )
+
+
 def parse_json_array(raw_text: str) -> list:
     """
     Strip markdown code fences from an LLM response and parse it as a JSON array.
@@ -133,7 +154,7 @@ def parse_json_array(raw_text: str) -> list:
     # Strip markdown code fences if the model wrapped the JSON.
     # e.g. ```json\n[...]\n``` → [...]
     if raw_text.startswith("```"):
-        raw_text = re.sub(r"^```[a-z]*\n?", "", raw_text)
+        raw_text = re.sub(r"^```[a-zA-Z]*\n?", "", raw_text)
         raw_text = re.sub(r"\n?```$", "", raw_text)
 
     try:
@@ -158,11 +179,16 @@ class Finding:
         severity:       "low" | "medium" | "high"
         evidence_quote: Verbatim excerpt from the filing (max ~200 chars)
         source:         e.g. "10-K 2023-12-31, MD&A"
+        source_url:     Public SEC EDGAR URL of the filing document the quote
+                        came from, so the UI can deep-link back to it. Pipeline-
+                        supplied (never from the LLM); defaults to "" for older
+                        findings persisted before this field existed.
     """
     concern: str
     severity: str
     evidence_quote: str
     source: str
+    source_url: str = ""
 
 
 def _validate_finding(raw: dict) -> Finding | None:
@@ -179,11 +205,17 @@ def _validate_finding(raw: dict) -> Finding | None:
     Returns None (silently drops the finding) if any rule fails.
     This is intentional — we'd rather drop a bad finding than store garbage data.
     """
-    # Strip whitespace from all fields to handle extra spaces in LLM output.
-    concern = raw.get("concern", "").strip()
-    severity = raw.get("severity", "").strip().lower()
-    evidence_quote = raw.get("evidence_quote", "").strip()
-    source = raw.get("source", "").strip()
+    # The model occasionally returns array elements that aren't objects at all
+    # (e.g. bare strings); drop them rather than crashing the whole review.
+    if not isinstance(raw, dict):
+        return None
+
+    # str() + strip: coerce non-string values and handle extra spaces, like the
+    # footnote_review validators do.
+    concern = str(raw.get("concern", "") or "").strip()
+    severity = str(raw.get("severity", "") or "").strip().lower()
+    evidence_quote = str(raw.get("evidence_quote", "") or "").strip()
+    source = str(raw.get("source", "") or "").strip()
 
     # Rule 1: required fields must be present.
     if not concern or not evidence_quote:
@@ -210,6 +242,7 @@ def review_text(
     text: str,
     filing_label: str,
     client: anthropic.Anthropic | None = None,
+    source_url: str = "",
 ) -> list[Finding]:
     """
     Send filing section text to Claude and return validated qualitative findings.
@@ -231,6 +264,8 @@ def review_text(
                        e.g. "10-K 2023-12-31, MD&A".
         client:        Optional pre-created Anthropic client. If None, a new
                        client is created using the ANTHROPIC_API_KEY env var.
+        source_url:    Public SEC EDGAR URL of the filing document, stamped onto
+                       every returned finding for UI traceability. Optional.
 
     Returns:
         List of validated Finding objects. May be empty if:
@@ -252,10 +287,17 @@ def review_text(
 
     message = client.messages.create(
         model=MODEL,
-        max_tokens=1024,  # enough for ~10 findings; LLM findings are short
+        # A finding with a max-length quote is ~120 output tokens, so this covers
+        # well over 100 findings — far beyond any real filing. Generous on purpose:
+        # max_tokens is a ceiling, not a spend (only generated tokens are billed),
+        # while hitting the cap truncates the JSON mid-array and the whole call
+        # degrades to zero findings. ~16k is also the non-streaming limit before
+        # SDK HTTP timeouts become a concern.
+        max_tokens=16000,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_prompt}],
     )
+    warn_if_truncated(message, filing_label)
 
     # Extract the response text, strip any code fences, and parse the JSON array.
     # Returns [] on any malformed output rather than crashing the pipeline.
@@ -268,6 +310,9 @@ def review_text(
     for raw in raw_findings:
         validated = _validate_finding(raw)
         if validated is not None and quote_in_text(validated.evidence_quote, excerpt):
+            # source_url is pipeline-supplied, not from the LLM — stamp it on
+            # each surviving finding so the UI can deep-link back to the filing.
+            validated.source_url = source_url
             findings.append(validated)
 
     return findings

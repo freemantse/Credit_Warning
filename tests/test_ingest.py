@@ -270,3 +270,14 @@ def test_find_filing_prefers_report_date_over_window():
 def test_find_filing_no_match_returns_none():
     filings = [_filing("2019-03-01", "2018-12-31")]
     assert ingest.find_filing_for_period(filings, "2023-12-31") is None
+
+
+def test_filing_doc_url_strips_cik_zeros_and_accession_hyphens():
+    # CIK becomes an integer (no leading zeros); accession loses its hyphens.
+    url = ingest.filing_doc_url(
+        "0000320193", "0000320193-23-000106", "aapl-20230930.htm"
+    )
+    assert url == (
+        "https://www.sec.gov/Archives/edgar/data"
+        "/320193/000032019323000106/aapl-20230930.htm"
+    )

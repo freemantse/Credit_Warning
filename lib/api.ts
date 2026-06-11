@@ -31,6 +31,9 @@ export interface IssuerSummary {
   free_cash_flow: number | null   // raw dollars — use fmtFCF() to display
   fcf_margin: number | null       // decimal fraction, e.g. 0.12 = 12%
   liquidity: number | null        // cash / short_term_debt
+  cash_flow_to_debt: number | null      // operating_cashflow / gross_debt (FFO/Debt proxy), decimal fraction
+  debt_to_assets: number | null         // gross_debt / total_assets (gearing), decimal fraction
+  current_ratio: number | null          // current_assets / current_liabilities
   score: number                   // 0–100 stress score from compute_score()
   alerts: string[]                // human-readable triggered threshold messages
 }
@@ -57,6 +60,7 @@ export interface Finding {
   severity: 'low' | 'medium' | 'high'
   evidence_quote: string   // verbatim excerpt from the filing text
   source: string           // e.g. "10-K 2023-12-31, MD&A"
+  source_url?: string      // EDGAR doc URL; optional — absent on older findings
 }
 
 /**
@@ -111,6 +115,7 @@ export interface PeriodData {
   maturities?: MaturitySchedule | null // XBRL maturity schedule (always present after track)
   covenants?: Covenant[]              // LLM-extracted covenants (empty if no LLM review)
   loss_provisions?: LossProvision[]   // LLM-extracted provisions (empty if no LLM review)
+  source_url?: string | null          // public SEC EDGAR URL of the 10-K these ratios came from
 }
 
 /**
@@ -312,6 +317,46 @@ export async function fetchIssuer(ticker: string): Promise<IssuerDetail> {
 export async function deleteIssuer(ticker: string): Promise<void> {
   const res = await fetch(`/api/issuer/${ticker}`, { method: 'DELETE' })
   if (!res.ok) throw new Error(`Failed to delete ${ticker}`)
+}
+
+/**
+ * Progress of the on-demand LLM review for one issuer, polled from
+ * GET /api/issuer/{ticker}/llm-review/status. The detail page polls this every
+ * few seconds while running === true.
+ */
+export interface LlmReviewStatus {
+  running: boolean
+  error: string | null         // non-null if the run aborted (e.g. EDGAR fetch failed)
+  periods_done: number         // filings reviewed so far
+  periods_total: number        // filings this run will review (0 = no run yet)
+}
+
+/**
+ * Kick off the LLM qualitative review for an already-tracked issuer as a
+ * server-side background task. Returns immediately — poll fetchLlmReviewStatus()
+ * to watch for completion, then re-fetch the issuer to show the findings.
+ *
+ * `periods` caps how many most-recent annual filings are reviewed (the pass is
+ * ~30 s/filing). Defaults to the backend's cap (3) when omitted.
+ * Throws if a review is already running for this issuer (409 Conflict).
+ */
+export async function startLlmReview(ticker: string, periods?: number): Promise<void> {
+  const res = await fetch(`/api/issuer/${ticker}/llm-review`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(periods != null ? { periods } : {}),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Unknown error' }))
+    throw new Error(err.detail || 'Failed to start LLM review')
+  }
+}
+
+/** Check the current state of the background LLM review for one issuer. */
+export async function fetchLlmReviewStatus(ticker: string): Promise<LlmReviewStatus> {
+  const res = await fetch(`/api/issuer/${ticker}/llm-review/status`)
+  if (!res.ok) throw new Error('Failed to fetch LLM review status')
+  return res.json()
 }
 
 /**

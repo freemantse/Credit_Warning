@@ -2,21 +2,11 @@
 LLM structured extraction of debt-footnote and loss-provision details.
 
 Why a separate module from llm_review.py?
-  llm_review.py extracts QUALITATIVE findings and enforces a hard "no digits"
-  rule — numbers are forbidden there because they belong to the deterministic
-  XBRL path (extract.py). This module is the deliberate exception: it extracts
-  HYBRID output — structured numbers (covenant thresholds, accrued provision
-  amounts) WHERE they can be reliably parsed, plus a qualitative flag and a
-  verbatim quote for everything else.
+  llm_review.py extracts QUALITATIVE findings and enforces a hard "no digits" rule — numbers are forbidden there because they belong to the deterministic XBRL path (extract.py). This module is the deliberate exception: it extracts HYBRID output — structured numbers (covenant thresholds, accrued provision amounts) WHERE they can be reliably parsed, plus a qualitative flag and a verbatim quote for everything else.
 
 The anti-hallucination contract (critical):
-  An LLM asked for numbers will sometimes invent them. So every non-null numeric
-  field returned by the model is validated against its own evidence_quote: if the
-  number does not actually appear in the quote (allowing for unit scaling like
-  "$500 million" → 500000000), it is dropped to None. The qualitative flag and
-  the verbatim quote always survive. This keeps the structured numbers honest and
-  is why these signals are only allowed a small, capped contribution to the
-  stress score (see score.py).
+  An LLM asked for numbers will sometimes invent them. So every non-null numeric field returned by the model is validated against its own evidence_quote: if the number does not actually appear in the quote (allowing for unit scaling like "$500 million" → 500000000), it is dropped to None. The qualitative flag and
+  the verbatim quote always survive. This keeps the structured numbers honest and is why these signals are only allowed a small, capped contribution to the stress score (see score.py).
 
 Input:
   These functions receive a pre-located section slice from sections.py — the
@@ -31,10 +21,16 @@ from dataclasses import dataclass
 
 import anthropic
 
-from src.llm_review import Finding, parse_json_array, quote_in_text, review_text
+from src.llm_review import (
+    Finding,
+    parse_json_array,
+    quote_in_text,
+    review_text,
+    warn_if_truncated,
+)
 
 # Same fast/cheap model used for the qualitative review — structured extraction
-# from a short, focused excerpt is well within Haiku's capability.
+# from a focused excerpt is well within Haiku's capability.
 MODEL = "claude-haiku-4-5-20251001"
 
 _COVENANT_TYPES = ("max_leverage", "min_coverage", "min_net_worth", "other")
@@ -121,6 +117,21 @@ class LossProvision:
     source: str
 
 
+def _to_bool(val) -> bool:
+    """
+    Coerce a JSON value to bool without the bool("false") trap.
+
+    These flags feed score points directly (covenant proximity, material
+    provisions), so a model that emits the string "false" must not count as
+    True. Strings are accepted only for the explicit affirmatives.
+    """
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.strip().lower() in ("true", "yes")
+    return False
+
+
 def _to_float(val) -> float | None:
     """Coerce a JSON value to float, or None if it isn't a usable number."""
     if isinstance(val, bool) or val is None:
@@ -189,7 +200,7 @@ def _validate_covenant(raw: dict, fallback_source: str) -> Covenant | None:
         threshold=threshold,
         direction=direction,
         reported_actual=reported_actual,
-        near_limit=bool(raw.get("near_limit", False)),
+        near_limit=_to_bool(raw.get("near_limit", False)),
         evidence_quote=evidence_quote[:240],
         source=str(raw.get("source", "") or fallback_source).strip(),
     )
@@ -211,7 +222,7 @@ def _validate_provision(raw: dict, fallback_source: str) -> LossProvision | None
     return LossProvision(
         matter=matter,
         provision_amount=amount,
-        is_material=bool(raw.get("is_material", False)),
+        is_material=_to_bool(raw.get("is_material", False)),
         qualitative_flag=str(raw.get("qualitative_flag", "")).strip(),
         evidence_quote=evidence_quote[:240],
         source=str(raw.get("source", "") or fallback_source).strip(),
@@ -219,8 +230,8 @@ def _validate_provision(raw: dict, fallback_source: str) -> LossProvision | None
 
 
 # Max section characters sent per footnote LLM call. The located sections are
-# capped at 20k chars by sections.py; this is the single trim applied here.
-MAX_SECTION_CHARS = 20_000
+# capped at 40k chars by sections.py; this is the single trim applied here.
+MAX_SECTION_CHARS = 40_000
 
 
 def _extract(
@@ -251,10 +262,17 @@ def _extract(
     )
     message = client.messages.create(
         model=MODEL,
-        max_tokens=1500,
+        # A covenant/provision with a max-length quote is ~150 output tokens, so
+        # this covers ~100 items — far beyond any real footnote. Generous on
+        # purpose: max_tokens is a ceiling, not a spend (only generated tokens
+        # are billed), while hitting the cap truncates the JSON mid-array and
+        # the whole call degrades to zero items. ~16k is also the non-streaming
+        # limit before SDK HTTP timeouts become a concern.
+        max_tokens=16000,
         system=system_prompt,
         messages=[{"role": "user", "content": user_prompt}],
     )
+    warn_if_truncated(message, filing_label)
     return parse_json_array(message.content[0].text), excerpt
 
 
@@ -326,7 +344,7 @@ def review_filing(
 
     Returns ([], [], []) if no matching filing or no sections are found.
     """
-    from src.ingest import find_filing_for_period, get_filing_text
+    from src.ingest import filing_doc_url, find_filing_for_period, get_filing_text
     from src.sections import locate_sections
 
     filing = find_filing_for_period(filings, period)
@@ -334,6 +352,9 @@ def review_filing(
         return [], [], []
 
     text = get_filing_text(cik, filing["accessionNumber"], filing["primaryDocument"])
+    # Public EDGAR URL of this document, so qualitative findings can deep-link
+    # back to the source 10-K (the UI appends a #:~:text= quote fragment).
+    doc_url = filing_doc_url(cik, filing["accessionNumber"], filing["primaryDocument"])
     sections = locate_sections(text)
 
     findings: list[Finding] = []
@@ -341,7 +362,7 @@ def review_filing(
     provisions: list[LossProvision] = []
     if sections["mdna"] is not None:
         findings = review_text(
-            sections["mdna"].text, f"10-K {period}, MD&A", client
+            sections["mdna"].text, f"10-K {period}, MD&A", client, source_url=doc_url
         )
     if sections["debt"] is not None:
         covenants = extract_debt_footnote(

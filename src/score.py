@@ -2,19 +2,31 @@
 Deterministic stress scoring per (issuer, period).
 
 How the score is built:
-  The score is an additive sum of rule-based penalties over six deterministic
+  The score is an additive sum of rule-based penalties over nine deterministic
   core rules (max 100 pts combined), plus capped LLM nudges:
     - Each quantitative ratio rule contributes points on a linear ramp: 0 while
       the ratio is at or healthier than its threshold, then rising continuously
       to the rule's maximum as the ratio worsens toward a severe extreme (and
-      clamped at the maximum beyond it).
-    - The six core rules and their maxima:
-        profitability (EBITDA margin)  20
-        leverage (net debt / EBITDA)   20
-        interest coverage              20
-        free cash flow (FCF margin)    15
-        liquidity                      15
-        maturity wall                  10
+      clamped at the maximum beyond it). Thresholds are calibrated to rating-agency
+      grids and distress research, so a speculative-grade reading already carries
+      roughly half a rule's points.
+    - The nine core rules and their maxima, grouped by what they measure. Debt
+      serviceability dominates, led by the two strongest empirical distress
+      predictors (leverage and cash-flow-to-debt):
+        Debt serviceability (46):
+          leverage (net debt / EBITDA)      17
+          interest coverage                 14
+          cash flow to debt (FFO/Debt)      15
+        Earnings / cash generation (24):
+          profitability (EBITDA margin)     14
+          free cash flow (FCF margin)       10
+        Liquidity (15):
+          liquidity (cash / short-term debt) 9
+          current ratio                      6
+        Solvency (9):
+          debt to assets (gearing)           9
+        Refinancing (6):
+          maturity wall                      6
     - LLM signals (high-severity findings, covenant proximity, loss provisions)
       contribute up to 15 additional points combined.
     - The total is capped at 100.
@@ -27,7 +39,7 @@ How the score is built:
       rules to their full penalty. We branch on the EBITDA sign (not the ratio
       sign) so a negative leverage caused by a net-cash position with POSITIVE
       EBITDA still scores 0 — financial strength, not distress.
-    - DISTRESS ESCALATION floor: if >= 3 core rules are "severe" (>= 80% of their
+    - DISTRESS ESCALATION floor: if >= 4 core rules are "severe" (>= 80% of their
       max), the final score is floored at 60 (High Risk) regardless of the sum,
       so compounding distress can't slip under the threshold.
 
@@ -206,10 +218,10 @@ def compute_score(
     # distress signal. Ramp: 0 pts at/above a 10% margin, rising to the full
     # 20 pts at a -5% margin and below (operating losses).
     prof = _val("ebitda_margin")
-    prof_pts = _ramp(prof, healthy=0.10, severe=-0.05, max_pts=20.0)
+    prof_pts = _ramp(prof, healthy=0.10, severe=-0.05, max_pts=14.0)
     breakdown["profitability"] = prof_pts
     if prof_pts > 0:
-        alerts.append(f"EBITDA margin {prof * 100:.0f}% weak ({prof_pts:.0f}/20 pts)")
+        alerts.append(f"EBITDA margin {prof * 100:.0f}% weak ({prof_pts:.0f}/14 pts)")
 
     # ── Rule 1: Leverage > 5× ────────────────────────────────────────────────
     # Net debt / EBITDA above 5× is a widely-used speculative-grade boundary.
@@ -222,12 +234,12 @@ def compute_score(
     # net-cash position with positive EBITDA is left to the ramp → 0 pts.
     lev = _val("leverage")
     if ebitda_negative:
-        lev_pts = 20.0
-        alerts.append("Leverage rule maxed: negative EBITDA — debt unservable from earnings (20/20 pts)")
+        lev_pts = 17.0
+        alerts.append("Leverage rule maxed: negative EBITDA — debt unservable from earnings (17/17 pts)")
     else:
-        lev_pts = _ramp(lev, healthy=3.0, severe=6.0, max_pts=20.0)
+        lev_pts = _ramp(lev, healthy=3.0, severe=6.0, max_pts=17.0)
         if lev_pts > 0:
-            alerts.append(f"Leverage {lev:.1f}× elevated ({lev_pts:.0f}/20 pts)")
+            alerts.append(f"Leverage {lev:.1f}× elevated ({lev_pts:.0f}/17 pts)")
     breakdown["leverage>5x"] = lev_pts
 
     # ── Rule 2: Interest Coverage < 2× ──────────────────────────────────────
@@ -240,12 +252,12 @@ def compute_score(
     # force the full penalty.
     cov = _val("interest_coverage")
     if ebitda_negative:
-        cov_pts = 20.0
-        alerts.append("Coverage rule maxed: negative EBITDA — interest uncovered by earnings (20/20 pts)")
+        cov_pts = 14.0
+        alerts.append("Coverage rule maxed: negative EBITDA — interest uncovered by earnings (14/14 pts)")
     else:
-        cov_pts = _ramp(cov, healthy=4.0, severe=1.0, max_pts=20.0)
+        cov_pts = _ramp(cov, healthy=4.0, severe=1.0, max_pts=14.0)
         if cov_pts > 0:
-            alerts.append(f"Interest coverage {cov:.1f}× thin ({cov_pts:.0f}/20 pts)")
+            alerts.append(f"Interest coverage {cov:.1f}× thin ({cov_pts:.0f}/14 pts)")
     breakdown["coverage<2x"] = cov_pts
 
     # ── Rule 3: Free Cash Flow negative ─────────────────────────────────────
@@ -262,12 +274,12 @@ def compute_score(
     # target 10–15% FCF margin; sustained negative is the credit concern.
     fcf_margin = _val("fcf_margin")
     fcf = _val("free_cash_flow")
-    fcf_pts = _ramp(fcf_margin, healthy=0.0, severe=-0.10, max_pts=15.0)
+    fcf_pts = _ramp(fcf_margin, healthy=0.0, severe=-0.10, max_pts=10.0)
     breakdown["fcf_negative"] = fcf_pts
     if fcf_pts > 0:
         fcf_str = f"{fcf:,.0f}" if fcf is not None else "n/a"
         alerts.append(
-            f"Free cash flow negative ({fcf_str}, {fcf_margin * 100:.0f}% margin, {fcf_pts:.0f}/15 pts)"
+            f"Free cash flow negative ({fcf_str}, {fcf_margin * 100:.0f}% margin, {fcf_pts:.0f}/10 pts)"
         )
 
     # ── Rule 4: Liquidity < 1× ──────────────────────────────────────────────
@@ -278,19 +290,49 @@ def compute_score(
     # full 15 pts at 0.25× and below — covenant minimums commonly sit at
     # 0.25–0.5×, so below 0.25× signals acute refinancing pressure.
     liq = _val("liquidity")
-    liq_pts = _ramp(liq, healthy=1.0, severe=0.25, max_pts=15.0)
+    liq_pts = _ramp(liq, healthy=1.0, severe=0.25, max_pts=9.0)
     breakdown["liquidity<1x"] = liq_pts
     if liq_pts > 0:
-        alerts.append(f"Liquidity {liq:.2f}× thin ({liq_pts:.0f}/15 pts)")
+        alerts.append(f"Liquidity {liq:.2f}× thin ({liq_pts:.0f}/9 pts)")
+
+    # ── Rule 4b: Cash flow to debt < 30% ─────────────────────────────────────
+    # operating_cashflow / gross_debt — a proxy for the rating agencies' FFO/Debt,
+    # the single most predictive distress ratio in the literature (Beaver, Jooste).
+    # Calibrated to S&P's FFO/Debt bands: >=30% is investment-grade cash-flow
+    # adequacy (0 pts); <12% is "highly leveraged"; we max out at 10%.
+    # Ramp: 0 pts at/above 30%, rising to the full 13 pts at 10% and below.
+    cfd = _val("cash_flow_to_debt")
+    cfd_pts = _ramp(cfd, healthy=0.30, severe=0.10, max_pts=15.0)
+    breakdown["cash_flow_to_debt<30%"] = cfd_pts
+    if cfd_pts > 0:
+        alerts.append(f"Cash flow to debt {cfd * 100:.0f}% weak ({cfd_pts:.0f}/15 pts)")
+
+    # ── Rule 4c: Current ratio < 1.5× ────────────────────────────────────────
+    # current_assets / current_liabilities — working-capital liquidity. Below 1.0×
+    # the company can't cover near-term obligations from current assets; <0.6× is
+    # used in distress classification.
+    # Ramp: 0 pts at/above 1.5×, rising to the full 7 pts at 0.75× and below.
+    cur = _val("current_ratio")
+    cur_pts = _ramp(cur, healthy=1.5, severe=0.75, max_pts=6.0)
+    breakdown["current_ratio<1.5x"] = cur_pts
+    if cur_pts > 0:
+        alerts.append(f"Current ratio {cur:.2f}× thin ({cur_pts:.0f}/6 pts)")
+
+    # ── Rule 4d: Debt to assets > 40% ────────────────────────────────────────
+    # gross_debt / total_assets — capital-structure gearing, and the sole
+    # balance-sheet solvency rule. Distress models flag the 0.6–0.7 band; 0.40 is
+    # a conservatively-geared balance sheet.
+    # Ramp: 0 pts at/below 40%, rising to the full 9 pts at 65% and above.
+    dta = _val("debt_to_assets")
+    dta_pts = _ramp(dta, healthy=0.40, severe=0.65, max_pts=9.0)
+    breakdown["debt_to_assets>40%"] = dta_pts
+    if dta_pts > 0:
+        alerts.append(f"Debt to assets {dta * 100:.0f}% elevated ({dta_pts:.0f}/9 pts)")
 
     # ── LLM qualitative adjustment ───────────────────────────────────────────
     # High-severity findings from the LLM review each add 2 pts, capped at 10.
-    #
-    # Why getattr(f, "severity", "")?
-    #   Findings could be Finding dataclass instances (from llm_review.py) or
-    #   plain dicts loaded from Supabase. getattr() safely handles dataclasses;
-    #   for dicts it returns "" (the default), so dict findings contribute 0 pts.
-    #   This makes the function tolerant of both input formats.
+    # Findings may be Finding dataclass instances (fresh from llm_review.py) or
+    # plain dicts loaded back from Supabase — _attr reads severity from either.
     #
     # LLM cap rationale: the high-severity (10), covenant-proximity (6), and
     # loss-provision (6) caps are intentionally low — but to keep the original
@@ -310,12 +352,12 @@ def compute_score(
     # Ramp: 0 pts at/below 30% near-term, rising to the full 10 pts at 80% and
     # above — rating agencies penalise heavy near-term maturity concentration.
     near_term_pct = _attr(maturity, "near_term_pct") if maturity is not None else None
-    wall_pts = _ramp(near_term_pct, healthy=0.30, severe=0.80, max_pts=10.0)
+    wall_pts = _ramp(near_term_pct, healthy=0.30, severe=0.80, max_pts=6.0)
     breakdown["maturity_wall"] = wall_pts
     if wall_pts > 0:
         alerts.append(
             f"Maturity wall: {near_term_pct * 100:.0f}% of debt due within 3 years "
-            f"({wall_pts:.0f}/10 pts)"
+            f"({wall_pts:.0f}/6 pts)"
         )
 
     # ── Rule 6: Covenant proximity (LLM-DERIVED, capped) ─────────────────────
@@ -339,12 +381,15 @@ def compute_score(
     # The six deterministic core rules and their maxima. Used both for the
     # severe-signal count (escalation floor) and to separate core from LLM.
     core_maxima = {
-        "profitability": 20.0,
-        "leverage>5x": 20.0,
-        "coverage<2x": 20.0,
-        "fcf_negative": 15.0,
-        "liquidity<1x": 15.0,
-        "maturity_wall": 10.0,
+        "profitability": 14.0,
+        "leverage>5x": 17.0,
+        "coverage<2x": 14.0,
+        "cash_flow_to_debt<30%": 15.0,
+        "fcf_negative": 10.0,
+        "liquidity<1x": 9.0,
+        "current_ratio<1.5x": 6.0,
+        "debt_to_assets>40%": 9.0,
+        "maturity_wall": 6.0,
     }
     core_total = sum(breakdown[k] for k in core_maxima)
 
@@ -356,11 +401,12 @@ def compute_score(
     score = min(core_total + llm_total, 100.0)
 
     # ── Distress escalation floor ────────────────────────────────────────────
-    # Count core rules that are "severe" (>= 80% of their max). When >= 3 fire
+    # Count core rules that are "severe" (>= 80% of their max). When >= 4 fire
     # together, the issuer is in compounding distress and is floored at 60
     # (High Risk) so the additive sum can't let it slip under the threshold.
+    # The trigger is 4 of 9 core rules (~44%), proportionate to the prior 3-of-6.
     severe_signals = [k for k, mx in core_maxima.items() if breakdown[k] >= 0.8 * mx]
-    if len(severe_signals) >= 3:
+    if len(severe_signals) >= 4:
         if score < 60.0:
             score = 60.0
         alerts.append(

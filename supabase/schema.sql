@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS llm_findings (
   severity       TEXT NOT NULL CHECK (severity IN ('low', 'medium', 'high')),
   evidence_quote TEXT NOT NULL,                    -- verbatim quote from the filing
   source         TEXT NOT NULL,                    -- e.g. "10-K 2023-12-31, MD&A"
+  source_url     TEXT NOT NULL DEFAULT '',         -- EDGAR doc URL for deep-link traceability
   created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (cik, period_end, concern, evidence_quote)
 );
@@ -155,33 +156,3 @@ CREATE POLICY "Public read covenants" ON covenants FOR SELECT USING (true);
 
 DROP POLICY IF EXISTS "Public read loss_provisions" ON loss_provisions;
 CREATE POLICY "Public read loss_provisions" ON loss_provisions FOR SELECT USING (true);
-
-
--- ============================================================================
--- MIGRATION — add missing-ratio support to an existing `ratios` table
--- ----------------------------------------------------------------------------
--- Run these once on a DB created before missing ratios were persisted. They are
--- idempotent and non-destructive. After running, re-track issuers to backfill
--- the missing-ratio rows (existing computed rows are untouched).
---
--- ALTER TABLE ratios ALTER COLUMN value DROP NOT NULL;
--- ALTER TABLE ratios ADD COLUMN IF NOT EXISTS missing_json JSONB;
--- ============================================================================
-
-
--- ============================================================================
--- OPTIONAL — destructive reset
--- ----------------------------------------------------------------------------
--- Only needed when migrating from the OLD ticker-keyed schema (where `ratios`
--- and `llm_findings` were keyed on `ticker`). There is no pure-SQL way to
--- backfill CIKs — resolution requires an EDGAR lookup — so the migration path
--- is: drop the old tables, re-run the CREATE statements above, then re-track
--- each issuer once (EDGAR responses are cached, so re-tracking is fast).
---
--- To use: uncomment the three lines below, run them FIRST, then run the rest
--- of this file. THIS DELETES ALL STORED DATA.
---
--- DROP TABLE IF EXISTS ratios;
--- DROP TABLE IF EXISTS llm_findings;
--- DROP TABLE IF EXISTS companies;
--- ============================================================================
