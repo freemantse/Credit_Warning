@@ -53,7 +53,7 @@ def test_save_ratios_upserts_correct_rows():
 
     rows = mock_client.table.return_value.upsert.call_args[0][0]
     assert len(rows) == 1
-    assert rows[0]["ticker"] == "AAPL"
+    assert rows[0]["cik"] == "AAPL".zfill(10)  # cik zero-padded to width 10
     assert rows[0]["period_end"] == "2023-12-31"
     assert rows[0]["ratio_name"] == "leverage"
     assert abs(rows[0]["value"] - 3.5) < 1e-9
@@ -112,13 +112,16 @@ def test_save_findings_upserts_with_conflict_target_and_source_url():
 
 
 def test_get_issuers_deduplicates():
-    raw = [{"ticker": "AAPL"}, {"ticker": "MSFT"}, {"ticker": "AAPL"}]
+    # The ratios table has one row per (cik, period_end, ratio_name), so each
+    # tracked company appears many times. get_issuers() must collapse those to
+    # one entry per distinct CIK.
+    raw = [{"cik": "AAPL"}, {"cik": "MSFT"}, {"cik": "AAPL"}]
     mock_client = make_mock_client(data=raw)
     with patch("src.store._client", return_value=mock_client):
         issuers = store.get_issuers()
 
-    assert set(issuers) == {"AAPL", "MSFT"}
     assert len(issuers) == 2
+    assert {i["cik"] for i in issuers} == {"AAPL", "MSFT"}
 
 
 def test_get_periods_returns_sorted():
