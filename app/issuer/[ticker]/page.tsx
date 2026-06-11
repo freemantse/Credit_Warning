@@ -11,7 +11,7 @@
 // The ticker comes from the dynamic route segment: useParams<{ ticker: string }>().
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { Fragment, useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import {
@@ -721,6 +721,152 @@ function findingSourceLink(sourceUrl: string | undefined, quote: string): string
   return `${sourceUrl}#:~:text=${start},${end}`
 }
 
+// Source label that links to the filing on SEC EDGAR (scrolling to the quote)
+// when a source_url is present; falls back to plain text when there's no URL
+// (older records stored before the field existed, or periods with no matched
+// filing). Shared by the Findings, Loss Provisions, and Covenants sections.
+function SourceLink({ sourceUrl, quote, label }: { sourceUrl: string | null | undefined; quote: string; label: string }) {
+  const href = findingSourceLink(sourceUrl ?? undefined, quote)
+  if (!href) {
+    return (
+      <p className="mt-1.5 text-xs text-slate-400">
+        {label} <span className="text-slate-300">· source link unavailable</span>
+      </p>
+    )
+  }
+  return (
+    <p className="mt-1.5 flex items-center gap-1.5 text-xs">
+      {/* Gray source label first, then the blue link on the right. */}
+      <span className="text-slate-400">{label} ·</span>
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="group inline-flex items-center gap-1.5 font-medium text-blue-600 hover:text-blue-700 transition-colors"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M15 3h6v6" />
+          <path d="M10 14 21 3" />
+          <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+        </svg>
+        <span className="group-hover:underline underline-offset-2">View source on SEC EDGAR</span>
+      </a>
+    </p>
+  )
+}
+
+// ── Year grouping for the LLM qualitative sections ────────────────────────────
+//
+// The three LLM sections (findings, covenants, loss provisions) each aggregate
+// items across every tracked period. With a long history that flat list runs
+// very long, so once a section exceeds GROUP_THRESHOLD items we collapse it into
+// one disclosure per calendar year — newest year expanded, older years collapsed
+// — keeping the page short while any year's detail stays one click away.
+
+const GROUP_THRESHOLD = 6
+
+// Group items (each carrying a `period` field like "2023-12-31") by calendar
+// year, newest year first.
+function groupByYear<T extends { period: string }>(items: T[]): { year: string; items: T[] }[] {
+  const map = new Map<string, T[]>()
+  for (const it of items) {
+    const year = it.period.slice(0, 4)
+    const bucket = map.get(year)
+    if (bucket) bucket.push(it)
+    else map.set(year, [it])
+  }
+  return Array.from(map.entries())
+    .sort((a, b) => b[0].localeCompare(a[0]))   // newest year first
+    .map(([year, items]) => ({ year, items }))
+}
+
+// Renders a list of period-tagged items. Short lists render flat (unchanged);
+// long ones (> GROUP_THRESHOLD across ≥ 2 years) collapse into per-year
+// disclosures with the newest year open by default and an expand/collapse-all
+// control. `itemNoun` labels the per-year counts (e.g. "finding" → "3 findings").
+function YearGroupedList<T extends { period: string }>({
+  items,
+  itemNoun,
+  renderItem,
+}: {
+  items: T[]
+  itemNoun: string
+  renderItem: (item: T, i: number) => ReactNode
+}) {
+  const groups = groupByYear(items)
+
+  // Newest year expanded by default; older years start collapsed.
+  const [openYears, setOpenYears] = useState<Set<string>>(
+    () => new Set(groups.slice(0, 1).map(g => g.year))
+  )
+
+  // Short lists aren't worth the collapse chrome — render them flat, as before.
+  if (items.length <= GROUP_THRESHOLD || groups.length <= 1) {
+    return <div className="divide-y divide-gray-100">{items.map(renderItem)}</div>
+  }
+
+  const plural = (n: number) => `${n} ${itemNoun}${n === 1 ? '' : 's'}`
+  const allOpen = groups.every(g => openYears.has(g.year))
+  const toggleYear = (year: string) =>
+    setOpenYears(prev => {
+      const next = new Set(prev)
+      if (next.has(year)) next.delete(year)
+      else next.add(year)
+      return next
+    })
+  const setAll = (open: boolean) =>
+    setOpenYears(open ? new Set(groups.map(g => g.year)) : new Set())
+
+  return (
+    <div>
+      {/* Expand/collapse-all toolbar — only shown in grouped mode. */}
+      <div className="flex items-center justify-end gap-3 px-6 py-2 border-b border-gray-100 bg-gray-50/60">
+        <span className="text-xs text-slate-400">
+          {groups.length} years · {plural(items.length)}
+        </span>
+        <button
+          onClick={() => setAll(!allOpen)}
+          className="text-xs font-medium text-slate-500 hover:text-slate-700 transition-colors"
+        >
+          {allOpen ? 'Collapse all' : 'Expand all'}
+        </button>
+      </div>
+
+      <div className="divide-y divide-gray-100">
+        {groups.map(g => {
+          const isOpen = openYears.has(g.year)
+          return (
+            <div key={g.year}>
+              {/* Year header — click to toggle this year's items. */}
+              <button
+                onClick={() => toggleYear(g.year)}
+                aria-expanded={isOpen}
+                className="w-full flex items-center gap-2 px-6 py-3 text-left hover:bg-gray-50 transition-colors"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"
+                  fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+                  aria-hidden="true"
+                  className={`text-slate-400 transition-transform ${isOpen ? 'rotate-90' : ''}`}
+                >
+                  <path d="m9 18 6-6-6-6" />
+                </svg>
+                <span className="font-mono font-semibold text-sm text-slate-700">{g.year}</span>
+                <span className="text-xs text-slate-400">{plural(g.items.length)}</span>
+              </button>
+              {isOpen && (
+                <div className="divide-y divide-gray-100 border-t border-gray-100 bg-slate-50/40">
+                  {g.items.map(renderItem)}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 function FindingsSection({ periods }: { periods: PeriodData[] }) {
   // Flatten findings from all periods into one array.
   // The spread {…f, period: p.period_end} adds the period_end date to each finding
@@ -766,8 +912,10 @@ function FindingsSection({ periods }: { periods: PeriodData[] }) {
           </div>
         </dl>
       </div>
-      <div className="divide-y divide-gray-100">
-        {all.map((f, i) => (
+      <YearGroupedList
+        items={all}
+        itemNoun="finding"
+        renderItem={(f, i) => (
           <div key={i} className="px-6 py-4">
             <div className="flex items-start gap-3">
 
@@ -792,44 +940,14 @@ function FindingsSection({ periods }: { periods: PeriodData[] }) {
                   "{f.evidence_quote}"
                 </blockquote>
 
-                {/* Source label (e.g. "10-K 2023-12-31, MD&A"). Links to the
-                    filing on SEC EDGAR (scrolling to the quote) when a source_url
-                    is present; falls back to plain text for older findings stored
-                    before the source_url field existed, or periods with no matched
-                    filing. Styled as an explicit link to match the Source Audit
-                    button above (external-link icon + "View source on SEC EDGAR"),
-                    since the bare label read as plain text. */}
-                {findingSourceLink(f.source_url, f.evidence_quote)
-                  ? (
-                    <p className="mt-1.5 flex items-center gap-1.5 text-xs">
-                      {/* Gray source label first, then the blue link on the right —
-                          mirrors the "source link unavailable" layout below. */}
-                      <span className="text-slate-400">{f.source} ·</span>
-                      <a
-                        href={findingSourceLink(f.source_url, f.evidence_quote)!}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="group inline-flex items-center gap-1.5 font-medium text-blue-600 hover:text-blue-700 transition-colors"
-                      >
-                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                          <path d="M15 3h6v6" />
-                          <path d="M10 14 21 3" />
-                          <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-                        </svg>
-                        <span className="group-hover:underline underline-offset-2">View source on SEC EDGAR</span>
-                      </a>
-                    </p>
-                  )
-                  : (
-                    <p className="mt-1.5 text-xs text-slate-400">
-                      {f.source} <span className="text-slate-300">· source link unavailable</span>
-                    </p>
-                  )}
+                {/* Source label (e.g. "10-K 2023-12-31, MD&A") linking to the
+                    filing on SEC EDGAR and scrolling to the quote. */}
+                <SourceLink sourceUrl={f.source_url} quote={f.evidence_quote} label={f.source} />
               </div>
             </div>
           </div>
-        ))}
-      </div>
+        )}
+      />
     </div>
   )
 }
@@ -933,7 +1051,7 @@ function MaturityWallSection({ periods }: { periods: PeriodData[] }) {
 
 function CovenantsSection({ periods }: { periods: PeriodData[] }) {
   const all = periods.flatMap(p =>
-    (p.covenants ?? []).map(c => ({ ...c, period: p.period_end }))
+    (p.covenants ?? []).map(c => ({ ...c, period: p.period_end, source_url: p.source_url }))
   )
   if (all.length === 0) return null
 
@@ -952,8 +1070,10 @@ function CovenantsSection({ periods }: { periods: PeriodData[] }) {
           Extracted from the debt footnote. Figures shown only when quoted verbatim.
         </p>
       </div>
-      <div className="divide-y divide-gray-100">
-        {all.map((c: Covenant & { period: string }, i) => (
+      <YearGroupedList
+        items={all}
+        itemNoun="covenant"
+        renderItem={(c: Covenant & { period: string; source_url?: string | null }, i) => (
           <div key={i} className="px-6 py-4">
             <div className="flex items-center gap-2 flex-wrap">
               <span className="font-medium text-sm text-slate-800">
@@ -977,10 +1097,10 @@ function CovenantsSection({ periods }: { periods: PeriodData[] }) {
             <blockquote className="mt-2 text-xs text-slate-500 italic border-l-2 border-slate-200 pl-3">
               "{c.evidence_quote}"
             </blockquote>
-            <p className="mt-1 text-xs text-slate-400">{c.source}</p>
+            <SourceLink sourceUrl={c.source_url} quote={c.evidence_quote} label={c.source} />
           </div>
-        ))}
-      </div>
+        )}
+      />
     </div>
   )
 }
@@ -994,7 +1114,7 @@ function CovenantsSection({ periods }: { periods: PeriodData[] }) {
 
 function LossProvisionsSection({ periods }: { periods: PeriodData[] }) {
   const all = periods.flatMap(p =>
-    (p.loss_provisions ?? []).map(lp => ({ ...lp, period: p.period_end }))
+    (p.loss_provisions ?? []).map(lp => ({ ...lp, period: p.period_end, source_url: p.source_url }))
   )
   if (all.length === 0) return null
 
@@ -1006,8 +1126,10 @@ function LossProvisionsSection({ periods }: { periods: PeriodData[] }) {
           Litigation and contingency exposures from the footnotes. Amounts shown only when quoted verbatim.
         </p>
       </div>
-      <div className="divide-y divide-gray-100">
-        {all.map((lp: LossProvision & { period: string }, i) => (
+      <YearGroupedList
+        items={all}
+        itemNoun="provision"
+        renderItem={(lp: LossProvision & { period: string; source_url?: string | null }, i) => (
           <div key={i} className="px-6 py-4">
             <div className="flex items-center gap-2 flex-wrap">
               <span className="font-medium text-sm text-slate-800">{lp.matter}</span>
@@ -1027,10 +1149,10 @@ function LossProvisionsSection({ periods }: { periods: PeriodData[] }) {
             <blockquote className="mt-2 text-xs text-slate-500 italic border-l-2 border-slate-200 pl-3">
               "{lp.evidence_quote}"
             </blockquote>
-            <p className="mt-1 text-xs text-slate-400">{lp.source}</p>
+            <SourceLink sourceUrl={lp.source_url} quote={lp.evidence_quote} label={lp.source} />
           </div>
-        ))}
-      </div>
+        )}
+      />
     </div>
   )
 }

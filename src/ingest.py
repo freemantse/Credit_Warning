@@ -373,49 +373,30 @@ def get_submissions(cik: str) -> dict[str, Any]:
     return _get(url, f"{cik_padded}_submissions")
 
 
-def get_filings(cik: str, form_types: list[str] | None = None) -> list[dict]:
+def _extract_filings(arrays: dict, form_types: list[str]) -> list[dict]:
     """
-    Return a filtered list of filing metadata dicts for a company.
+    Convert one EDGAR parallel-array block into a list of filing dicts.
 
-    EDGAR's submissions JSON uses parallel arrays for efficiency:
-      filings.recent.form        = ["10-K", "10-Q", "10-K", ...]
-      filings.recent.filingDate  = ["2023-11-02", "2023-08-04", ...]
-      filings.recent.reportDate  = ["2023-09-30", "2023-07-01", ...]
-      filings.recent.accessionNumber = ["0000320193-23-000106", ...]
-      filings.recent.primaryDocument  = ["aapl-20230930.htm", ...]
+    EDGAR stores filings as parallel arrays for efficiency:
+      form        = ["10-K", "10-Q", "10-K", ...]
+      filingDate  = ["2023-11-02", "2023-08-04", ...]
+      reportDate  = ["2023-09-30", "2023-07-01", ...]
+      accessionNumber = ["0000320193-23-000106", ...]
+      primaryDocument = ["aapl-20230930.htm", ...]
 
-    zip() stitches these arrays together into (form, date, accession, doc) tuples.
-    We convert each matching tuple into a dict for easier downstream use.
+    zip() stitches these into (form, date, report, accession, doc) tuples. This
+    shape appears both at submissions.filings.recent AND at the top level of each
+    overflow file under filings.files (see get_filings), so the logic is shared.
 
-    reportDate is the fiscal period end the filing covers (a 10-K's reportDate
-    equals its fiscal-year-end date) — the reliable key for matching a filing to
-    an XBRL period (see find_filing_for_period). filingDate is merely when it
-    was submitted, typically 2-4 months later.
-
-    Args:
-        form_types: list of form type strings to include, e.g. ["10-K"].
-                    Defaults to ["10-K", "10-Q", "8-K"] if not specified.
-
-    Returns:
-        List of dicts with keys: form, filingDate, reportDate, accessionNumber,
-        primaryDocument. Ordered newest-first (as EDGAR returns them).
+    Only filings whose form is in form_types are kept.
     """
-    if form_types is None:
-        form_types = ["10-K", "10-Q", "8-K"]
-
-    submissions = get_submissions(cik)
-
-    # Navigate into the "recent" filings section which holds the parallel arrays.
-    recent = submissions.get("filings", {}).get("recent", {})
-
-    # Extract each parallel array. .get() with [] default handles missing keys.
-    forms = recent.get("form", [])
-    dates = recent.get("filingDate", [])
-    accessions = recent.get("accessionNumber", [])
-    docs = recent.get("primaryDocument", [])
+    forms = arrays.get("form", [])
+    dates = arrays.get("filingDate", [])
+    accessions = arrays.get("accessionNumber", [])
+    docs = arrays.get("primaryDocument", [])
     # reportDate may be absent or shorter in odd submissions data; pad with ""
     # so zip() (which stops at the shortest array) never drops filings over it.
-    report_dates = recent.get("reportDate", [])
+    report_dates = arrays.get("reportDate", [])
     if len(report_dates) < len(forms):
         report_dates = list(report_dates) + [""] * (len(forms) - len(report_dates))
 
@@ -430,6 +411,63 @@ def get_filings(cik: str, form_types: list[str] | None = None) -> list[dict]:
                 "accessionNumber": acc,
                 "primaryDocument": doc,
             })
+    return filings
+
+
+def get_filings(cik: str, form_types: list[str] | None = None) -> list[dict]:
+    """
+    Return a filtered list of filing metadata dicts for a company.
+
+    EDGAR's submissions JSON keeps only the most recent ~1000 filings (of all
+    form types) in filings.recent; everything older spills into paginated
+    overflow files listed under filings.files (each a JSON object with the same
+    parallel-array shape at its top level). We load BOTH so that older 10-Ks —
+    which have aged out of recent for frequent filers — are still matchable to a
+    fiscal period (see find_filing_for_period); otherwise old periods get no
+    source link. Overflow fetches are best-effort: a failure on one file is
+    skipped rather than failing the whole lookup.
+
+    reportDate is the fiscal period end the filing covers (a 10-K's reportDate
+    equals its fiscal-year-end date) — the reliable key for matching a filing to
+    an XBRL period (see find_filing_for_period). filingDate is merely when it
+    was submitted, typically 2-4 months later.
+
+    Args:
+        form_types: list of form type strings to include, e.g. ["10-K"].
+                    Defaults to ["10-K", "10-Q", "8-K"] if not specified.
+
+    Returns:
+        List of dicts with keys: form, filingDate, reportDate, accessionNumber,
+        primaryDocument. Ordered newest-first (recent, then progressively older
+        overflow files appended after it).
+    """
+    if form_types is None:
+        form_types = ["10-K", "10-Q", "8-K"]
+
+    submissions = get_submissions(cik)
+    filings_section = submissions.get("filings", {})
+
+    # Most recent filings (the parallel arrays under filings.recent).
+    filings = _extract_filings(filings_section.get("recent", {}), form_types)
+
+    # Older filings: each entry in filings.files names a separate JSON file at
+    # /submissions/<name> holding more parallel arrays. Appended after recent so
+    # the combined list stays newest-first.
+    cik_padded = cik.zfill(10)
+    for f in filings_section.get("files", []):
+        name = f.get("name")
+        if not name:
+            continue
+        try:
+            overflow = _get(
+                f"{BASE_URL}/submissions/{name}",
+                f"{cik_padded}_submissions_{name.replace('.json', '')}",
+            )
+        except Exception:
+            # Best-effort: one unreachable overflow file shouldn't drop the rest.
+            continue
+        filings.extend(_extract_filings(overflow, form_types))
+
     return filings
 
 
