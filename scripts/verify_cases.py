@@ -36,7 +36,7 @@ CANDIDATES = [
     ("whiting-2020",    "1255474",             "2020-04-01", "cik"),  # Whiting Petroleum
     ("frontier-2020",   "20520",               "2020-04-14", "cik"),  # Frontier Communications
     ("jcpenney-2020",   "1166126",             "2020-05-15", "cik"),  # J.C. Penney Co (now Old COPPER)
-    ("hertz-2020",      "HTZ",                 "2020-05-22", "ticker"),
+    ("hertz-2020",      "47129",               "2020-05-22", "cik"),  # The Hertz Corporation (operating co.; full XBRL history)
     ("gnc-2020",        "1502034",             "2020-06-23", "cik"),  # GNC Holdings
     ("chesapeake-2020", "CHK",                 "2020-06-28", "ticker"),
     ("mallinckrodt-2020","1567892",            "2020-10-12", "cik"),  # Mallinckrodt plc
@@ -45,7 +45,7 @@ CANDIDATES = [
     ("bbby-2023",       "886158",              "2023-04-23", "cik"),  # Bed Bath & Beyond
     ("yellow-2023",     "716006",              "2023-08-06", "cik"),  # Yellow Corp
     ("riteaid-2023",    "84129",               "2023-10-15", "cik"),  # Rite Aid
-    ("wework-2023",     "1813756",             "2023-11-06", "cik"),  # WeWork Inc
+    ("diebold-2023",    "28823",               "2023-06-01", "cik"),  # Diebold Nixdorf (prepackaged Ch11)
     # healthy controls (no event check)
     ("aapl", "AAPL", "", "ticker"),
     ("msft", "MSFT", "", "ticker"),

@@ -115,6 +115,39 @@ CREATE TABLE IF NOT EXISTS loss_provisions (
 );
 
 
+-- ── cases ────────────────────────────────────────────────────────────────────
+-- Backtest case library: the roster of distressed issuers (with their
+-- bankruptcy/Chapter-11 date) and healthy controls (with a pinned anchor date)
+-- that the point-in-time backtest evaluates. Migrated out of data/cases.csv so
+-- the roster can be edited from the UI. case_id is a human-readable stable slug
+-- (e.g. "hertz-2020"); cik is the authoritative SEC identifier used to fetch
+-- filings (delisted tickers still resolve via CIK). event_date is stored as TEXT
+-- ("YYYY-MM-DD"), mirroring how the CSV / ratios.period_end carry dates.
+CREATE TABLE IF NOT EXISTS cases (
+  case_id       TEXT PRIMARY KEY,                  -- stable slug, e.g. "hertz-2020"
+  company_name  TEXT NOT NULL DEFAULT '',          -- display name from EDGAR submissions
+  ticker        TEXT NOT NULL DEFAULT '',          -- current/last ticker (may be blank for delisted)
+  cik           TEXT NOT NULL,                     -- zero-padded 10-digit, authoritative id
+  label         TEXT NOT NULL CHECK (label IN ('distressed', 'healthy')),
+  event_date    TEXT,                              -- "YYYY-MM-DD"; Ch.11 date (distressed) or pinned anchor (healthy)
+  notes         TEXT NOT NULL DEFAULT '',
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+
+-- ── score_config ─────────────────────────────────────────────────────────────
+-- The single active stress-score parameter set (one row, id = 'active'). Holds
+-- the full ScoreConfig dict (weights, ramp thresholds, caps, escalation). When
+-- the row is absent, src.score.DEFAULT_CONFIG is used, which reproduces the
+-- original hard-coded behavior. Edited and applied from the backtest UI's
+-- "Scoring parameters" panel ("Apply to portfolio").
+CREATE TABLE IF NOT EXISTS score_config (
+  id          TEXT PRIMARY KEY,                    -- always 'active'
+  config      JSONB NOT NULL,                      -- full ScoreConfig dict
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+
 -- ── Indexes ──────────────────────────────────────────────────────────────────
 CREATE INDEX IF NOT EXISTS idx_ratios_cik         ON ratios (cik);
 CREATE INDEX IF NOT EXISTS idx_ratios_cik_period  ON ratios (cik, period_end);
@@ -122,6 +155,7 @@ CREATE INDEX IF NOT EXISTS idx_findings_cik       ON llm_findings (cik, period_e
 CREATE INDEX IF NOT EXISTS idx_maturities_cik     ON debt_maturities (cik, period_end);
 CREATE INDEX IF NOT EXISTS idx_covenants_cik      ON covenants (cik, period_end);
 CREATE INDEX IF NOT EXISTS idx_provisions_cik     ON loss_provisions (cik, period_end);
+CREATE INDEX IF NOT EXISTS idx_cases_cik          ON cases (cik);
 -- GIN index so ticker → cik lookups (companies WHERE tickers @> '["AAPL"]') stay fast.
 CREATE INDEX IF NOT EXISTS idx_companies_tickers  ON companies USING GIN (tickers);
 
@@ -136,6 +170,8 @@ ALTER TABLE llm_findings    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE debt_maturities ENABLE ROW LEVEL SECURITY;
 ALTER TABLE covenants       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE loss_provisions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE cases           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE score_config    ENABLE ROW LEVEL SECURITY;
 
 -- DROP-then-CREATE makes the policy block re-runnable (CREATE POLICY has no
 -- IF NOT EXISTS, so a bare re-run would otherwise fail with "already exists").
@@ -156,3 +192,9 @@ CREATE POLICY "Public read covenants" ON covenants FOR SELECT USING (true);
 
 DROP POLICY IF EXISTS "Public read loss_provisions" ON loss_provisions;
 CREATE POLICY "Public read loss_provisions" ON loss_provisions FOR SELECT USING (true);
+
+DROP POLICY IF EXISTS "Public read cases" ON cases;
+CREATE POLICY "Public read cases" ON cases FOR SELECT USING (true);
+
+DROP POLICY IF EXISTS "Public read score_config" ON score_config;
+CREATE POLICY "Public read score_config" ON score_config FOR SELECT USING (true);

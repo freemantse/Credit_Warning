@@ -19,13 +19,15 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { Fragment, useEffect, useRef, useState } from 'react'
+import type { FormEvent, ReactNode } from 'react'
 import {
   LineChart, Line, YAxis, Tooltip, ReferenceLine,
 } from 'recharts'
 import {
   BacktestStatus, BacktestCase, TrajectoryPoint,
-  CaseLibrary, SnapshotResult,
-  startBacktest, fetchBacktestStatus, fetchBacktestCases, fetchSnapshot,
+  CaseLibrary, BacktestCaseInfo, AddCasePayload, ScoreConfig,
+  startBacktest, fetchBacktestStatus, fetchBacktestCases,
+  addCase, deleteCase, fetchScoreConfig, saveScoreConfig,
   fmtRatio, fmtPct, fmtFCF,
 } from '@/lib/api'
 
@@ -42,6 +44,10 @@ export default function BacktestPage() {
   // status response. Prevents the button from being clickable twice in quick succession.
   const [starting, setStarting] = useState(false)
 
+  // History depth: point-in-time snapshots per case (~90 days apart). Default 40
+  // (~10 years). The server clamps this to a safe range.
+  const [steps, setSteps] = useState(40)
+
   // UI-level error (e.g. the 409 "already running" response). Separate from
   // status.error (which is a server-side task error) so both can be shown.
   const [error, setError] = useState('')
@@ -49,12 +55,14 @@ export default function BacktestPage() {
   // ── Case library (which companies the backtest uses) ───────────────────────
   const [library, setLibrary] = useState<CaseLibrary | null>(null)
 
-  // ── Point-in-time snapshot tool state ───────────────────────────────────────
-  // asOf is the filed-before cutoff the user picks; default to today.
-  const [asOf, setAsOf] = useState(() => new Date().toISOString().slice(0, 10))
-  const [snapshot, setSnapshot] = useState<SnapshotResult | null>(null)
-  const [snapLoading, setSnapLoading] = useState(false)
-  const [snapError, setSnapError] = useState('')
+  // ── Scoring parameters ──────────────────────────────────────────────────────
+  // `scoreCfg` is the editable DRAFT; `scoreDefaults` are the built-in defaults
+  // (for "Reset"). Running the backtest TESTS the draft (transient); "Apply to
+  // portfolio" persists it as the active config the live dashboard uses.
+  const [scoreCfg, setScoreCfg] = useState<ScoreConfig | null>(null)
+  const [scoreDefaults, setScoreDefaults] = useState<ScoreConfig | null>(null)
+  const [applying, setApplying] = useState(false)
+  const [applyMsg, setApplyMsg] = useState('')
 
   // ── Polling interval ref ───────────────────────────────────────────────────
   // We use useRef instead of useState to store the interval ID.
@@ -72,10 +80,14 @@ export default function BacktestPage() {
   // Cleanup function clears the poll interval when the component unmounts.
   useEffect(() => {
     fetchBacktestStatus().then(setStatus).catch(() => {})
-    // The case library is static CSV data — fetch once alongside the status.
+    // Fetch the case roster and the scoring parameters once alongside the status.
     fetchBacktestCases().then(setLibrary).catch(() => {})
+    fetchScoreConfig().then(r => { setScoreCfg(r.active); setScoreDefaults(r.defaults) }).catch(() => {})
     return () => { if (pollRef.current) clearInterval(pollRef.current) }
   }, [])
+
+  /** Re-fetch the case library after an add/delete so the list reflects the change. */
+  const reloadLibrary = () => fetchBacktestCases().then(setLibrary).catch(() => {})
 
   // When status.running transitions to true, start polling every 3 seconds.
   // When it transitions to false (task finished or errored), clear the interval.
@@ -108,7 +120,10 @@ export default function BacktestPage() {
     setStarting(true)
     setError('')
     try {
-      await startBacktest()
+      // Send the current draft config so the run TESTS these parameters without
+      // touching the live portfolio. When unedited, the draft equals the applied
+      // config, so the backtest matches the dashboard.
+      await startBacktest(steps, scoreCfg ?? undefined)
       // Immediately fetch status so the UI shows "Running…" without waiting for the
       // first poll interval to fire.
       setStatus(await fetchBacktestStatus())
@@ -120,18 +135,21 @@ export default function BacktestPage() {
   }
 
   /**
-   * Handle "Score as of date": POST the chosen filed-before cutoff and show
-   * every backtest company's point-in-time score for that day.
+   * Apply the draft scoring parameters to the live portfolio (persist as active).
+   * This immediately changes the dashboard/detail scores — they're recomputed on
+   * the fly, no re-track needed.
    */
-  async function handleSnapshot() {
-    setSnapLoading(true)
-    setSnapError('')
+  async function handleApply() {
+    if (!scoreCfg) return
+    setApplying(true)
+    setApplyMsg('')
     try {
-      setSnapshot(await fetchSnapshot(asOf))
+      await saveScoreConfig(scoreCfg)
+      setApplyMsg('Applied — the portfolio now scores with these parameters.')
     } catch (e: unknown) {
-      setSnapError(e instanceof Error ? e.message : 'Failed to compute snapshot')
+      setApplyMsg(e instanceof Error ? e.message : 'Failed to apply parameters')
     } finally {
-      setSnapLoading(false)
+      setApplying(false)
     }
   }
 
@@ -140,6 +158,11 @@ export default function BacktestPage() {
   const summary = result?.summary
   const threshold = result?.threshold ?? summary?.threshold ?? 50
   const earlyMonths = result?.early_months ?? summary?.early_months ?? 6
+  // Snapshots used by the displayed run (fall back to the selected value before
+  // any run). Drives the methodology copy so it matches the actual window.
+  const stepsUsed = result?.steps ?? steps
+  const windowYears = (stepsUsed * 90 / 365.25).toFixed(1)
+  const oldestMonths = Math.round((stepsUsed - 1) * 90 / 30.44)
 
 
   // ── Render ──────────────────────────────────────────────────────────────────
@@ -155,6 +178,32 @@ export default function BacktestPage() {
         </p>
       </div>
 
+      {/* ── How the backtest works (methodology) ──
+          Shown first so the scorecard and case table below read in context. */}
+      <div className="bg-slate-50 rounded-xl border border-slate-200 p-5 text-sm text-slate-600 space-y-2">
+        <p className="font-medium text-slate-700">How the backtest works</p>
+        <ul className="list-disc ml-4 space-y-1 text-xs">
+          <li>Each distressed issuer is scored quarterly working backward from its <strong>credit-event date</strong> — the day distress crystallised, e.g. the Chapter&nbsp;11 bankruptcy filing (T-{oldestMonths} → T-0, ~{windowYears} years) — using only filings available at that time.</li>
+          <li>A score ≥ {threshold} counts as a stress flag. Lead time = months from the <em>first</em> flag to that event; ≥ {earlyMonths} months counts as an early warning.</li>
+          <li>Healthy controls are scored across ~{windowYears} years from a pinned anchor date; any stressed quarter is a false positive.</li>
+          <li>Cases where no filings existed in the whole window are reported as <em>data gaps</em>, not misses.</li>
+          <li>No look-ahead: only filings with <code className="bg-slate-100 px-1 rounded">filed ≤ eval_date</code> are used.</li>
+        </ul>
+      </div>
+
+      {/* ── Scoring parameters (test in backtest vs. apply to portfolio) ── */}
+      {scoreCfg && scoreDefaults && (
+        <ScoreParamsCard
+          cfg={scoreCfg}
+          defaults={scoreDefaults}
+          onChange={setScoreCfg}
+          onApply={handleApply}
+          applying={applying}
+          applyMsg={applyMsg}
+          running={status.running || starting}
+        />
+      )}
+
       {/* ── Run control card ── */}
       <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm flex items-center gap-4 flex-wrap">
         <button
@@ -166,20 +215,37 @@ export default function BacktestPage() {
           {status.running ? 'Running…' : 'Run Backtest'}
         </button>
 
+        {/* History depth control: snapshots per case (~90 days apart). A slider
+            with the window in years as an inline readout — that's what the user
+            actually reasons about. Disabled mid-run. */}
+        <div className="flex flex-col gap-1">
+          <label htmlFor="history-depth" className="text-xs font-medium text-slate-500 uppercase tracking-wide">
+            History depth
+          </label>
+          <div className="flex items-center gap-3">
+            <input
+              id="history-depth"
+              type="range"
+              min={4}
+              max={60}
+              step={1}
+              value={steps}
+              onChange={e => setSteps(Number(e.target.value))}
+              disabled={status.running || starting}
+              className="w-40 accent-slate-700 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            />
+            <span className="text-xs text-slate-400 tabular-nums whitespace-nowrap">
+              {steps} snapshots · ~{(steps * 90 / 365.25).toFixed(1)} yrs
+            </span>
+          </div>
+        </div>
+
         {/* Animated pulse dot shown only while the background task is running. */}
         {status.running && (
           <div className="flex items-center gap-2 text-sm text-slate-500">
             <span className="w-3 h-3 rounded-full bg-orange-400 animate-pulse inline-block" />
             Fetching EDGAR data for each case — may take 1–2 minutes on first run.
           </div>
-        )}
-
-        {/* Provenance: which run the scorecard below comes from. */}
-        {!status.running && result && (
-          <p className="text-xs text-slate-400">
-            {status.saved ? 'Showing saved results' : 'Results'}
-            {result.run_at ? ` from ${result.run_at.replace('T', ' ')}` : ''}
-          </p>
         )}
 
         {/*
@@ -190,10 +256,14 @@ export default function BacktestPage() {
         {(error || runError) && (
           <p className="text-sm text-red-600">{error || `Error: ${runError}`}</p>
         )}
+
+        <p className="basis-full text-xs text-slate-400">
+          Runs with the scoring parameters above — testing only. Use <strong>Apply to portfolio</strong> to change live dashboard scores.
+        </p>
       </div>
 
       {/* ── Case library: which companies the backtest uses ── */}
-      {library && <CaseLibraryCard library={library} />}
+      {library && <CaseLibraryCard library={library} onChange={reloadLibrary} />}
 
       {/* ── Summary stat cards ──
           Only rendered when a result is available (live or saved).
@@ -260,7 +330,12 @@ export default function BacktestPage() {
                 <tr className="bg-gray-50 text-xs font-medium text-slate-500 uppercase tracking-wide">
                   <th className="px-6 py-3 text-left">Case</th>
                   <th className="px-4 py-3 text-left">Label</th>
-                  <th className="px-4 py-3 text-left">Event Date</th>
+                  <th
+                    className="px-4 py-3 text-left"
+                    title="Date of the credit event — e.g. the Chapter 11 bankruptcy filing. Healthy controls have none."
+                  >
+                    Credit Event
+                  </th>
                   <th className="px-4 py-3 text-center">Result</th>
                   <th className="px-4 py-3 text-center">Score Trajectory</th>
                   <th className="px-6 py-3 text-right">Detail</th>
@@ -281,54 +356,6 @@ export default function BacktestPage() {
           </div>
         </div>
       )}
-
-      {/* ── Point-in-time snapshot tool ──
-          Enter a filed-before date and score all backtest companies as of
-          that day — the UI entry point for the backtest's no-look-ahead rule. */}
-      <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-100">
-          <h2 className="font-semibold text-slate-800">Point-in-Time Snapshot</h2>
-          <p className="text-xs text-slate-400 mt-1">
-            Pick a date to see what the system would have said that day — only filings
-            with <code className="bg-slate-100 px-1 rounded">filed ≤ date</code> are used.
-          </p>
-        </div>
-        <div className="px-6 py-4 flex items-center gap-3 flex-wrap">
-          <input
-            type="date"
-            value={asOf}
-            onChange={e => setAsOf(e.target.value)}
-            className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm text-slate-700"
-          />
-          <button
-            onClick={handleSnapshot}
-            disabled={snapLoading || !asOf}
-            className="bg-slate-800 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            {snapLoading ? 'Scoring…' : 'Score as of date'}
-          </button>
-          {snapLoading && (
-            <span className="text-sm text-slate-500 flex items-center gap-2">
-              <span className="w-3 h-3 rounded-full bg-orange-400 animate-pulse inline-block" />
-              Scoring {library?.total ?? 'all'} companies point-in-time…
-            </span>
-          )}
-          {snapError && <p className="text-sm text-red-600">{snapError}</p>}
-        </div>
-        {snapshot && <SnapshotTable snapshot={snapshot} />}
-      </div>
-
-      {/* ── Methodology explainer ── */}
-      <div className="bg-slate-50 rounded-xl border border-slate-200 p-5 text-sm text-slate-600 space-y-2">
-        <p className="font-medium text-slate-700">How the backtest works</p>
-        <ul className="list-disc ml-4 space-y-1 text-xs">
-          <li>Each distressed issuer is scored quarterly back from its event date (T-36 → T-0) using only filings available at that time.</li>
-          <li>A score ≥ {threshold} counts as a stress flag. Lead time = months from <em>first</em> flag to the event; ≥ {earlyMonths} months counts as an early warning.</li>
-          <li>Healthy controls are scored across 3 years from a pinned anchor date; any stressed quarter is a false positive.</li>
-          <li>Cases where no filings existed in the whole window are reported as <em>data gaps</em>, not misses.</li>
-          <li>No look-ahead: only filings with <code className="bg-slate-100 px-1 rounded">filed ≤ eval_date</code> are used.</li>
-        </ul>
-      </div>
 
     </div>
   )
@@ -369,12 +396,66 @@ function StatCard({
 
 // ── CaseLibraryCard component ─────────────────────────────────────────────────
 //
-// Shows how many and which companies the backtest evaluates, straight from
-// data/cases.csv — visible before any run. Collapsed by default; the header
-// always answers "how many" while the expanded grid answers "which".
+// Shows how many and which companies the backtest evaluates (from the Supabase
+// `cases` table) — visible before any run. Collapsed by default; the header
+// always answers "how many" while the expanded grid answers "which". The
+// expanded panel also lets the user add a new case or delete an existing one;
+// `onChange` re-fetches the library after either mutation.
 
-function CaseLibraryCard({ library }: { library: CaseLibrary }) {
+function CaseLibraryCard({ library, onChange }: { library: CaseLibrary; onChange: () => void }) {
   const [open, setOpen] = useState(false)
+
+  // Add-case form state.
+  const [identifier, setIdentifier] = useState('')
+  const [label, setLabel] = useState<'distressed' | 'healthy'>('distressed')
+  const [eventDate, setEventDate] = useState('')
+  const [notes, setNotes] = useState('')
+  const [adding, setAdding] = useState(false)
+  const [formError, setFormError] = useState('')
+
+  // Custom delete-confirmation modal state. `pendingDelete` holds the case whose
+  // × the user clicked; the modal is shown while it's non-null. `deleting` guards
+  // the modal buttons (and the backdrop dismiss) while the DELETE is in flight.
+  const [pendingDelete, setPendingDelete] = useState<BacktestCaseInfo | null>(null)
+  const [deleting, setDeleting] = useState(false)
+
+  async function handleAdd(e: FormEvent) {
+    e.preventDefault()
+    setAdding(true)
+    setFormError('')
+    try {
+      const payload: AddCasePayload = { identifier: identifier.trim(), label }
+      // event_date is required for distressed; optional for healthy (backend pins a default).
+      if (eventDate) payload.event_date = eventDate
+      if (notes.trim()) payload.notes = notes.trim()
+      await addCase(payload)
+      setIdentifier(''); setEventDate(''); setNotes('')
+      onChange()
+    } catch (err: unknown) {
+      setFormError(err instanceof Error ? err.message : 'Failed to add case')
+    } finally {
+      setAdding(false)
+    }
+  }
+
+  // Performs the deletion the modal is confirming. Triggered by the modal's
+  // "Remove" button — the × button only opens the modal (sets pendingDelete).
+  async function confirmDelete() {
+    const c = pendingDelete
+    if (!c) return
+    setDeleting(true)
+    setFormError('')
+    try {
+      await deleteCase(c.case_id)
+      setPendingDelete(null)  // close the modal on success
+      onChange()              // re-fetch the library to drop the removed row
+    } catch (err: unknown) {
+      setPendingDelete(null)  // close the modal; the error banner explains the failure
+      setFormError(err instanceof Error ? err.message : 'Failed to delete case')
+    } finally {
+      setDeleting(false)
+    }
+  }
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
@@ -391,24 +472,153 @@ function CaseLibraryCard({ library }: { library: CaseLibrary }) {
         </span>
       </button>
       {open && (
-        <div className="px-6 pb-5 pt-1 border-t border-gray-100 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-2">
-          {library.cases.map(c => (
-            <div key={c.case_id || c.ticker} className="flex items-center gap-2 text-sm py-1">
-              <span className={`text-xs px-2 py-0.5 rounded-full font-medium shrink-0 ${
-                c.label === 'distressed'
+        <div className="px-6 pb-5 pt-3 border-t border-gray-100 space-y-4">
+          {/* Add-case form. The backend resolves the ticker/CIK to a CIK + name. */}
+          <form onSubmit={handleAdd} className="flex flex-wrap items-end gap-3">
+            <div className="flex flex-col gap-1">
+              <label className="text-xs font-medium text-slate-500">Ticker or CIK</label>
+              <input
+                value={identifier}
+                onChange={e => setIdentifier(e.target.value)}
+                placeholder="e.g. BTU or 1064728"
+                className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm w-40 focus:outline-none focus:ring-2 focus:ring-slate-300"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-xs font-medium text-slate-500">Label</label>
+              <select
+                value={label}
+                onChange={e => setLabel(e.target.value as 'distressed' | 'healthy')}
+                className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-300"
+              >
+                <option value="distressed">Distressed</option>
+                <option value="healthy">Healthy control</option>
+              </select>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-xs font-medium text-slate-500">
+                {label === 'distressed' ? 'Event date (required)' : 'Anchor date (optional)'}
+              </label>
+              <input
+                type="date"
+                value={eventDate}
+                onChange={e => setEventDate(e.target.value)}
+                className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-300"
+              />
+            </div>
+            <div className="flex flex-col gap-1 flex-1 min-w-[8rem]">
+              <label className="text-xs font-medium text-slate-500">Notes (optional)</label>
+              <input
+                value={notes}
+                onChange={e => setNotes(e.target.value)}
+                placeholder="e.g. Chapter 11 petition; coal downturn"
+                className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm w-full focus:outline-none focus:ring-2 focus:ring-slate-300"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={adding || !identifier.trim() || (label === 'distressed' && !eventDate)}
+              className="bg-slate-800 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {adding ? 'Adding…' : 'Add case'}
+            </button>
+          </form>
+          {formError && <p className="text-sm text-red-600">{formError}</p>}
+
+          {/* The roster, with a delete control per row. */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-2">
+            {library.cases.map(c => (
+              <div key={c.case_id || c.ticker} className="flex items-center gap-2 text-sm py-1 group">
+                <span className={`text-xs px-2 py-0.5 rounded-full font-medium shrink-0 ${
+                  c.label === 'distressed'
+                    ? 'bg-red-100 text-red-700'
+                    : 'bg-green-100 text-green-700'
+                }`}>
+                  {c.label === 'distressed' ? 'D' : 'H'}
+                </span>
+                <span className="font-mono font-bold text-slate-700 shrink-0">{c.ticker}</span>
+                <span className="text-slate-500 truncate">{c.company_name}</span>
+                {/* Event date only matters for distressed names (bankruptcy date). */}
+                {c.label === 'distressed' && c.event_date && (
+                  <span
+                    className="ml-auto font-mono text-xs text-slate-400 shrink-0"
+                    title="Credit-event date — e.g. the Chapter 11 bankruptcy filing"
+                  >
+                    {c.event_date}
+                  </span>
+                )}
+                <button
+                  onClick={() => { setFormError(''); setPendingDelete(c) }}
+                  title="Remove case"
+                  className={`shrink-0 text-slate-300 hover:text-red-600 transition-colors px-1 leading-none ${
+                    c.label === 'distressed' && c.event_date ? '' : 'ml-auto'
+                  }`}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Remove-case confirmation modal ──
+          Rendered only when a case is pending deletion. The backdrop click and
+          the Cancel button both dismiss it; Remove calls confirmDelete(). */}
+      {pendingDelete && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          // Click on the backdrop (but not the dialog itself) cancels.
+          onClick={() => { if (!deleting) setPendingDelete(null) }}
+        >
+          <div
+            className="bg-white rounded-xl shadow-xl border border-gray-200 w-full max-w-md p-6"
+            // Stop clicks inside the dialog from bubbling up to the backdrop handler.
+            onClick={e => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+          >
+            <h3 className="text-base font-semibold text-slate-900">Remove case?</h3>
+            <p className="text-sm text-slate-600 mt-2">
+              This removes{' '}
+              <span className="font-semibold text-slate-800">
+                {pendingDelete.company_name || pendingDelete.ticker || pendingDelete.case_id}
+              </span>
+              {pendingDelete.company_name && pendingDelete.ticker && (
+                <span className="font-mono text-slate-500"> ({pendingDelete.ticker})</span>
+              )}
+              {' '}from the case library, so future backtests won&apos;t evaluate it.
+            </p>
+            <div className="text-xs text-slate-400 mt-2 flex items-center gap-2">
+              <span className={`px-2 py-0.5 rounded-full font-medium ${
+                pendingDelete.label === 'distressed'
                   ? 'bg-red-100 text-red-700'
                   : 'bg-green-100 text-green-700'
               }`}>
-                {c.label === 'distressed' ? 'D' : 'H'}
+                {pendingDelete.label === 'distressed' ? 'Distressed' : 'Healthy control'}
               </span>
-              <span className="font-mono font-bold text-slate-700 shrink-0">{c.ticker}</span>
-              <span className="text-slate-500 truncate">{c.company_name}</span>
-              {/* Event date only matters for distressed names (bankruptcy date). */}
-              {c.label === 'distressed' && c.event_date && (
-                <span className="ml-auto font-mono text-xs text-slate-400 shrink-0">{c.event_date}</span>
+              {pendingDelete.event_date && (
+                <span className="font-mono">{pendingDelete.event_date}</span>
               )}
             </div>
-          ))}
+
+            <div className="flex justify-end gap-3 mt-6">
+              <button
+                onClick={() => setPendingDelete(null)}
+                disabled={deleting}
+                className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-gray-100 transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDelete}
+                disabled={deleting}
+                className="px-4 py-2 rounded-lg text-sm font-medium bg-red-600 text-white hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {deleting ? 'Removing…' : 'Remove'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -416,92 +626,248 @@ function CaseLibraryCard({ library }: { library: CaseLibrary }) {
 }
 
 
-// ── SnapshotTable component ───────────────────────────────────────────────────
+// ── ScoreParamsCard component ─────────────────────────────────────────────────
 //
-// Results of scoring every backtest company as of one user-chosen date.
-// Sorted by score descending so the most stressed names lead. The fiscal year
-// column makes the point-in-time mechanics visible: it's the latest 10-K that
-// had been FILED by the as-of date, which can lag the calendar by a year.
+// The editable scoring-parameter panel. Edits a DRAFT config (lifted to the page
+// via onChange). The page's "Run Backtest" tests the draft transiently; this
+// card's "Apply to portfolio" persists it as the active config the live
+// dashboard scores with. "Reset to defaults" restores the built-in parameters.
 
-function SnapshotTable({ snapshot }: { snapshot: SnapshotResult }) {
-  const rows = [...snapshot.rows].sort((a, b) => (b.score ?? -1) - (a.score ?? -1))
+// The 9 quantitative rules, in scorecard order, with friendly labels and a
+// one-line description of what each metric measures. Keys match the breakdown
+// keys in src/score.py. Weight = the rule's max points; the ramp awards 0 pts at
+// `healthy`, rising to `weight` at `severe`.
+const RULE_META: { key: string; label: string; desc: string }[] = [
+  { key: 'profitability',         label: 'Profitability (EBITDA margin)', desc: 'EBITDA ÷ revenue. Lower is worse; operating losses score highest.' },
+  { key: 'leverage>5x',           label: 'Leverage (net debt / EBITDA)',  desc: 'Net debt ÷ EBITDA — years of earnings to repay debt. Higher is worse.' },
+  { key: 'coverage<2x',           label: 'Interest coverage',             desc: 'EBITDA ÷ interest expense. Lower is worse; <1× can’t cover interest.' },
+  { key: 'cash_flow_to_debt<30%', label: 'Cash flow / debt (FFO proxy)',  desc: 'Operating cash flow ÷ gross debt. Lower is worse (key distress signal).' },
+  { key: 'fcf_negative',          label: 'FCF margin',                    desc: 'Free cash flow ÷ revenue. Lower is worse; sustained negative burns cash.' },
+  { key: 'liquidity<1x',          label: 'Liquidity (cash / ST debt)',    desc: 'Cash ÷ short-term debt. Lower is worse; <1× can’t cover near-term debt.' },
+  { key: 'current_ratio<1.5x',    label: 'Current ratio',                 desc: 'Current assets ÷ current liabilities — working-capital cushion.' },
+  { key: 'debt_to_assets>40%',    label: 'Debt / assets',                 desc: 'Gross debt ÷ total assets (gearing). Higher is worse.' },
+  { key: 'maturity_wall',         label: 'Maturity wall (≤3y due)',       desc: 'Share of debt maturing within 3 years. Higher is worse (refinancing risk).' },
+]
+
+// A fixed-width number input with the built-in default shown directly BELOW it
+// (not beside it) so the input boxes stay vertically aligned across rows.
+function NumInput({ value, onChange, step = 'any', width = 'w-24', def }: {
+  value: number; onChange: (v: number) => void; step?: string; width?: string; def?: number
+}) {
+  return (
+    <span className="inline-flex flex-col items-end">
+      <input
+        type="number"
+        step={step}
+        value={value}
+        onChange={e => { const v = parseFloat(e.target.value); onChange(Number.isNaN(v) ? 0 : v) }}
+        className={`${width} border border-gray-300 rounded px-2 py-1 text-xs font-mono text-right focus:outline-none focus:ring-2 focus:ring-slate-300`}
+      />
+      {def != null && (
+        <span className="text-[10px] text-slate-400 leading-none mt-1" title="Built-in default value">
+          default: {def}
+        </span>
+      )}
+    </span>
+  )
+}
+
+// One parameter row: a label + short description on the left, the input(s) on the
+// right. Keeps every control aligned down a single right-hand column.
+function ParamRow({ label, desc, children }: { label: string; desc?: string; children: ReactNode }) {
+  return (
+    <div className="flex items-start justify-between gap-4 py-2 border-t border-slate-100 first:border-t-0">
+      <div className="min-w-0">
+        <div className="text-slate-600">{label}</div>
+        {desc && <div className="text-[11px] text-slate-400">{desc}</div>}
+      </div>
+      <div className="shrink-0">{children}</div>
+    </div>
+  )
+}
+
+function ScoreParamsCard({
+  cfg, defaults, onChange, onApply, applying, applyMsg, running,
+}: {
+  cfg: ScoreConfig
+  defaults: ScoreConfig
+  onChange: (c: ScoreConfig) => void
+  onApply: () => void
+  applying: boolean
+  applyMsg: string
+  running: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const [advanced, setAdvanced] = useState(false)
+
+  const setRule = (key: string, field: 'weight' | 'healthy' | 'severe', v: number) =>
+    onChange({ ...cfg, rules: { ...cfg.rules, [key]: { ...cfg.rules[key], [field]: v } } })
+  const setEsc = (field: 'min_severe' | 'severe_frac' | 'floor', v: number) =>
+    onChange({ ...cfg, escalation: { ...cfg.escalation, [field]: v } })
+  const setLlm = (field: keyof ScoreConfig['llm'], v: number) =>
+    onChange({ ...cfg, llm: { ...cfg.llm, [field]: v } })
+  const setOverride = (key: string, v: number) =>
+    onChange({ ...cfg, ebitda_override: { ...cfg.ebitda_override, [key]: v } })
+
+  const totalWeight = RULE_META.reduce((s, r) => s + (cfg.rules[r.key]?.weight ?? 0), 0)
 
   return (
-    <div className="border-t border-gray-100">
-      <p className="px-6 pt-3 text-xs text-slate-400">
-        As of <span className="font-mono">{snapshot.as_of}</span> — exactly what an investor
-        could have known that day. Stress threshold: {snapshot.threshold}.
-      </p>
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-xs font-medium text-slate-500 uppercase tracking-wide">
-              <th className="px-6 py-3 text-left">Company</th>
-              <th className="px-4 py-3 text-left">Label</th>
-              <th className="px-4 py-3 text-left">FY Scored</th>
-              <th className="px-4 py-3 text-right">Score</th>
-              <th className="px-4 py-3 text-center">Status</th>
-              <th className="px-4 py-3 text-right">Leverage</th>
-              <th className="px-4 py-3 text-right">Coverage</th>
-              <th className="px-6 py-3 text-right">Liquidity</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100">
-            {rows.map(r => (
-              <tr key={r.case_id} className={r.error ? 'bg-red-50' : ''}>
-                <td className="px-6 py-2.5 whitespace-nowrap">
-                  <span className="font-mono font-bold text-slate-700">{r.ticker}</span>
-                  {r.company_name && (
-                    <span className="block text-xs text-slate-400">{r.company_name}</span>
-                  )}
-                </td>
-                <td className="px-4 py-2.5">
-                  <span className={`text-xs px-2 py-1 rounded-full font-medium ${
-                    r.label === 'distressed'
-                      ? 'bg-red-100 text-red-700'
-                      : 'bg-green-100 text-green-700'
-                  }`}>
-                    {r.label === 'distressed' ? 'Distressed' : 'Healthy'}
-                  </span>
-                </td>
-                {r.error ? (
-                  <td colSpan={6} className="px-4 py-2.5 text-xs text-red-500">{r.error}</td>
-                ) : !r.has_data ? (
-                  <td colSpan={6} className="px-4 py-2.5 text-xs text-slate-400">
-                    No filings available yet at this date
-                  </td>
-                ) : (
-                  <Fragment>
-                    <td className="px-4 py-2.5 font-mono text-xs text-slate-500">
-                      FY {r.period_end?.slice(0, 4)}
-                    </td>
-                    <td className={`px-4 py-2.5 text-right font-mono font-bold ${
-                      (r.score ?? 0) >= snapshot.threshold ? 'text-red-600' : 'text-slate-700'
-                    }`}>
-                      {r.score?.toFixed(0)}
-                    </td>
-                    <td className="px-4 py-2.5 text-center">
-                      {r.stressed
-                        ? <span className="text-xs bg-red-100 text-red-700 px-2 py-1 rounded-full font-medium">⚠ Stressed</span>
-                        : <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full font-medium">OK</span>
-                      }
-                    </td>
-                    <td className="px-4 py-2.5 text-right font-mono text-xs text-slate-600">
-                      {fmtRatio(r.ratios?.leverage ?? null)}
-                    </td>
-                    <td className="px-4 py-2.5 text-right font-mono text-xs text-slate-600">
-                      {fmtRatio(r.ratios?.interest_coverage ?? null)}
-                    </td>
-                    <td className="px-6 py-2.5 text-right font-mono text-xs text-slate-600">
-                      {fmtRatio(r.ratios?.liquidity ?? null)}
-                    </td>
-                  </Fragment>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full px-6 py-4 flex items-baseline justify-between gap-3 flex-wrap text-left hover:bg-slate-50 transition-colors"
+      >
+        <span className="font-semibold text-slate-800">
+          <span className="inline-block w-4 text-slate-400 text-xs">{open ? '▾' : '▸'}</span>
+          Scoring parameters
+        </span>
+        <span className="text-sm text-slate-500">
+          Tune the weights & thresholds — total core weight {totalWeight.toFixed(0)} pts
+        </span>
+      </button>
+
+      {open && (
+        <div className="px-6 pb-5 pt-3 border-t border-gray-100 space-y-5">
+          {/* How the parameters work — orient the user before they edit anything. */}
+          <div className="text-xs text-slate-600 bg-slate-50 rounded-lg p-3 border border-slate-200 space-y-1.5">
+            <p>
+              The stress score (0–{cfg.score_cap.toFixed(0)}) is the sum of the rule points below. Each rule scores
+              <strong> 0</strong> while its metric is at or healthier than <strong>Healthy</strong>, then ramps
+              linearly up to its full <strong>Weight</strong> at <strong>Severe</strong> (and beyond). An issuer is
+              flagged <strong>stressed</strong> at or above the <strong>Threshold</strong>; if at least the escalation
+              count of rules are individually severe, the score is floored.
+            </p>
+            <p className="text-slate-500">
+              <strong>Weight</strong> = the most points a rule can add ·
+              <strong> Healthy</strong> = metric value that scores 0 ·
+              <strong> Severe</strong> = metric value that scores the full weight.
+              Raising a weight makes that signal matter more; moving Healthy/Severe changes how early it starts to bite.
+            </p>
+            <p className="text-slate-500">
+              The small grey <span className="text-slate-400">default: N</span> under each field is that
+              parameter&rsquo;s built-in default — what <strong>Reset to defaults</strong> restores.
+            </p>
+          </div>
+
+          {/* Rule weights & ramp endpoints. */}
+          <div>
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Rule weights &amp; ramps</p>
+            <div className="overflow-x-auto">
+              <table className="text-xs">
+                <thead>
+                  <tr className="text-slate-400">
+                    <th className="text-left pr-6 py-1 font-medium">Rule</th>
+                    <th className="text-right px-3 py-1 font-medium" title="Max points this rule contributes">Weight</th>
+                    <th className="text-right px-3 py-1 font-medium" title="Metric value at/above which the rule scores 0">Healthy</th>
+                    <th className="text-right px-3 py-1 font-medium" title="Metric value at/beyond which the rule scores its full weight">Severe</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {RULE_META.map(({ key, label, desc }) => (
+                    <tr key={key} className="border-t border-slate-100 align-top">
+                      <td className="pr-6 py-1.5 text-slate-600">
+                        <div>{label}</div>
+                        <div className="text-[11px] text-slate-400 font-normal">{desc}</div>
+                      </td>
+                      <td className="px-3 py-1.5 text-right"><NumInput value={cfg.rules[key].weight} onChange={v => setRule(key, 'weight', v)} def={defaults.rules[key]?.weight} /></td>
+                      <td className="px-3 py-1.5 text-right"><NumInput value={cfg.rules[key].healthy} onChange={v => setRule(key, 'healthy', v)} def={defaults.rules[key]?.healthy} /></td>
+                      <td className="px-3 py-1.5 text-right"><NumInput value={cfg.rules[key].severe} onChange={v => setRule(key, 'severe', v)} def={defaults.rules[key]?.severe} /></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Threshold, score cap, and the distress-escalation floor. */}
+          <div>
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Thresholds &amp; escalation</p>
+            <p className="text-xs text-slate-400 mb-1">
+              When a company counts as &ldquo;stressed&rdquo;, the score ceiling, and a safety net that floors the
+              score for issuers failing many rules at once (so an offsetting metric can&rsquo;t mask broad distress).
+            </p>
+            <div className="text-xs max-w-2xl">
+              <ParamRow label="Stress threshold" desc="Score at or above which a company is flagged stressed (and counts as a backtest catch).">
+                <NumInput value={cfg.threshold} onChange={v => onChange({ ...cfg, threshold: v })} step="1" def={defaults.threshold} />
+              </ParamRow>
+              <ParamRow label="Score cap" desc="Highest possible score — the summed rule points are capped here.">
+                <NumInput value={cfg.score_cap} onChange={v => onChange({ ...cfg, score_cap: v })} step="1" def={defaults.score_cap} />
+              </ParamRow>
+              <ParamRow label="Escalation trigger" desc="Number of individually-severe rules needed to trigger the floor.">
+                <NumInput value={cfg.escalation.min_severe} onChange={v => setEsc('min_severe', v)} step="1" def={defaults.escalation.min_severe} />
+              </ParamRow>
+              <ParamRow label="Severe cutoff" desc="Fraction (0–1) of its weight at which a rule counts as “severe”.">
+                <NumInput value={cfg.escalation.severe_frac} onChange={v => setEsc('severe_frac', v)} step="0.05" def={defaults.escalation.severe_frac} />
+              </ParamRow>
+              <ParamRow label="Escalation floor" desc="The score is raised to at least this value when the trigger fires.">
+                <NumInput value={cfg.escalation.floor} onChange={v => setEsc('floor', v)} step="1" def={defaults.escalation.floor} />
+              </ParamRow>
+            </div>
+          </div>
+
+          {/* Advanced: LLM qualitative signals + EBITDA≤0 override. These do NOT
+              affect the backtest (it scores XBRL-only) — only the live dashboard. */}
+          <div>
+            <button
+              onClick={() => setAdvanced(a => !a)}
+              className="inline-flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-700 hover:underline transition-colors"
+            >
+              <span className="text-slate-400">{advanced ? '▾' : '▸'}</span>
+              Advanced parameters
+              <span className="text-slate-400">— qualitative (LLM) signals &amp; negative-EBITDA override</span>
+            </button>
+            {advanced && (
+              <div className="mt-3 text-xs max-w-2xl">
+                <p className="text-slate-400 mb-1">
+                  These come from the LLM review of filing text and affect <strong>only the live portfolio dashboard</strong> —
+                  the backtest is scored from XBRL financials alone. Each signal adds <em>points per item</em> up to its own
+                  <em> cap</em>; all qualitative signals together are also capped (Combined cap) so filing language can never
+                  push a company over the threshold on its own.
+                </p>
+                <ParamRow label="High-severity finding" desc="Points per high-severity qualitative concern, capped per row.">
+                  <span className="inline-flex items-center gap-1 text-slate-500">points <NumInput value={cfg.llm.high_severity_per} onChange={v => setLlm('high_severity_per', v)} width="w-16" def={defaults.llm.high_severity_per} /> cap <NumInput value={cfg.llm.high_severity_cap} onChange={v => setLlm('high_severity_cap', v)} width="w-16" def={defaults.llm.high_severity_cap} /></span>
+                </ParamRow>
+                <ParamRow label="Covenant proximity" desc="Points per covenant the filing flags as near its limit.">
+                  <span className="inline-flex items-center gap-1 text-slate-500">points <NumInput value={cfg.llm.covenant_per} onChange={v => setLlm('covenant_per', v)} width="w-16" def={defaults.llm.covenant_per} /> cap <NumInput value={cfg.llm.covenant_cap} onChange={v => setLlm('covenant_cap', v)} width="w-16" def={defaults.llm.covenant_cap} /></span>
+                </ParamRow>
+                <ParamRow label="Loss provision" desc="Points per material litigation / contingency provision disclosed.">
+                  <span className="inline-flex items-center gap-1 text-slate-500">points <NumInput value={cfg.llm.provision_per} onChange={v => setLlm('provision_per', v)} width="w-16" def={defaults.llm.provision_per} /> cap <NumInput value={cfg.llm.provision_cap} onChange={v => setLlm('provision_cap', v)} width="w-16" def={defaults.llm.provision_cap} /></span>
+                </ParamRow>
+                <ParamRow label="Combined LLM cap" desc="Hard ceiling on all qualitative signals added together.">
+                  <NumInput value={cfg.llm.combined_cap} onChange={v => setLlm('combined_cap', v)} def={defaults.llm.combined_cap} />
+                </ParamRow>
+                <ParamRow label="Negative-EBITDA override" desc="When EBITDA ≤ 0 the leverage & coverage ratios flip sign; instead of the ramp, force these points.">
+                  <span className="inline-flex items-center gap-1 text-slate-500">leverage <NumInput value={cfg.ebitda_override['leverage>5x']} onChange={v => setOverride('leverage>5x', v)} width="w-16" def={defaults.ebitda_override['leverage>5x']} /> coverage <NumInput value={cfg.ebitda_override['coverage<2x']} onChange={v => setOverride('coverage<2x', v)} width="w-16" def={defaults.ebitda_override['coverage<2x']} /></span>
+                </ParamRow>
+              </div>
+            )}
+          </div>
+
+          {/* Actions. Apply changes live scores immediately; Run Backtest (above)
+              only tests. Kept as subtle gray controls. */}
+          <div className="flex items-center gap-3 flex-wrap pt-3 border-t border-slate-100">
+            <button
+              onClick={onApply}
+              disabled={applying || running}
+              className="text-sm font-medium text-white bg-slate-800 px-4 py-1.5 rounded-lg hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {applying ? 'Applying…' : 'Apply to portfolio'}
+            </button>
+            <button
+              onClick={() => onChange(structuredClone(defaults))}
+              disabled={applying}
+              title="Reset the editor to the built-in default parameters (draft only — click Apply to persist)"
+              className="text-sm text-slate-600 px-4 py-1.5 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              Reset to defaults
+            </button>
+            <span className="text-xs text-slate-400">
+              Applying recomputes the portfolio &amp; detail scores immediately (no re-track).
+            </span>
+            {applyMsg && <span className="basis-full text-xs text-slate-600">{applyMsg}</span>}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -553,10 +919,10 @@ function Sparkline({ c, threshold }: { c: BacktestCase; threshold: number }) {
 
 // ── Metric history (expanded row) ─────────────────────────────────────────────
 //
-// The trajectory holds ~13 quarterly snapshots, but the underlying data is
-// annual 10-Ks — several consecutive snapshots score against the same fiscal
-// year. Deduping on period_end yields one column per available fiscal year,
-// which is the view an analyst wants: each metric tracked across years.
+// The trajectory holds ~40 quarterly snapshots (~10 years), but the underlying
+// data is annual 10-Ks — several consecutive snapshots score against the same
+// fiscal year. Deduping on period_end yields one column per available fiscal
+// year, which is the view an analyst wants: each metric tracked across years.
 
 // Row definitions for the metrics-by-year table. `fmt` reuses the exact same
 // formatters as the issuer detail page so values read identically everywhere.

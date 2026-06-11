@@ -10,7 +10,7 @@ deanfoods-2019,Dean Foods,DF,0000931336,distressed,2019-11-12,Chapter 11 petitio
 whiting-2020,Whiting Petroleum,WLL,0001255474,distressed,2020-04-01,Chapter 11 petition; oil price crash
 frontier-2020,Frontier Communications,FTR,0000020520,distressed,2020-04-14,Chapter 11 petition
 jcpenney-2020,J.C. Penney,JCP,0001166126,distressed,2020-05-15,Chapter 11 petition; now Old COPPER Company
-hertz-2020,Hertz Global Holdings,HTZ,0001657853,distressed,2020-05-22,Chapter 11 petition; COVID travel collapse
+hertz-2020,Hertz,HTZ,0000047129,distressed,2020-05-22,Chapter 11 petition; COVID travel collapse. Uses The Hertz Corporation (operating co.) CIK for full XBRL history — the post-2016 holdco CIK only goes back to 2015
 gnc-2020,GNC Holdings,GNC,0001502034,distressed,2020-06-23,Chapter 11 petition
 chesapeake-2020,Chesapeake Energy,CHK,0000895126,distressed,2020-06-28,Chapter 11 petition; now Expand Energy
 mallinckrodt-2020,Mallinckrodt,MNK,0001567892,distressed,2020-10-12,Chapter 11 petition; opioid litigation
@@ -19,7 +19,7 @@ partycity-2023,Party City Holdco,PRTY,0001592058,distressed,2023-01-17,Chapter 1
 bbby-2023,Bed Bath & Beyond,BBBY,0000886158,distressed,2023-04-23,Chapter 11 petition
 yellow-2023,Yellow Corp,YELL,0000716006,distressed,2023-08-06,Chapter 11 petition; formerly YRC Worldwide
 riteaid-2023,Rite Aid,RAD,0000084129,distressed,2023-10-15,Chapter 11 petition
-wework-2023,WeWork,WE,0001813756,distressed,2023-11-06,Chapter 11 petition; XBRL history starts 2021 (SPAC)
+diebold-2023,Diebold Nixdorf,DBD,0000028823,distressed,2023-06-01,Chapter 11 petition (prepackaged); ATM/banking-hardware debt load
 aapl,Apple,AAPL,0000320193,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility
 msft,Microsoft,MSFT,0000789019,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility
 jnj,Johnson & Johnson,JNJ,0000200406,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility

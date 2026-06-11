@@ -24,7 +24,10 @@ There is a strict division between **deterministic parsing** and **LLM review**:
   quotes. Every evidence quote (findings, covenants, loss provisions) is verified to appear
   verbatim in the exact excerpt sent to the model; unverifiable findings are dropped.
 - Missing data **fails loud** (`MissingDataError`); defaults are never substituted.
-- The backtest is strictly **point-in-time** — no look-ahead bias.
+- The backtest is strictly **point-in-time** — no look-ahead bias. Each distressed
+  issuer is scored *walking backward from its own credit-event date* (the Chapter 11
+  / bankruptcy filing date), not from today — so "caught early" means the model
+  crossed the stress threshold months *before* that event.
 
 ---
 
@@ -95,6 +98,8 @@ npm install
 
 # 3. Database
 # Open the Supabase SQL editor and run the contents of supabase/schema.sql
+# Then seed the backtest case library (one-time; idempotent):
+python3 -m scripts.seed_cases
 ```
 
 > `.env.local` is gitignored — never commit credentials.
@@ -126,19 +131,34 @@ python3 -m src.track AAPL
 python3 -m src.track AAPL --no-llm        # skip the LLM pass
 python3 -m src.track AAPL --periods 8     # show 8 most recent annual periods
 
-# Point-in-time backtest over data/cases.csv (21 real bankruptcies + 7 healthy controls)
+# Point-in-time backtest over the case library (~21 real bankruptcies + ~7 healthy
+# controls). Each distressed case is scored quarterly walking BACKWARD from its own
+# bankruptcy/Chapter-11 date (the "event date"); lead time = months from the first
+# stress flag to that event, and ≥ early-months counts as an early warning.
 python3 -m src.backtest                    # run + compare against the frozen baseline
 python3 -m src.backtest --save-baseline    # freeze this run as the new reference
 python3 -m src.backtest --threshold 40     # experiment with a different stress threshold
 python3 -m src.backtest --early-months 12  # stricter early-warning bar (default: 6 months)
+python3 -m src.backtest --cases other.csv  # run against an explicit CSV instead of Supabase
 
+# The roster lives in the Supabase `cases` table (seeded from data/cases.csv via
+# scripts.seed_cases); the CLI falls back to the CSV when Supabase is unavailable.
 # Outputs: data/backtest_report.txt (human), data/backtest_results.json (per-case
-# score trajectories), data/backtest_baseline.json (frozen reference).
+# score trajectories + the scoring config used), data/backtest_baseline.json.
 # Exit codes: 0 = ok, 1 = regression vs baseline (CI-friendly), 2 = harness failure.
 
 # Look up a delisted/bankrupt company's CIK by name
 python3 -m src.ingest --name "Sears Holdings"
 ```
+
+The **Backtest page** (`/backtest`) also lets you do this without the CLI:
+- **Manage the case library** — add a company (by ticker or CIK) or remove one;
+  changes persist to the Supabase `cases` table.
+- **Tune the scoring parameters** — edit the rule weights, ramp thresholds, stress
+  threshold, and escalation floor, then **Run Backtest** to *test* them (a transient
+  run that does not touch the portfolio), or **Apply to portfolio** to persist them
+  as the active config the live dashboard scores with. Defaults reproduce the
+  built-in behavior; "Reset to defaults" restores them.
 
 ### Tests
 

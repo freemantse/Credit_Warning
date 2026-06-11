@@ -18,7 +18,9 @@ Data flow per request:
 from __future__ import annotations
 
 import logging
+import re
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -50,9 +52,12 @@ from src.ingest import (
     get_filings,
     resolve_identifier,
 )
-from src.score import compute_score
+from src.score import DEFAULT_CONFIG, ScoreConfig, compute_score
 from src.store import (
+    add_case,
+    delete_case,
     delete_issuer,
+    get_case,
     get_cik_by_ticker,
     get_company,
     get_covenants_grouped,
@@ -61,12 +66,15 @@ from src.store import (
     get_loss_provisions_grouped,
     get_maturities_grouped,
     get_ratios_grouped,
+    get_score_config,
+    list_cases,
     save_company,
     save_covenants,
     save_findings,
     save_loss_provisions,
     save_maturities_bulk,
     save_ratios_bulk,
+    save_score_config,
 )
 
 app = FastAPI(title="Credit Warning API", version="1.0")
@@ -88,6 +96,29 @@ _backtest_status: dict[str, Any] = {
     "result": None,
     "error": None,
 }
+
+# Per-process cache of the active (applied) scoring config, so the hot read
+# endpoints (/api/issuers, /api/issuer) don't hit Supabase on every request.
+# Same single-process caveat as _backtest_status; invalidated when the config is
+# applied via PUT /api/score-config.
+_active_config_cache: ScoreConfig | None = None
+
+
+def _active_config() -> ScoreConfig:
+    """Return the active ScoreConfig (the one applied to the live portfolio), cached."""
+    global _active_config_cache
+    if _active_config_cache is None:
+        try:
+            _active_config_cache = ScoreConfig.from_dict(get_score_config())
+        except Exception:
+            # Supabase unavailable → fall back to defaults rather than 500 the dashboard.
+            _active_config_cache = ScoreConfig.from_dict(DEFAULT_CONFIG)
+    return _active_config_cache
+
+
+def _invalidate_config_cache() -> None:
+    global _active_config_cache
+    _active_config_cache = None
 
 
 class TrackRequest(BaseModel):
@@ -188,8 +219,10 @@ def list_issuers():
         ratio_results = _to_ratio_results(full_ratios, latest)
         # compute_score reads findings/covenants/provisions through _attr, which
         # handles the stored dicts directly — no dataclass conversion needed.
+        # config = the active (applied) parameters so the dashboard reflects them.
         score_result = compute_score(
-            ratio_results, findings, maturity, covenants, provisions
+            ratio_results, findings, maturity, covenants, provisions,
+            config=_active_config(),
         )
 
         # Helper to safely pull a ratio value without KeyError on missing data.
@@ -345,8 +378,10 @@ def get_issuer(ticker: str):
         provisions = provisions_by_period.get(period, [])    # list of dicts
         ratio_results = _to_ratio_results(full_ratios, period)
         # compute_score accepts dicts for all LLM signals (see _attr).
+        # config = the active (applied) parameters so detail scores match the dashboard.
         score_result = compute_score(
-            ratio_results, findings, maturity, covenants, provisions
+            ratio_results, findings, maturity, covenants, provisions,
+            config=_active_config(),
         )
 
         # Match this period to its 10-K and build the EDGAR document URL (None if
@@ -495,15 +530,20 @@ def llm_review_status(ticker: str):
 
 # ── Backtest (long-running background task) ──────────────────────────────────
 
-def _run_backtest_task():
+def _run_backtest_task(steps: int, config_dict: dict | None):
     """
     Worker function executed in a FastAPI BackgroundTask.
     Runs the full backtest and writes the result (or error) into _backtest_status.
     The import is deferred to avoid loading backtest deps on every server start.
+
+    config_dict is the (transient) scoring parameters to TEST this run with —
+    it is NOT persisted, so a backtest experiment never changes the live
+    portfolio. None → the run uses the default parameters.
     """
     try:
         from src.backtest import run_backtest
-        result = run_backtest()
+        config = ScoreConfig.from_dict(config_dict) if config_dict else ScoreConfig.from_dict(DEFAULT_CONFIG)
+        result = run_backtest(steps=steps, config=config)
         _backtest_status["result"] = result
         _backtest_status["error"] = None
     except Exception as e:
@@ -514,19 +554,55 @@ def _run_backtest_task():
         _backtest_status["running"] = False
 
 
+# Bounds on the user-supplied step count: at least a few snapshots to be
+# meaningful, capped so a stray large value can't hammer EDGAR for decades
+# of history per company.
+_MIN_STEPS, _MAX_STEPS = 4, 60
+
+
+class BacktestRequest(BaseModel):
+    # Snapshots per case (~90 days apart). Optional — omitted means the
+    # backtest's own DEFAULT_STEPS is used.
+    steps: int | None = None
+    # Scoring parameters to TEST this run with (transient — NOT persisted, so a
+    # backtest experiment never changes the live portfolio). Omitted → the active
+    # (applied) config is used, so the backtest matches the dashboard.
+    config: dict | None = None
+
+
 @app.post("/api/backtest")
-def start_backtest(background_tasks: BackgroundTasks):
+def start_backtest(background_tasks: BackgroundTasks, req: BacktestRequest | None = None):
     """
     Start the backtest as a background task and return immediately.
     The frontend polls /api/backtest/status every 3 s to detect completion.
     Returns 409 if a backtest is already running.
+
+    Accepts an optional body:
+      - {"steps": N}   point-in-time history depth, clamped to [_MIN_STEPS, _MAX_STEPS].
+      - {"config": …}  scoring parameters to TEST with (transient — not saved).
+                       Omitted → the active applied config (matches the dashboard).
     """
     if _backtest_status["running"]:
         raise HTTPException(409, "Backtest already running")
+
+    from src.backtest import DEFAULT_STEPS
+    steps = req.steps if (req and req.steps is not None) else DEFAULT_STEPS
+    steps = max(_MIN_STEPS, min(_MAX_STEPS, steps))
+
+    # A request config is the draft being TESTED; otherwise run with the active
+    # (applied) config so the backtest reflects what the portfolio currently uses.
+    if req and req.config is not None:
+        config_dict = _validate_config(req.config)
+    else:
+        try:
+            config_dict = get_score_config()
+        except Exception:
+            config_dict = DEFAULT_CONFIG
+
     _backtest_status["running"] = True
     _backtest_status["result"] = None
     _backtest_status["error"] = None
-    background_tasks.add_task(_run_backtest_task)
+    background_tasks.add_task(_run_backtest_task, steps, config_dict)
     return {"status": "started"}
 
 
@@ -560,8 +636,8 @@ def backtest_cases():
     """
     Return the backtest case library: which companies are tested and counts.
 
-    Reads data/cases.csv directly (not run results) so the roster is visible
-    before any backtest has been run.
+    Reads the roster (Supabase `cases`, CSV fallback) via load_cases — not run
+    results — so the library is visible before any backtest has been run.
     """
     from src.backtest import load_cases
 
@@ -580,63 +656,185 @@ def backtest_cases():
     }
 
 
-class SnapshotRequest(BaseModel):
-    as_of: str  # "YYYY-MM-DD" — the filed-before cutoff to score against
+# ── Case library CRUD ────────────────────────────────────────────────────────
 
-
-@app.post("/api/backtest/snapshot")
-def backtest_snapshot(req: SnapshotRequest):
+def _slugify_case_id(name: str, ticker: str, event_date: str, label: str) -> str:
     """
-    Score every backtest company point-in-time as of a user-chosen date.
-
-    The date is the filed_before cutoff: only filings with filed <= as_of are
-    used, so the result is exactly what an investor could have known that day.
-    This does NOT re-run or alter the backtest — it's a one-date snapshot.
-
-    Synchronous by design: with the EDGAR cache warm (after any backtest run)
-    this is a few seconds of JSON parsing. On a cold cache (fresh serverless
-    instance) the first call fetches ~28 companies from SEC and is slow.
+    Build a stable case_id slug like "hertz-2020" (distressed) or "aapl" (healthy),
+    mirroring the convention in data/cases.csv: distressed slugs append the event
+    year; healthy controls are just the lowercased ticker (or name).
     """
-    from datetime import datetime as _dt
+    base = re.sub(r"[^a-z0-9]+", "-", (ticker or name).lower()).strip("-")
+    if label == "distressed" and event_date:
+        return f"{base}-{event_date[:4]}"
+    return base
 
-    from src.backtest import _resolve_case_cik, load_cases, score_issuer_at_date
-    from src.score import STRESS_THRESHOLD
 
-    try:
-        as_of_date = _dt.strptime(req.as_of.strip(), "%Y-%m-%d").date()
-    except ValueError:
-        raise HTTPException(400, f"Invalid as_of date {req.as_of!r} — expected YYYY-MM-DD")
+class AddCaseRequest(BaseModel):
+    identifier: str                  # ticker (e.g. "BTU") or CIK (e.g. "1064728")
+    label: str                       # "distressed" | "healthy"
+    event_date: str | None = None    # "YYYY-MM-DD"; required for distressed
+    notes: str | None = None
+    case_id: str | None = None       # optional explicit slug; auto-generated when omitted
 
-    try:
-        cases = load_cases()
-    except FileNotFoundError as e:
-        raise HTTPException(404, str(e))
 
-    rows = []
-    for case in cases:
-        ticker = (case.get("ticker") or "").strip()
-        row = {
-            "case_id": (case.get("case_id") or "").strip() or ticker,
-            "company_name": (case.get("company_name") or "").strip(),
-            "ticker": ticker,
-            "label": (case.get("label") or "").strip(),
-            "event_date": (case.get("event_date") or "").strip() or None,
-            "error": None,
-        }
-        # Per-case isolation: one bad company must not fail the whole snapshot.
+@app.post("/api/cases")
+def create_case(req: AddCaseRequest):
+    """
+    Add a case to the backtest library.
+
+    Resolves the identifier (ticker or CIK) to a canonical CIK + current name via
+    EDGAR, validates the label, requires event_date for distressed cases (defaults
+    healthy controls to a pinned anchor), auto-generates a case_id slug when
+    omitted, and inserts the row. Returns the stored row (shape: BacktestCaseInfo).
+    """
+    label = req.label.strip().lower()
+    if label not in ("distressed", "healthy"):
+        raise HTTPException(400, "label must be 'distressed' or 'healthy'")
+
+    event_date = (req.event_date or "").strip()
+    if label == "distressed" and not event_date:
+        raise HTTPException(
+            400, "event_date (the Chapter 11 / credit-event date) is required for distressed cases"
+        )
+    if event_date:
         try:
-            cik = _resolve_case_cik(case)
-            facts = get_company_facts(cik)
-            snap = score_issuer_at_date(facts, as_of_date, STRESS_THRESHOLD)
-            row.update({
-                "score": round(snap.score, 1),
-                "stressed": snap.stressed,
-                "has_data": snap.has_data,
-                "period_end": snap.period_end,
-                "ratios": snap.ratios,
-            })
-        except Exception as e:
-            row["error"] = str(e)
-        rows.append(row)
+            datetime.strptime(event_date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(400, f"Invalid event_date {event_date!r} — expected YYYY-MM-DD")
+    # Healthy default: pin a stable far-future anchor so baselines stay reproducible
+    # (matches the 2025-12-31 anchors already in cases.csv).
+    if label == "healthy" and not event_date:
+        event_date = "2025-12-31"
 
-    return {"as_of": req.as_of, "threshold": STRESS_THRESHOLD, "rows": rows}
+    identifier = req.identifier.strip()
+    if not identifier:
+        raise HTTPException(400, "identifier (ticker or CIK) is required")
+    try:
+        cik = resolve_identifier(identifier)
+    except ValueError:
+        raise HTTPException(404, f"{identifier!r} not found in SEC EDGAR")
+    except Exception as e:
+        raise HTTPException(500, f"EDGAR lookup failed: {e}")
+
+    try:
+        info = get_company_info(cik)
+    except Exception as e:
+        raise HTTPException(500, f"Failed to fetch company info: {e}")
+
+    company_name = info.get("name", "")
+    ticker = info["tickers"][0] if info.get("tickers") else identifier.upper()
+
+    case_id = (req.case_id or "").strip() or _slugify_case_id(company_name, ticker, event_date, label)
+    if not case_id:
+        raise HTTPException(400, "could not derive a case_id slug; pass case_id explicitly")
+
+    # Explicit 409 rather than a silent upsert-overwrite, so the user knows the
+    # slug/company is already in the library.
+    if get_case(case_id) is not None:
+        raise HTTPException(409, f"case_id {case_id!r} already exists in the library")
+
+    return add_case({
+        "case_id": case_id,
+        "company_name": company_name,
+        "ticker": ticker,
+        "cik": cik,
+        "label": label,
+        "event_date": event_date,
+        "notes": (req.notes or "").strip(),
+    })
+
+
+@app.delete("/api/cases/{case_id}")
+def remove_case(case_id: str):
+    """Delete one case from the backtest library by case_id."""
+    if not delete_case(case_id):
+        raise HTTPException(404, f"case_id {case_id!r} not found")
+    return {"status": "deleted", "case_id": case_id}
+
+
+# ── Scoring parameters (test in backtest vs. apply to portfolio) ─────────────
+
+def _validate_config(raw: dict) -> dict:
+    """
+    Deep-merge `raw` over DEFAULT_CONFIG, enforce sane ranges, and return the
+    normalized full config dict. Raises HTTPException(400) on bad input.
+
+    The most important guard is healthy != severe per rule — _ramp divides by
+    (severe - healthy), so equal values would be a division by zero.
+    """
+    if not isinstance(raw, dict):
+        raise HTTPException(400, "config must be an object")
+
+    unknown = set((raw.get("rules") or {}).keys()) - set(DEFAULT_CONFIG["rules"].keys())
+    if unknown:
+        raise HTTPException(400, f"unknown rule keys: {', '.join(sorted(unknown))}")
+
+    try:
+        cfg = ScoreConfig.from_dict(raw)
+    except (TypeError, ValueError, KeyError) as e:
+        raise HTTPException(400, f"invalid config: {e}")
+
+    for key, r in cfg.rules.items():
+        if not (0 <= r["weight"] <= 100):
+            raise HTTPException(400, f"{key}.weight must be in [0, 100]")
+        if r["healthy"] == r["severe"]:
+            raise HTTPException(400, f"{key}: healthy and severe must differ (the ramp divides by their gap)")
+    for key, v in cfg.ebitda_override.items():
+        if not (0 <= v <= 100):
+            raise HTTPException(400, f"ebitda_override.{key} must be in [0, 100]")
+    for k in ("high_severity_per", "covenant_per", "provision_per"):
+        if not (0 <= cfg.llm[k] <= 50):
+            raise HTTPException(400, f"llm.{k} must be in [0, 50]")
+    for k in ("high_severity_cap", "covenant_cap", "provision_cap", "combined_cap"):
+        if not (0 <= cfg.llm[k] <= 100):
+            raise HTTPException(400, f"llm.{k} must be in [0, 100]")
+    if not (1 <= cfg.score_cap <= 100):
+        raise HTTPException(400, "score_cap must be in [1, 100]")
+    if not (1 <= cfg.escalation["min_severe"] <= 9):
+        raise HTTPException(400, "escalation.min_severe must be an integer in [1, 9]")
+    if not (0 < cfg.escalation["severe_frac"] <= 1):
+        raise HTTPException(400, "escalation.severe_frac must be in (0, 1]")
+    if not (0 <= cfg.escalation["floor"] <= 100):
+        raise HTTPException(400, "escalation.floor must be in [0, 100]")
+    if not (1 <= cfg.threshold <= 100):
+        raise HTTPException(400, "threshold must be an integer in [1, 100]")
+
+    return cfg.to_dict()
+
+
+class ScoreConfigRequest(BaseModel):
+    config: dict
+
+
+@app.get("/api/score-config")
+def read_score_config():
+    """
+    Return the active (applied) scoring parameters plus the built-in defaults.
+
+    `active` drives the live portfolio/detail scores and seeds the editor;
+    `defaults` powers the "Reset to defaults" button.
+    """
+    try:
+        active = get_score_config()
+    except Exception:
+        active = DEFAULT_CONFIG
+    return {
+        "active": ScoreConfig.from_dict(active).to_dict(),
+        "defaults": ScoreConfig.from_dict(DEFAULT_CONFIG).to_dict(),
+    }
+
+
+@app.put("/api/score-config")
+def apply_score_config(req: ScoreConfigRequest):
+    """
+    Apply scoring parameters to the live portfolio: validate, persist as the
+    active config, and invalidate the per-process cache. After this, the
+    dashboard and detail pages recompute scores with these parameters (no
+    re-track needed). This is the UI's "Apply to portfolio" action.
+    """
+    cfg = _validate_config(req.config)
+    save_score_config(cfg)
+    _invalidate_config_cache()
+    return {"active": cfg}
+
