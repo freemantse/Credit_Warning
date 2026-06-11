@@ -8,10 +8,12 @@ For each tracked company it:
 - Extracts auditable financial ratios from XBRL data (EBITDA margin, leverage, interest
   coverage, free cash flow, liquidity).
 - Computes a **stress score (0–100)** combining:
-  - Six quantitative ratio rules (XBRL-based, fully traceable to source tags).
+  - Nine quantitative rules — eight XBRL financial ratios plus a debt-maturity
+    concentration ("maturity wall") rule — all traceable to source tags.
   - Qualitative risk signals from the located MD&A prose and footnotes (LLM review of
     management tone, covenants, litigation).
-  - Debt-maturity concentration ("maturity wall") risk.
+  - All rule weights and thresholds are **tunable and backtestable** from the UI — see
+    the Backtest page below.
 - Tracks that score over time to reveal deterioration trends, and flags covenant proximity.
 
 ### Core design principle
@@ -38,7 +40,7 @@ There is a strict division between **deterministic parsing** and **LLM review**:
 | Core logic | `src/` | Ingest, extract, score, store, LLM review (pure Python) |
 | Backend API | `api/main.py` | FastAPI, routes under `/api/*` |
 | Frontend | `app/`, `lib/` | Next.js 14 + React 18 dashboard |
-| Persistence | `supabase/schema.sql` | Hosted PostgreSQL (Supabase) |
+| Persistence | `supabase/schema.sql` | Hosted PostgreSQL (Supabase) — issuer ratios/findings, the backtest `cases` library, and the active `score_config` |
 | Data cache | `cache/` | On-disk SEC EDGAR responses (immutable, never stale) |
 
 **Data source:** [SEC EDGAR](https://data.sec.gov) — free, authoritative XBRL company
@@ -55,7 +57,7 @@ ticker → ingest (resolve CIK, fetch XBRL, cached)
                               → MD&A (Item 7)   → quote-verified findings
                               → debt footnote   → covenants
                               → contingencies   → loss provisions
-       → score   (ratios + findings + maturities → 0–100)
+       → score   (ratios + findings + maturities → 0–100, via the active scoring config)
        → frontend renders portfolio table + issuer detail
 ```
 
