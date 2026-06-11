@@ -84,3 +84,61 @@ def test_point_in_time_filtering():
 def test_empty_facts_raises():
     with pytest.raises(MissingDataError):
         resolve_tag({}, "revenue", "2023-12-31")
+
+
+# ── New concepts: current assets / current liabilities ──────────────────────
+
+FIXTURE_CURRENT = {
+    "facts": {
+        "us-gaap": {
+            "AssetsCurrent": {
+                "units": {"USD": [{"end": "2023-12-31", "val": 600_000, "filed": "2024-02-15", "form": "10-K"}]}
+            },
+            "LiabilitiesCurrent": {
+                "units": {"USD": [{"end": "2023-12-31", "val": 400_000, "filed": "2024-02-15", "form": "10-K"}]}
+            },
+        }
+    }
+}
+
+
+def test_resolve_current_assets():
+    val, tag = resolve_tag(FIXTURE_CURRENT, "current_assets", "2023-12-31")
+    assert val == 600_000
+    assert tag == "us-gaap/AssetsCurrent"
+
+
+def test_resolve_current_liabilities():
+    val, tag = resolve_tag(FIXTURE_CURRENT, "current_liabilities", "2023-12-31")
+    assert val == 400_000
+    assert tag == "us-gaap/LiabilitiesCurrent"
+
+
+# ── Newly-added fallback tags resolve when primaries are absent ─────────────
+
+def test_revenue_falls_back_to_bank_tag():
+    # Only the bank-specific revenue tag is present — a newly-added fallback.
+    facts = {
+        "facts": {"us-gaap": {
+            "RevenuesNetOfInterestExpense": {
+                "units": {"USD": [{"end": "2023-12-31", "val": 250_000, "filed": "2024-02-15", "form": "10-K"}]}
+            }
+        }}
+    }
+    val, tag = resolve_tag(facts, "revenue", "2023-12-31")
+    assert val == 250_000
+    assert tag == "us-gaap/RevenuesNetOfInterestExpense"
+
+
+def test_short_term_debt_falls_back_to_commercial_paper():
+    # Only CommercialPaper present — a newly-added short-term-debt fallback.
+    facts = {
+        "facts": {"us-gaap": {
+            "CommercialPaper": {
+                "units": {"USD": [{"end": "2023-12-31", "val": 75_000, "filed": "2024-02-15", "form": "10-K"}]}
+            }
+        }}
+    }
+    val, tag = resolve_tag(facts, "short_term_debt", "2023-12-31")
+    assert val == 75_000
+    assert tag == "us-gaap/CommercialPaper"

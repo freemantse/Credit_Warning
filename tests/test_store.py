@@ -83,6 +83,34 @@ def test_save_persists_missing_ratios():
     assert miss["missing_json"]["reason"] == "no data"
 
 
+def make_finding(concern, quote, severity="high", source="10-K 2023-12-31, MD&A", source_url=""):
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        concern=concern,
+        severity=severity,
+        evidence_quote=quote,
+        source=source,
+        source_url=source_url,
+    )
+
+
+def test_save_findings_upserts_with_conflict_target_and_source_url():
+    # save_findings must (a) carry source_url into the row and (b) upsert with
+    # on_conflict on the natural key so re-runs UPDATE (refreshing source_url)
+    # rather than silently skipping the way ignore_duplicates=True did.
+    findings = [make_finding("Going-concern doubt", "substantial doubt", source_url="http://x/10k")]
+    mock_client = make_mock_client()
+    with patch("src.store._client", return_value=mock_client):
+        store.save_findings("AAPL", "2023-12-31", findings)
+
+    upsert = mock_client.table.return_value.upsert
+    rows = upsert.call_args[0][0]
+    assert rows[0]["source_url"] == "http://x/10k"
+    assert rows[0]["cik"] == "AAPL".zfill(10)  # cik zero-padded to width 10
+    assert upsert.call_args[1]["on_conflict"] == "cik,period_end,concern,evidence_quote"
+    assert "ignore_duplicates" not in upsert.call_args[1]
+
+
 def test_get_issuers_deduplicates():
     raw = [{"ticker": "AAPL"}, {"ticker": "MSFT"}, {"ticker": "AAPL"}]
     mock_client = make_mock_client(data=raw)

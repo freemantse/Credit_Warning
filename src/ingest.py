@@ -495,6 +495,33 @@ def find_filing_for_period(filings: list[dict], period: str) -> dict | None:
     return None
 
 
+def filing_doc_url(cik: str, accession: str, document: str) -> str:
+    """
+    Build the public SEC EDGAR archive URL for a specific filing document.
+
+    The single source of truth for the EDGAR archive URL pattern — shared by
+    get_filing_text (to fetch the document) and the LLM review pipeline (to
+    attach a traceable source link to each finding).
+
+    URL construction:
+      /Archives/edgar/data/{cik_int}/{accession_no_hyphens}/{document}
+      The CIK in the path is an INTEGER (no leading zeros), unlike API URLs.
+      The accession number has its hyphens removed (e.g. "0000320193-23-000106"
+      becomes "000032019323000106").
+
+    Args:
+        cik:       Zero-padded 10-digit CIK string (or any int-coercible CIK).
+        accession: Hyphenated accession number, e.g. "0000320193-23-000106".
+        document:  Primary document filename, e.g. "aapl-20230930.htm".
+    """
+    cik_padded = cik.zfill(10)
+    acc_clean = accession.replace("-", "")
+    return (
+        f"https://www.sec.gov/Archives/edgar/data"
+        f"/{int(cik_padded)}/{acc_clean}/{document}"
+    )
+
+
 def get_filing_text(cik: str, accession: str, document: str) -> str:
     """
     Fetch the raw text of a specific filing document from the EDGAR archives.
@@ -525,13 +552,10 @@ def get_filing_text(cik: str, accession: str, document: str) -> str:
     """
     cik_padded = cik.zfill(10)
 
-    # EDGAR archive URLs use the CIK as an integer (strip leading zeros).
-    # Accession numbers in archive URLs have no hyphens.
+    # EDGAR archive URLs use the CIK as an integer (strip leading zeros) and
+    # accession numbers with no hyphens — both handled by filing_doc_url.
     acc_clean = accession.replace("-", "")
-    url = (
-        f"https://www.sec.gov/Archives/edgar/data"
-        f"/{int(cik_padded)}/{acc_clean}/{document}"
-    )
+    url = filing_doc_url(cik, accession, document)
 
     # Build a filesystem-safe cache key. Replace "/" in document names with "_"
     # to avoid creating subdirectories in the cache folder.

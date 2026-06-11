@@ -26,6 +26,9 @@ TAGS: dict[str, list[str]] = {
         "us-gaap/SalesRevenueNet",                                       # older net-revenue tag
         "us-gaap/RevenueFromContractWithCustomerIncludingAssessedTax",   # includes sales tax
         "us-gaap/SalesRevenueGoodsNet",                                  # goods-only legacy tag
+        "us-gaap/RevenuesNetOfInterestExpense",                          # banks / broker-dealers
+        "us-gaap/RegulatedAndUnregulatedOperatingRevenue",              # utilities
+        "us-gaap/SalesRevenueServicesNet",                               # services-only legacy tag
     ],
 
     # ── Operating Income ─────────────────────────────────────────────────────
@@ -35,6 +38,7 @@ TAGS: dict[str, list[str]] = {
     "operating_income": [
         "us-gaap/OperatingIncomeLoss",
         "us-gaap/IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+        "us-gaap/IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments",
     ],
 
     # ── Interest Expense ─────────────────────────────────────────────────────
@@ -44,6 +48,9 @@ TAGS: dict[str, list[str]] = {
         "us-gaap/InterestAndDebtExpense",    # combined debt + lease interest
         "us-gaap/InterestExpenseDebt",       # debt-only interest
         "us-gaap/FinanceLeaseInterestExpense", # finance lease interest (post-ASC 842)
+        "us-gaap/InterestExpenseBorrowings",  # interest on borrowings
+        "us-gaap/InterestExpenseDebtExcludingAmortization", # debt interest ex-amortisation
+        "us-gaap/InterestPaidNet",            # last resort: cash interest paid (cash flow stmt)
     ],
 
     # ── Depreciation & Amortisation ──────────────────────────────────────────
@@ -53,6 +60,8 @@ TAGS: dict[str, list[str]] = {
     "depreciation": [
         "us-gaap/DepreciationDepletionAndAmortization",  # most inclusive
         "us-gaap/DepreciationAndAmortization",
+        "us-gaap/DepreciationAmortizationAndAccretionNet", # incl. accretion (extractives, ARO)
+        "us-gaap/CostOfGoodsAndServicesDepreciationAndAmortization", # D&A embedded in COGS
         "us-gaap/Depreciation",                          # depreciation only
         "us-gaap/AmortizationOfIntangibleAssets",        # last resort: intangibles only
     ],
@@ -66,6 +75,8 @@ TAGS: dict[str, list[str]] = {
         "us-gaap/LongTermDebtNoncurrent",
         "us-gaap/DebtAndCapitalLeaseObligations",         # includes lease liabilities
         "us-gaap/LongTermDebtAndCapitalLeaseObligations",
+        "us-gaap/LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities", # gross incl. current
+        "us-gaap/DebtLongtermAndShorttermCombinedAmount", # combined long + short term debt
         "us-gaap/NotesAndLoansPayable",
     ],
 
@@ -77,6 +88,10 @@ TAGS: dict[str, list[str]] = {
         "us-gaap/LongTermDebtCurrent",          # current portion of long-term debt
         "us-gaap/DebtCurrent",                   # broadest current-debt tag
         "us-gaap/NotesAndLoansPayableCurrent",
+        "us-gaap/CommercialPaper",               # commercial paper outstanding
+        "us-gaap/LinesOfCreditCurrent",          # drawn revolving credit (current)
+        "us-gaap/OtherShortTermBorrowings",      # residual short-term borrowings
+        "us-gaap/SecuredDebtCurrent",            # current portion of secured debt
     ],
 
     # ── Cash ─────────────────────────────────────────────────────────────────
@@ -86,6 +101,8 @@ TAGS: dict[str, list[str]] = {
     "cash": [
         "us-gaap/CashAndCashEquivalentsAtCarryingValue",      # standard balance-sheet tag
         "us-gaap/CashCashEquivalentsAndShortTermInvestments", # includes short-term investments
+        "us-gaap/CashAndCashEquivalentsAtCarryingValueIncludingDiscontinuedOperations", # incl. disc. ops
+        "us-gaap/CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents", # post-ASU 2016-18 total
         "us-gaap/Cash",                                        # narrower: cash only
         "us-gaap/CashAndCashEquivalentsPeriodIncreaseDecrease", # last resort: flow tag
     ],
@@ -95,6 +112,7 @@ TAGS: dict[str, list[str]] = {
     # in practice — this is one of the most consistently tagged XBRL concepts.
     "operating_cashflow": [
         "us-gaap/NetCashProvidedByUsedInOperatingActivities",
+        "us-gaap/NetCashProvidedByUsedInOperatingActivitiesContinuingOperations", # continuing ops only
     ],
 
     # ── Capital Expenditures (CapEx) ─────────────────────────────────────────
@@ -105,6 +123,9 @@ TAGS: dict[str, list[str]] = {
         "us-gaap/PaymentsToAcquirePropertyPlantAndEquipment",  # most common PP&E capex tag
         "us-gaap/CapitalExpendituresIncurredButNotYetPaid",    # accrued but unpaid capex
         "us-gaap/PaymentsToAcquireProductiveAssets",           # broader productive asset tag
+        "us-gaap/PaymentsForCapitalImprovements",              # capital improvements (e.g. REITs)
+        "us-gaap/PaymentsToAcquireOtherPropertyPlantAndEquipment", # other PP&E purchases
+        "us-gaap/PaymentsToAcquireMachineryAndEquipment",      # machinery & equipment only
     ],
 
     # ── Net Income ───────────────────────────────────────────────────────────
@@ -114,6 +135,7 @@ TAGS: dict[str, list[str]] = {
         "us-gaap/NetIncomeLoss",
         "us-gaap/ProfitLoss",                               # IFRS-influenced filers
         "us-gaap/IncomeLossFromContinuingOperations",
+        "us-gaap/NetIncomeLossAvailableToCommonStockholdersBasic", # net of preferred dividends
     ],
 
     # ── Total Assets ─────────────────────────────────────────────────────────
@@ -125,9 +147,24 @@ TAGS: dict[str, list[str]] = {
     ],
 
     # ── Total Liabilities ────────────────────────────────────────────────────
-    # Stored for completeness and for future solvency-ratio extensions.
+    # Numerator of the liabilities-to-assets solvency ratio (total_liabilities /
+    # total_assets): a value > 1 implies negative book equity.
     "total_liabilities": [
         "us-gaap/Liabilities",
+    ],
+
+    # ── Current Assets ─────────────────────────────────────────────────────────
+    # Numerator of the current ratio (current_assets / current_liabilities), the
+    # classic working-capital liquidity measure. Reported once per year-end on the
+    # balance sheet by non-financial filers (banks/insurers don't classify).
+    "current_assets": [
+        "us-gaap/AssetsCurrent",
+    ],
+
+    # ── Current Liabilities ──────────────────────────────────────────────────
+    # Denominator of the current ratio. Obligations due within one year.
+    "current_liabilities": [
+        "us-gaap/LiabilitiesCurrent",
     ],
 
     # ── Debt maturity schedule (the "maturity wall") ───────────────────────────

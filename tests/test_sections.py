@@ -101,7 +101,7 @@ def test_mdna_spans_subheadings_and_stops_at_item_7a():
 
 
 def test_mdna_respects_max_chars():
-    huge_liquidity = (MDNA_LIQUIDITY_SENTENCE + " ") * 600  # ≫ 40k chars
+    huge_liquidity = (MDNA_LIQUIDITY_SENTENCE + " ") * 800  # ≫ 100k chars
     sections = locate_sections(_build_filing(liquidity_body=huge_liquidity))
     mdna = sections["mdna"]
     assert mdna is not None
@@ -115,4 +115,40 @@ def test_debt_and_contingencies_still_located():
     assert "maximum leverage covenant" in debt.text
     contingencies = sections["contingencies"]
     assert contingencies is not None
+    assert "reasonably possible" in contingencies.text
+
+
+def test_footnote_spans_internal_subheadings():
+    # Real debt notes contain subheadings ("Commercial Paper", "Term Debt");
+    # the slice must span them and stop at the NEXT numbered note instead.
+    filing = _build_filing().replace(
+        f"<p>NOTE 5. Long-Term Debt</p>\n<p>{DEBT_BODY}</p>",
+        f"<p>NOTE 5. Long-Term Debt</p>\n<p>Commercial Paper</p>\n"
+        f"<p>{'We issue commercial paper to fund short-term needs. ' * 8}</p>\n"
+        f"<p>Term Debt</p>\n<p>{DEBT_BODY}</p>",
+    )
+    sections = locate_sections(filing)
+    debt = sections["debt"]
+    assert debt is not None
+    assert "commercial paper" in debt.text.lower()
+    assert "maximum leverage covenant" in debt.text  # past the Term Debt subheading
+    assert "reasonably possible" not in debt.text  # stops at NOTE 9
+
+
+def test_alternate_footnote_titles_anchor():
+    # Some filers title the notes "Financing Arrangements" / "Legal Matters"
+    # instead of the canonical "Long-Term Debt" / "Commitments and Contingencies".
+    filing = _build_filing().replace(
+        "NOTE 5. Long-Term Debt", "NOTE 5. Financing Arrangements"
+    ).replace(
+        "NOTE 9. Commitments and Contingencies", "NOTE 9. Legal Matters"
+    )
+    sections = locate_sections(filing)
+    debt = sections["debt"]
+    assert debt is not None
+    assert debt.heading_matched is not None
+    assert "maximum leverage covenant" in debt.text
+    contingencies = sections["contingencies"]
+    assert contingencies is not None
+    assert contingencies.heading_matched is not None
     assert "reasonably possible" in contingencies.text

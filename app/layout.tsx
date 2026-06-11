@@ -16,7 +16,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="bg-gray-50 text-gray-900 min-h-screen">
         {/* Top navigation bar — shared across Portfolio and Backtest pages */}
         <header className="bg-slate-900 text-white shadow-md">
-          <div className="max-w-7xl mx-auto px-6 py-4 flex items-center gap-8">
+          <div className="max-w-[100rem] mx-auto px-6 py-4 flex items-center gap-8">
             <div>
               <span className="text-lg font-bold tracking-tight">Credit Warning</span>
               <span className="ml-2 text-slate-400 text-sm hidden sm:inline">
@@ -34,7 +34,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </div>
         </header>
         {/* Page content is constrained to max-w-7xl and padded consistently */}
-        <main className="max-w-7xl mx-auto px-6 py-8">{children}</main>
+        <main className="max-w-[100rem] mx-auto px-6 py-8">{children}</main>
       </body>
     </html>
   )

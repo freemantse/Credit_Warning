@@ -5,12 +5,12 @@ filings (10-K / 10-Q) and surfaces credit stress *before* it becomes a problem.
 
 For each tracked company it:
 
-- Extracts auditable financial ratios from XBRL data (leverage, interest coverage, free
-  cash flow, liquidity).
+- Extracts auditable financial ratios from XBRL data (EBITDA margin, leverage, interest
+  coverage, free cash flow, liquidity).
 - Computes a **stress score (0–100)** combining:
-  - Quantitative ratio thresholds (XBRL-based, fully traceable to source tags).
-  - Qualitative risk signals from filing prose (LLM review of management tone, covenants,
-    litigation).
+  - Six quantitative ratio rules (XBRL-based, fully traceable to source tags).
+  - Qualitative risk signals from the located MD&A prose and footnotes (LLM review of
+    management tone, covenants, litigation).
   - Debt-maturity concentration ("maturity wall") risk.
 - Tracks that score over time to reveal deterioration trends, and flags covenant proximity.
 
@@ -21,8 +21,8 @@ There is a strict division between **deterministic parsing** and **LLM review**:
 - **All numbers** come from deterministic XBRL extraction — every ratio carries its raw
   inputs and source tags so it is auditable.
 - **The LLM never produces numbers or scores** — only qualitative findings with evidence
-  quotes. Every evidence quote is verified to appear verbatim in the filing section the
-  model was shown; unverifiable findings are dropped.
+  quotes. Every evidence quote (findings, covenants, loss provisions) is verified to appear
+  verbatim in the exact excerpt sent to the model; unverifiable findings are dropped.
 - Missing data **fails loud** (`MissingDataError`); defaults are never substituted.
 - The backtest is strictly **point-in-time** — no look-ahead bias.
 
@@ -48,8 +48,10 @@ identifier), never ticker.
 ticker → ingest (resolve CIK, fetch XBRL, cached)
        → extract (compute ratios, with audit trail)
        → store   (bulk insert to Supabase)
-       → optional LLM review (located 10-K MD&A + footnote sections
-                              → quote-verified findings, covenants, provisions)
+       → optional LLM review  fetch 10-K once → locate_sections
+                              → MD&A (Item 7)   → quote-verified findings
+                              → debt footnote   → covenants
+                              → contingencies   → loss provisions
        → score   (ratios + findings + maturities → 0–100)
        → frontend renders portfolio table + issuer detail
 ```
@@ -125,10 +127,10 @@ python3 -m src.track AAPL --no-llm        # skip the LLM pass
 python3 -m src.track AAPL --periods 8     # show 8 most recent annual periods
 
 # Point-in-time backtest over data/cases.csv (21 real bankruptcies + 7 healthy controls)
-python3 -m src.backtest                   # run + compare against the frozen baseline
-python3 -m src.backtest --save-baseline   # freeze this run as the new reference
-python3 -m src.backtest --threshold 40    # try a different stress threshold
-python3 -m src.backtest --early-months 12 # stricter early-warning bar
+python3 -m src.backtest                    # run + compare against the frozen baseline
+python3 -m src.backtest --save-baseline    # freeze this run as the new reference
+python3 -m src.backtest --threshold 40     # experiment with a different stress threshold
+python3 -m src.backtest --early-months 12  # stricter early-warning bar (default: 6 months)
 
 # Outputs: data/backtest_report.txt (human), data/backtest_results.json (per-case
 # score trajectories), data/backtest_baseline.json (frozen reference).
@@ -158,30 +160,3 @@ Vercel auto-detects the Next.js frontend and the Python serverless function from
 Do **not** set `PYTHON_API_URL` in production — it is for local dev only.
 
 See [`DEPLOY.md`](./DEPLOY.md) for the full deployment guide.
-
----
-
-## Remaining Work / Roadmap
-
-The pipeline runs end-to-end, but a few pieces are scaffolded yet not fully
-validated. What's left:
-
-**1. LLM qualitative analysis & footnote extraction** — the LLM path exists
-(`src/llm_review.py`, `src/footnote_review.py`, `src/sections.py`) but needs:
-section location validated/tuned across more filers; broader format coverage
-(older plain-text filings and 10-Qs — only 10-K HTML is handled today); a
-labeled set to evaluate extraction accuracy; finalized scoring weight; and LLM
-result caching.
-
-**2. Backtesting** — the eval system is in place: a vetted case library of 21
-bankruptcies (2016–2023) + 7 healthy controls (`data/cases.csv`, keyed on CIK
-so delisted companies resolve), per-case score trajectories
-(`data/backtest_results.json`), and a baseline-regression mode that exits
-nonzero when a change makes the model worse. Current benchmark: **16/21 caught
-(76%), 13/21 with ≥6-month early warning, 0% false positives.** Remaining:
-threshold tuning using the trajectories, quarterly 10-Q periods (lead-time
-resolution is capped at annual filing cadence today), a decision on including
-LLM findings, and wiring `python3 -m src.backtest` into CI.
-
-**3. Broader ingestion (future)** — 8-K event filings, earnings-call
-transcripts, and sell-side reports are planned but not started.

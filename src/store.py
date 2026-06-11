@@ -268,12 +268,14 @@ def save_findings(
     """
     Persist LLM qualitative findings for one (cik, period_end).
 
-    ignore_duplicates=True:
-      If the exact same finding (all columns identical) already exists, the
-      upsert silently ignores it rather than inserting a duplicate. This allows
-      re-running the LLM review on the same period without multiplying findings.
-      Two findings with the same concern but different evidence_quote are still
-      kept as separate rows because they differ on at least one column.
+    on_conflict on the natural key (cik, period_end, concern, evidence_quote):
+      Re-running the LLM review on the same period does NOT multiply findings —
+      a row matching the unique key is UPDATED in place rather than inserted
+      again. Crucially this refreshes the mutable columns (severity, source,
+      source_url) on the existing row, so a re-run backfills/updates source_url
+      instead of silently skipping it (the old ignore_duplicates=True behaviour
+      left stale source_url='' rows untouched). Two findings with the same
+      concern but different evidence_quote remain separate rows.
     """
     cik = cik.zfill(10)
     rows = [
@@ -284,12 +286,19 @@ def save_findings(
             "severity": f.severity,
             "evidence_quote": f.evidence_quote,
             "source": f.source,
+            # getattr default keeps this resilient to finding-like objects that
+            # predate the source_url field.
+            "source_url": getattr(f, "source_url", "") or "",
         }
         for f in findings
     ]
     if rows:
-        # ignore_duplicates prevents findings from multiplying if the same period is re-ingested.
-        _client().table("llm_findings").upsert(rows, ignore_duplicates=True).execute()
+        # on_conflict matches UNIQUE (cik, period_end, concern, evidence_quote);
+        # ignore_duplicates defaults to False, so a conflict does an UPDATE
+        # (merge), keeping source_url/severity/source fresh on re-runs.
+        _client().table("llm_findings").upsert(
+            rows, on_conflict="cik,period_end,concern,evidence_quote"
+        ).execute()
 
 
 def save_maturities_bulk(
@@ -509,7 +518,7 @@ def get_findings(cik: str, period_end: str, **_) -> list[dict]:
     res = (
         _client()
         .table("llm_findings")
-        .select("concern, severity, evidence_quote, source")
+        .select("concern, severity, evidence_quote, source, source_url")
         .eq("cik", cik)
         .eq("period_end", period_end)
         .execute()
@@ -556,7 +565,7 @@ def get_findings_grouped(cik: str | None = None, **_) -> dict[str, dict[str, lis
     q = (
         _client()
         .table("llm_findings")
-        .select("cik, period_end, concern, severity, evidence_quote, source")
+        .select("cik, period_end, concern, severity, evidence_quote, source, source_url")
     )
     if cik is not None:
         q = q.eq("cik", cik.zfill(10))
@@ -569,6 +578,7 @@ def get_findings_grouped(cik: str | None = None, **_) -> dict[str, dict[str, lis
             "severity": row["severity"],
             "evidence_quote": row["evidence_quote"],
             "source": row["source"],
+            "source_url": row.get("source_url", "") or "",
         })
     return out
 

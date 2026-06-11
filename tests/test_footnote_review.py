@@ -135,3 +135,55 @@ def test_review_filing_no_matching_filing_returns_empty():
     assert result == ([], [], [])
     assert fetch.call_count == 0
     assert client.messages.create.call_count == 0
+
+
+# --- boolean coercion: a string "false" must never count as True ---
+
+def test_covenant_string_false_near_limit_is_false():
+    from src.footnote_review import _validate_covenant
+
+    raw = {
+        "covenant_type": "max_leverage",
+        "threshold": None,
+        "direction": "max",
+        "reported_actual": None,
+        "near_limit": "false",  # string, not bool — bool("false") would be True
+        "evidence_quote": "maintain a maximum leverage covenant",
+        "source": "10-K 2023-12-31, Debt",
+    }
+    covenant = _validate_covenant(raw, "10-K 2023-12-31, Debt")
+    assert covenant is not None
+    assert covenant.near_limit is False
+
+
+def test_covenant_string_true_near_limit_is_true():
+    from src.footnote_review import _validate_covenant
+
+    raw = {
+        "covenant_type": "max_leverage",
+        "threshold": None,
+        "direction": "max",
+        "reported_actual": None,
+        "near_limit": "true",
+        "evidence_quote": "maintain a maximum leverage covenant",
+        "source": "10-K 2023-12-31, Debt",
+    }
+    covenant = _validate_covenant(raw, "10-K 2023-12-31, Debt")
+    assert covenant is not None
+    assert covenant.near_limit is True
+
+
+def test_provision_string_false_is_material_is_false():
+    from src.footnote_review import _validate_provision
+
+    raw = {
+        "matter": "patent litigation",
+        "provision_amount": None,
+        "is_material": "False",
+        "qualitative_flag": "",
+        "evidence_quote": "a loss is reasonably possible but not accrued",
+        "source": "10-K 2023-12-31, Contingencies",
+    }
+    provision = _validate_provision(raw, "10-K 2023-12-31, Contingencies")
+    assert provision is not None
+    assert provision.is_material is False

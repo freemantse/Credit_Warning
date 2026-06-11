@@ -43,6 +43,8 @@ from src.extract import (
     debt_maturity_schedule,
 )
 from src.ingest import (
+    filing_doc_url,
+    find_filing_for_period,
     get_company_facts,
     get_company_info,
     get_filings,
@@ -139,21 +141,6 @@ def _resolve_cik_for_read(identifier: str) -> str:
     return resolve_identifier(ident)
 
 
-def _finding_objects(findings: list[dict]):
-    # Convert raw dicts from Supabase into Finding dataclass instances
-    # so compute_score can call getattr(f, "severity") on them.
-    from src.llm_review import Finding
-    return [
-        Finding(
-            concern=f["concern"],
-            severity=f["severity"],
-            evidence_quote=f["evidence_quote"],
-            source=f["source"],
-        )
-        for f in findings
-    ]
-
-
 # ── Routes ───────────────────────────────────────────────────────────────────
 
 @app.get("/api/health")
@@ -199,9 +186,10 @@ def list_issuers():
         # Re-score from stored data so the summary is always consistent with
         # the detail page (both call compute_score with the same inputs).
         ratio_results = _to_ratio_results(full_ratios, latest)
-        finding_objs = _finding_objects(findings)
+        # compute_score reads findings/covenants/provisions through _attr, which
+        # handles the stored dicts directly — no dataclass conversion needed.
         score_result = compute_score(
-            ratio_results, finding_objs, maturity, covenants, provisions
+            ratio_results, findings, maturity, covenants, provisions
         )
 
         # Helper to safely pull a ratio value without KeyError on missing data.
@@ -221,6 +209,9 @@ def list_issuers():
             "free_cash_flow": _v("free_cash_flow"),
             "fcf_margin": _v("fcf_margin"),
             "liquidity": _v("liquidity"),
+            "cash_flow_to_debt": _v("cash_flow_to_debt"),
+            "debt_to_assets": _v("debt_to_assets"),
+            "current_ratio": _v("current_ratio"),
             "score": score_result.score,
             "alerts": score_result.alerts,
         })
@@ -334,6 +325,16 @@ def get_issuer(ticker: str):
     covenants_by_period = get_covenants_grouped(cik).get(cik, {})
     provisions_by_period = get_loss_provisions_grouped(cik).get(cik, {})
 
+    # Per-period source link: the public SEC EDGAR URL of the 10-K each period's
+    # ratios were extracted from, so an analyst can trace any figure on the audit
+    # card back to the filing. Best-effort — the 10-K list comes from the cached
+    # submissions JSON; if EDGAR is unreachable on a cold instance we just omit
+    # the link rather than fail the whole issuer load.
+    try:
+        filings = get_filings(cik, ["10-K"])
+    except Exception:
+        filings = []
+
     period_data = []
     # Newest period first so the frontend chart/table show recent data at the top.
     for period in sorted(ratios_by_period, reverse=True):
@@ -343,10 +344,18 @@ def get_issuer(ticker: str):
         covenants = covenants_by_period.get(period, [])      # list of dicts
         provisions = provisions_by_period.get(period, [])    # list of dicts
         ratio_results = _to_ratio_results(full_ratios, period)
-        finding_objs = _finding_objects(findings)
-        # compute_score accepts dicts for maturity/covenants/provisions (see _attr).
+        # compute_score accepts dicts for all LLM signals (see _attr).
         score_result = compute_score(
-            ratio_results, finding_objs, maturity, covenants, provisions
+            ratio_results, findings, maturity, covenants, provisions
+        )
+
+        # Match this period to its 10-K and build the EDGAR document URL (None if
+        # no filing matches or the list couldn't be fetched).
+        filing = find_filing_for_period(filings, period) if filings else None
+        source_url = (
+            filing_doc_url(cik, filing["accessionNumber"], filing["primaryDocument"])
+            if filing
+            else None
         )
 
         period_data.append({
@@ -359,6 +368,7 @@ def get_issuer(ticker: str):
             "maturities": maturity,         # XBRL maturity schedule (or None)
             "covenants": covenants,         # LLM-extracted covenants (may be empty)
             "loss_provisions": provisions,  # LLM-extracted provisions (may be empty)
+            "source_url": source_url,       # public SEC EDGAR URL of the source 10-K
         })
 
     tickers = company.get("tickers") or []
@@ -376,6 +386,111 @@ def remove_issuer(ticker: str):
     cik = _resolve_cik_for_read(ticker)
     delete_issuer(cik)
     return {"status": "deleted", "cik": cik}
+
+
+# ── On-demand LLM review (per-issuer background task) ────────────────────────
+#
+# Tracking deliberately skips the LLM pass (no_llm defaults to True) because it
+# takes ~30 s/filing. These endpoints let the detail page run the pass on demand
+# for an already-tracked issuer, mirroring the backtest start+poll pattern.
+#
+# Status is keyed by CIK so reviews of different issuers don't clobber each
+# other. As with the backtest, a single in-process dict assumes one server
+# process (true on Vercel and locally) — move to Redis/Supabase if scaled out.
+_llm_review_status: dict[str, dict[str, Any]] = {}
+
+# Default number of most-recent annual periods to review. The full history is
+# ~15 filings (~7 min) — far past the 60 s Vercel function limit — so we cap to
+# the most recent few, which is where credit concerns are most actionable.
+_LLM_REVIEW_DEFAULT_PERIODS = 3
+
+
+class LlmReviewRequest(BaseModel):
+    # How many most-recent annual periods to review. None = all stored periods
+    # (slow; only safe on a long-lived local server, not Vercel's 60 s limit).
+    periods: int | None = _LLM_REVIEW_DEFAULT_PERIODS
+
+
+def _run_llm_review_task(cik: str, periods: list[str]) -> None:
+    """
+    Worker executed in a FastAPI BackgroundTask: run the LLM review for each
+    period and save findings/covenants/provisions. Updates _llm_review_status
+    so the frontend can poll progress. Deferred import keeps the LLM/HTTP stack
+    out of every server start.
+    """
+    status = _llm_review_status[cik]
+    try:
+        from src.footnote_review import review_filing
+
+        filings = get_filings(cik, ["10-K"])
+        for period in periods:
+            try:
+                findings_list, covenants, provisions = review_filing(cik, period, filings)
+                save_findings(cik, period, findings_list)
+                save_covenants(cik, period, covenants)
+                save_loss_provisions(cik, period, provisions)
+            except Exception:
+                # Best-effort per period: one bad filing must not abort the rest.
+                logging.warning(
+                    "LLM review skipped for %s %s", cik, period, exc_info=True
+                )
+            status["periods_done"] += 1
+        status["error"] = None
+    except Exception as e:
+        # A failure here (e.g. EDGAR fetch of the filing list) aborts the whole run.
+        status["error"] = str(e)
+    finally:
+        status["running"] = False
+
+
+@app.post("/api/issuer/{ticker}/llm-review")
+def start_llm_review(
+    ticker: str, req: LlmReviewRequest, background_tasks: BackgroundTasks
+):
+    """
+    Run the LLM qualitative review for an already-tracked issuer in the
+    background and return immediately. The frontend polls
+    /api/issuer/{ticker}/llm-review/status to detect completion.
+
+    Periods come from the issuer's stored ratios (newest-first), so no EDGAR
+    facts round-trip is needed; the 10-K filing list is fetched in the worker.
+    Returns 409 if a review is already running for this issuer.
+    """
+    cik = _resolve_cik_for_read(ticker)
+
+    existing = _llm_review_status.get(cik)
+    if existing and existing["running"]:
+        raise HTTPException(409, "LLM review already running for this issuer")
+
+    ratios_by_period = get_ratios_grouped(cik).get(cik, {})
+    if not ratios_by_period:
+        raise HTTPException(404, f"{ticker} is not tracked. POST /api/track first.")
+
+    periods = sorted(ratios_by_period, reverse=True)  # newest-first
+    if req.periods is not None:
+        periods = periods[: req.periods]
+
+    _llm_review_status[cik] = {
+        "running": True,
+        "error": None,
+        "periods_done": 0,
+        "periods_total": len(periods),
+    }
+    background_tasks.add_task(_run_llm_review_task, cik, periods)
+    return {"status": "started", "cik": cik, "periods_total": len(periods)}
+
+
+@app.get("/api/issuer/{ticker}/llm-review/status")
+def llm_review_status(ticker: str):
+    """
+    Return the current LLM-review state for one issuer: running flag, error, and
+    periods_done/periods_total progress. Returns an idle state (running=False,
+    periods 0/0) if no review has been started for this issuer in this process.
+    """
+    cik = _resolve_cik_for_read(ticker)
+    return _llm_review_status.get(
+        cik, {"running": False, "error": None, "periods_done": 0, "periods_total": 0}
+    )
 
 
 # ── Backtest (long-running background task) ──────────────────────────────────
