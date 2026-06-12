@@ -34,7 +34,7 @@ export interface IssuerSummary {
   cash_flow_to_debt: number | null      // operating_cashflow / gross_debt (FFO/Debt proxy), decimal fraction
   debt_to_assets: number | null         // gross_debt / total_assets (gearing), decimal fraction
   current_ratio: number | null          // current_assets / current_liabilities
-  score: number                   // 0–100 stress score from compute_score()
+  score: number | null             // 0–100 stress score; null when no ratios are stored yet
   alerts: string[]                // human-readable triggered threshold messages
 }
 

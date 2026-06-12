@@ -369,16 +369,23 @@ export default function Dashboard() {
                     <td className="px-2 py-4 text-right font-mono text-slate-700">{fmtRatio(iss.current_ratio)}</td>
                     <td className="px-2 py-4 text-right font-mono text-slate-700">{fmtPct(iss.debt_to_assets)}</td>
 
-                    {/* Score as a rounded integer — the exact value is shown in the detail page. */}
+                    {/* Score as a rounded integer — the exact value is shown in the detail page.
+                        null = no ratios stored yet (e.g. tracking couldn't extract any), shown as —. */}
                     <td className="px-2 py-4 text-center font-mono font-bold text-slate-800">
-                      {Math.round(iss.score)}
+                      {iss.score == null ? '—' : Math.round(iss.score)}
                     </td>
 
                     {/* Colour-coded status badge. scoreBg() returns Tailwind classes. */}
                     <td className="px-2 py-4 text-center">
-                      <span className={`inline-block text-xs font-medium px-2.5 py-1 rounded-full whitespace-nowrap ${scoreBg(iss.score)}`}>
-                        {scoreLabel(iss.score)}
-                      </span>
+                      {iss.score == null ? (
+                        <span className="inline-block text-xs font-medium px-2.5 py-1 rounded-full whitespace-nowrap bg-gray-100 text-slate-500 border border-gray-200">
+                          No data
+                        </span>
+                      ) : (
+                        <span className={`inline-block text-xs font-medium px-2.5 py-1 rounded-full whitespace-nowrap ${scoreBg(iss.score)}`}>
+                          {scoreLabel(iss.score)}
+                        </span>
+                      )}
                     </td>
 
                     {/* Remove button. Shows "…" while the delete for THIS row is in-flight. */}
@@ -416,19 +423,34 @@ export default function Dashboard() {
                   >
                     ‹ Prev
                   </button>
-                  {Array.from({ length: Math.ceil(issuers.length / PAGE_SIZE) }, (_, i) => (
-                    <button
-                      key={i}
-                      onClick={() => setPage(i)}
-                      className={`px-2.5 py-1 text-xs rounded border transition-colors ${
-                        i === page
-                          ? 'bg-slate-800 text-white border-slate-800'
-                          : 'border-gray-200 text-slate-500 hover:bg-gray-50'
-                      }`}
-                    >
-                      {i + 1}
-                    </button>
-                  ))}
+                  {(() => {
+                    const total = Math.ceil(issuers.length / PAGE_SIZE)
+                    const pages: (number | '…')[] = []
+                    if (total <= 7) {
+                      for (let i = 0; i < total; i++) pages.push(i)
+                    } else {
+                      pages.push(0)
+                      if (page > 3) pages.push('…')
+                      for (let i = Math.max(1, page - 1); i <= Math.min(total - 2, page + 1); i++) pages.push(i)
+                      if (page < total - 4) pages.push('…')
+                      pages.push(total - 1)
+                    }
+                    return pages.map((p, idx) =>
+                      p === '…'
+                        ? <span key={`ellipsis-${idx}`} className="px-1 text-xs text-slate-400">…</span>
+                        : <button
+                            key={p}
+                            onClick={() => setPage(p as number)}
+                            className={`px-2.5 py-1 text-xs rounded border transition-colors ${
+                              p === page
+                                ? 'bg-slate-800 text-white border-slate-800'
+                                : 'border-gray-200 text-slate-500 hover:bg-gray-50'
+                            }`}
+                          >
+                            {(p as number) + 1}
+                          </button>
+                    )
+                  })()}
                   <button
                     onClick={() => setPage(p => p + 1)}
                     disabled={page >= Math.ceil(issuers.length / PAGE_SIZE) - 1}
