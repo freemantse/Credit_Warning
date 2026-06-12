@@ -42,6 +42,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import pathlib
 import statistics
 import sys
@@ -57,10 +58,13 @@ from src.score import compute_score, STRESS_THRESHOLD, ScoreConfig, DEFAULT
 
 # ── File paths ───────────────────────────────────────────────────────────────
 DATA_DIR = pathlib.Path(__file__).parent.parent / "data"
-CASES_PATH = DATA_DIR / "cases.csv"
-REPORT_PATH = DATA_DIR / "backtest_report.txt"
-RESULTS_PATH = DATA_DIR / "backtest_results.json"
-BASELINE_PATH = DATA_DIR / "backtest_baseline.json"
+CASES_PATH = DATA_DIR / "cases.csv"           # read-only input — fine on Vercel
+
+# Vercel's /var/task is read-only; redirect writable outputs to /tmp instead.
+_OUT_DIR = pathlib.Path("/tmp") if os.environ.get("VERCEL") else DATA_DIR
+REPORT_PATH   = _OUT_DIR / "backtest_report.txt"
+RESULTS_PATH  = _OUT_DIR / "backtest_results.json"
+BASELINE_PATH = DATA_DIR / "backtest_baseline.json"  # CLI-only write; read fallback
 
 # A case is an "early warning" only if flagged at least this many months
 # before the event. Catching a bankruptcy 2 weeks out is technically a catch,
