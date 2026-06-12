@@ -50,6 +50,10 @@ export default function Dashboard() {
   // Without this, an empty table flashes briefly before data arrives.
   const [initialLoad, setInitialLoad] = useState(true)
 
+  // Pagination — 8 rows per page.
+  const PAGE_SIZE = 8
+  const [page, setPage] = useState(0)
+
 
   // ── Data loading ────────────────────────────────────────────────────────────
 
@@ -64,6 +68,7 @@ export default function Dashboard() {
     setInitialLoad(true)
     try {
       setIssuers(await fetchIssuers())
+      setPage(0)
     } catch {
       // The most likely cause is the Python server not running.
       setError(
@@ -312,7 +317,7 @@ export default function Dashboard() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {issuers.map(iss => {
+                {issuers.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE).map(iss => {
                   // Delisted issuers (e.g. WeWork) have no current ticker. The detail
                   // route accepts a CIK too, so fall back to it for the link target.
                   const href = `/issuer/${iss.ticker || iss.cik}`
@@ -397,6 +402,43 @@ export default function Dashboard() {
                 })}
               </tbody>
             </table>
+            {/* Pagination controls — only shown when there's more than one page. */}
+            {issuers.length > PAGE_SIZE && (
+              <div className="flex items-center justify-between px-4 py-3 border-t border-gray-100">
+                <span className="text-xs text-slate-400">
+                  {page * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE + PAGE_SIZE, issuers.length)} of {issuers.length}
+                </span>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => setPage(p => p - 1)}
+                    disabled={page === 0}
+                    className="px-2 py-1 text-xs rounded border border-gray-200 text-slate-500 hover:bg-gray-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  >
+                    ‹ Prev
+                  </button>
+                  {Array.from({ length: Math.ceil(issuers.length / PAGE_SIZE) }, (_, i) => (
+                    <button
+                      key={i}
+                      onClick={() => setPage(i)}
+                      className={`px-2.5 py-1 text-xs rounded border transition-colors ${
+                        i === page
+                          ? 'bg-slate-800 text-white border-slate-800'
+                          : 'border-gray-200 text-slate-500 hover:bg-gray-50'
+                      }`}
+                    >
+                      {i + 1}
+                    </button>
+                  ))}
+                  <button
+                    onClick={() => setPage(p => p + 1)}
+                    disabled={page >= Math.ceil(issuers.length / PAGE_SIZE) - 1}
+                    className="px-2 py-1 text-xs rounded border border-gray-200 text-slate-500 hover:bg-gray-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  >
+                    Next ›
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
