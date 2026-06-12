@@ -202,7 +202,27 @@ def list_issuers():
         cik = issuer["cik"]
         by_period = ratios_by_cik.get(cik, {})
         if not by_period:
-            # Company exists in DB but has no stored ratios — skip rather than error.
+            # Company tracked but no ratios computed yet (e.g. bank with non-standard
+            # XBRL, or tracking failed mid-way). Show it in the list so the user can
+            # see it and delete it — just with all-null metrics.
+            result.append({
+                "cik": cik,
+                "ticker": issuer["ticker"],
+                "name": issuer["name"],
+                "latest_period": None,
+                "period_count": 0,
+                "ebitda_margin": None,
+                "leverage": None,
+                "interest_coverage": None,
+                "free_cash_flow": None,
+                "fcf_margin": None,
+                "liquidity": None,
+                "cash_flow_to_debt": None,
+                "debt_to_assets": None,
+                "current_ratio": None,
+                "score": None,
+                "alerts": [],
+            })
             continue
 
         # period_end strings sort chronologically; the newest is the max.

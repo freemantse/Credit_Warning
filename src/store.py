@@ -104,6 +104,32 @@ def _client() -> Client:
     return _cached_client
 
 
+def _fetch_all(build_query, *, page_size: int = 1000) -> list[dict[str, Any]]:
+    """
+    Return EVERY row matched by a PostgREST select, paging past the 1000-row cap.
+
+    PostgREST silently truncates every response to 1000 rows unless you request
+    explicit ranges. An unfiltered portfolio-wide read of a table that has grown
+    past 1000 rows therefore drops data with NO error — e.g. `ratios` holds
+    ~9 ratios × ~15 periods per issuer, so a handful of issuers already exceeds
+    the cap and whole companies silently vanish from get_ratios_grouped(). We
+    page in fixed windows until a short page signals the end.
+
+    `build_query` must be a zero-arg callable returning a FRESH, *ordered* query
+    builder. Ordering is required: without a stable sort, successive .range()
+    windows can skip or repeat rows. The builder is rebuilt per page because a
+    PostgREST builder is single-use once executed.
+    """
+    rows: list[dict[str, Any]] = []
+    start = 0
+    while True:
+        batch = build_query().range(start, start + page_size - 1).execute().data
+        rows.extend(batch)
+        if len(batch) < page_size:
+            return rows
+        start += page_size
+
+
 # ── Company identity ─────────────────────────────────────────────────────────
 
 def save_company(info: dict[str, Any], **_) -> None:
@@ -509,24 +535,20 @@ def save_loss_provisions(
 
 def get_issuers(**_) -> list[dict[str, Any]]:
     """
-    Return one identity row per tracked company (those with ≥1 stored ratio).
+    Return one identity row per tracked company (all rows in the companies table).
 
     Each row is {cik, name, ticker} where `ticker` is the first current ticker
-    from the companies table (or "" if unknown). The ratios table has one row
-    per (cik, period_end, ratio_name), so each CIK appears many times — set()
-    deduplicates to the distinct list of tracked CIKs.
+    (or "" if unknown). Querying companies directly — rather than deriving CIKs
+    from the ratios table — ensures issuers whose ratio extraction failed (e.g.
+    banks with non-standard XBRL) are still visible in the portfolio list.
     """
-    res = _client().table("ratios").select("cik").execute()
-    ciks = sorted(set(r["cik"] for r in res.data))
-
-    companies = _companies_map(ciks)
+    res = _client().table("companies").select("cik, name, tickers").execute()
     issuers = []
-    for cik in ciks:
-        info = companies.get(cik, {})
-        tickers = info.get("tickers") or []
+    for row in sorted(res.data, key=lambda r: r["cik"]):
+        tickers = row.get("tickers") or []
         issuers.append({
-            "cik": cik,
-            "name": info.get("name", ""),
+            "cik": row["cik"],
+            "name": row.get("name", ""),
             "ticker": tickers[0] if tickers else "",
         })
     return issuers
@@ -650,17 +672,17 @@ def get_ratios_grouped(cik: str | None = None, **_) -> dict[str, dict[str, dict[
 
     `data` is {value, inputs, source_tags} — the same shape get_full_ratios returns.
     """
-    q = (
-        _client()
-        .table("ratios")
-        .select("cik, period_end, ratio_name, value, inputs_json, source_tags_json, missing_json")
-    )
-    if cik is not None:
-        q = q.eq("cik", cik.zfill(10))
-    res = q.execute()
+    def build():
+        q = (
+            _client()
+            .table("ratios")
+            .select("cik, period_end, ratio_name, value, inputs_json, source_tags_json, missing_json")
+            .order("cik").order("period_end").order("ratio_name")  # stable order for paging
+        )
+        return q.eq("cik", cik.zfill(10)) if cik is not None else q
 
     out: dict[str, dict[str, dict[str, dict]]] = {}
-    for row in res.data:
+    for row in _fetch_all(build):
         out.setdefault(row["cik"], {}).setdefault(row["period_end"], {})[row["ratio_name"]] = (
             _ratio_data_from_row(row)
         )
@@ -676,17 +698,17 @@ def get_findings_grouped(cik: str | None = None, **_) -> dict[str, dict[str, lis
     table is usually empty (LLM review is off by default), so this is one cheap
     query rather than 18.
     """
-    q = (
-        _client()
-        .table("llm_findings")
-        .select("cik, period_end, concern, severity, evidence_quote, source, source_url")
-    )
-    if cik is not None:
-        q = q.eq("cik", cik.zfill(10))
-    res = q.execute()
+    def build():
+        q = (
+            _client()
+            .table("llm_findings")
+            .select("cik, period_end, concern, severity, evidence_quote, source, source_url")
+            .order("id")  # stable order for paging (BIGSERIAL primary key)
+        )
+        return q.eq("cik", cik.zfill(10)) if cik is not None else q
 
     out: dict[str, dict[str, list[dict]]] = {}
-    for row in res.data:
+    for row in _fetch_all(build):
         out.setdefault(row["cik"], {}).setdefault(row["period_end"], []).append({
             "concern": row["concern"],
             "severity": row["severity"],
@@ -706,18 +728,18 @@ def get_maturities_grouped(cik: str | None = None, **_) -> dict[str, dict[str, d
     so the read shape matches extract.MaturitySchedule without storing redundant
     summary rows.
     """
-    q = (
-        _client()
-        .table("debt_maturities")
-        .select("cik, period_end, bucket, value, source_tag")
-    )
-    if cik is not None:
-        q = q.eq("cik", cik.zfill(10))
-    res = q.execute()
+    def build():
+        q = (
+            _client()
+            .table("debt_maturities")
+            .select("cik, period_end, bucket, value, source_tag")
+            .order("cik").order("period_end").order("bucket")  # stable order for paging
+        )
+        return q.eq("cik", cik.zfill(10)) if cik is not None else q
 
     # First gather raw buckets per (cik, period_end).
     raw: dict[str, dict[str, dict]] = {}
-    for row in res.data:
+    for row in _fetch_all(build):
         period = raw.setdefault(row["cik"], {}).setdefault(
             row["period_end"], {"buckets": {}, "source_tags": {}}
         )
@@ -743,20 +765,20 @@ def get_maturities_grouped(cik: str | None = None, **_) -> dict[str, dict[str, d
 
 def get_covenants_grouped(cik: str | None = None, **_) -> dict[str, dict[str, list[dict]]]:
     """Fetch covenants in ONE query, grouped as cik → period_end → [covenants]."""
-    q = (
-        _client()
-        .table("covenants")
-        .select(
-            "cik, period_end, covenant_type, threshold, direction, "
-            "reported_actual, near_limit, evidence_quote, source"
+    def build():
+        q = (
+            _client()
+            .table("covenants")
+            .select(
+                "cik, period_end, covenant_type, threshold, direction, "
+                "reported_actual, near_limit, evidence_quote, source"
+            )
+            .order("id")  # stable order for paging (BIGSERIAL primary key)
         )
-    )
-    if cik is not None:
-        q = q.eq("cik", cik.zfill(10))
-    res = q.execute()
+        return q.eq("cik", cik.zfill(10)) if cik is not None else q
 
     out: dict[str, dict[str, list[dict]]] = {}
-    for row in res.data:
+    for row in _fetch_all(build):
         out.setdefault(row["cik"], {}).setdefault(row["period_end"], []).append({
             "covenant_type": row["covenant_type"],
             "threshold": row["threshold"],
@@ -771,20 +793,20 @@ def get_covenants_grouped(cik: str | None = None, **_) -> dict[str, dict[str, li
 
 def get_loss_provisions_grouped(cik: str | None = None, **_) -> dict[str, dict[str, list[dict]]]:
     """Fetch loss provisions in ONE query, grouped as cik → period_end → [provisions]."""
-    q = (
-        _client()
-        .table("loss_provisions")
-        .select(
-            "cik, period_end, matter, provision_amount, is_material, "
-            "qualitative_flag, evidence_quote, source"
+    def build():
+        q = (
+            _client()
+            .table("loss_provisions")
+            .select(
+                "cik, period_end, matter, provision_amount, is_material, "
+                "qualitative_flag, evidence_quote, source"
+            )
+            .order("id")  # stable order for paging (BIGSERIAL primary key)
         )
-    )
-    if cik is not None:
-        q = q.eq("cik", cik.zfill(10))
-    res = q.execute()
+        return q.eq("cik", cik.zfill(10)) if cik is not None else q
 
     out: dict[str, dict[str, list[dict]]] = {}
-    for row in res.data:
+    for row in _fetch_all(build):
         out.setdefault(row["cik"], {}).setdefault(row["period_end"], []).append({
             "matter": row["matter"],
             "provision_amount": row["provision_amount"],
@@ -812,4 +834,9 @@ def delete_issuer(cik: str, **_) -> None:
     client.table("debt_maturities").delete().eq("cik", cik).execute()
     client.table("covenants").delete().eq("cik", cik).execute()
     client.table("loss_provisions").delete().eq("cik", cik).execute()
-    client.table("companies").delete().eq("cik", cik).execute()
+    resp = client.table("companies").delete().eq("cik", cik).execute()
+    if not resp.data:
+        raise ValueError(
+            f"No company row deleted for CIK {cik} — "
+            "verify SUPABASE_SERVICE_ROLE_KEY is set (anon key cannot DELETE with RLS enabled)"
+        )
