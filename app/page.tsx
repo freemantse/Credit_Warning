@@ -50,8 +50,8 @@ export default function Dashboard() {
   // Without this, an empty table flashes briefly before data arrives.
   const [initialLoad, setInitialLoad] = useState(true)
 
-  // Pagination — 8 rows per page.
-  const PAGE_SIZE = 8
+  // Pagination — 7 rows per page.
+  const PAGE_SIZE = 7
   const [page, setPage] = useState(0)
 
 
