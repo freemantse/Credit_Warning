@@ -6,7 +6,7 @@ filings (10-K / 10-Q) and surfaces credit stress *before* it becomes a problem.
 For each tracked company it:
 
 - Extracts auditable financial ratios from XBRL data (EBITDA margin, leverage, interest
-  coverage, free cash flow, liquidity).
+  coverage, cash-flow-to-debt, free cash flow, liquidity, current ratio, debt-to-assets).
 - Computes a **stress score (0–100)** combining:
   - Nine quantitative rules — eight XBRL financial ratios plus a debt-maturity
     concentration ("maturity wall") rule — all traceable to source tags.

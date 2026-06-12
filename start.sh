@@ -8,9 +8,16 @@ echo ""
 
 # Start FastAPI backend
 cd "$ROOT"
-uvicorn api.main:app --reload --port 8000 &
+python3 -m uvicorn api.main:app --reload --port 8000 &
 BACKEND_PID=$!
 echo "  Backend → http://localhost:8000"
+
+# Fail loud if the backend died on startup (missing dep, import error, port in use)
+sleep 2
+if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
+  echo "ERROR: backend failed to start (see output above)." >&2
+  exit 1
+fi
 
 # Start Next.js frontend
 cd "$ROOT"

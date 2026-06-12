@@ -79,7 +79,12 @@ export default function BacktestPage() {
   // last persisted run's scorecard (status.saved).
   // Cleanup function clears the poll interval when the component unmounts.
   useEffect(() => {
-    fetchBacktestStatus().then(setStatus).catch(() => {})
+    fetchBacktestStatus().then(s => {
+      setStatus(s)
+      // Reflect a persisted run's depth in the slider so the control + methodology
+      // copy match what's displayed.
+      if (s.result?.steps) setSteps(s.result.steps)
+    }).catch(() => {})
     // Fetch the case roster and the scoring parameters once alongside the status.
     fetchBacktestCases().then(setLibrary).catch(() => {})
     fetchScoreConfig().then(r => { setScoreCfg(r.active); setScoreDefaults(r.defaults) }).catch(() => {})
@@ -158,11 +163,11 @@ export default function BacktestPage() {
   const summary = result?.summary
   const threshold = result?.threshold ?? summary?.threshold ?? 50
   const earlyMonths = result?.early_months ?? summary?.early_months ?? 6
-  // Snapshots used by the displayed run (fall back to the selected value before
-  // any run). Drives the methodology copy so it matches the actual window.
-  const stepsUsed = result?.steps ?? steps
-  const windowYears = (stepsUsed * 90 / 365.25).toFixed(1)
-  const oldestMonths = Math.round((stepsUsed - 1) * 90 / 30.44)
+  // Methodology copy follows the live slider value so its "years" track the
+  // History-depth control as you drag it. The slider is synced to a persisted
+  // run's depth on mount, so it also stays consistent with displayed results.
+  const windowYears = (steps * 90 / 365.25).toFixed(1)
+  const oldestMonths = Math.round((steps - 1) * 90 / 30.44)
 
 
   // ── Render ──────────────────────────────────────────────────────────────────
@@ -497,7 +502,7 @@ function CaseLibraryCard({ library, onChange }: { library: CaseLibrary; onChange
             </div>
             <div className="flex flex-col gap-1">
               <label className="text-xs font-medium text-slate-500">
-                {label === 'distressed' ? 'Event date (required)' : 'Anchor date (optional)'}
+                {label === 'distressed' ? 'Credit-event date (required)' : 'Anchor date (optional)'}
               </label>
               <input
                 type="date"
