@@ -69,12 +69,17 @@ class MissingRatio:
     Parallels RatioResult so the source-audit panel can still render a card for the
     ratio and show the analyst exactly which raw XBRL input is missing.
 
-    Two flavours of "missing":
+    Three flavours of "missing":
       1. An input concept didn't resolve from XBRL — `missing_inputs` lists each
          such field with the tags that were tried. Any inputs that DID resolve are
          carried in `inputs`/`source_tags` so the card stays informative.
       2. All inputs resolved but a guard made the ratio undefined (e.g. zero EBITDA).
          Then `missing_inputs` is empty and `reason` explains why.
+      3. The ratio is structurally NOT APPLICABLE to this issuer (`not_applicable`
+         True). The current ratio for a filer with an unclassified balance sheet
+         (banks, insurers, some lessors) is the canonical case: the concept is never
+         reported, so this is N/A — not a data error. `missing_inputs` is left empty
+         so the audit panel renders a neutral N/A note instead of red "missing" chips.
 
     Example (missing total_debt for leverage):
         name           = "leverage"
@@ -89,6 +94,8 @@ class MissingRatio:
     source_tags: dict[str, str]          # winning XBRL tag per resolved input
     missing_inputs: list[dict]           # [{"field": str, "tags_tried": [str, ...]}]
     reason: str                          # the original MissingDataError message
+    not_applicable: bool = False         # True when the ratio is structurally N/A
+                                         # for this issuer (see flavour 3 above)
 
 
 @dataclass
@@ -576,6 +583,40 @@ RATIO_INPUTS: dict[str, list[str]] = {
 }
 
 
+def is_unclassified_balance_sheet(
+    facts: dict,
+    period_end: str,
+    filed_before: str | None = None,
+) -> bool:
+    """
+    Detect an UNCLASSIFIED balance sheet for one period.
+
+    Banks, insurers (e.g. AFLAC), broker-dealers, many REITs and some asset-heavy
+    lessors present assets/liabilities ordered by liquidity rather than split into
+    current vs. non-current. They report total assets and total liabilities but
+    NOT current assets/liabilities — so the current ratio is structurally N/A, not
+    a data gap.
+
+    Signal: total_assets AND total_liabilities resolve, but NEITHER current_assets
+    nor current_liabilities resolves. Requiring both totals to be present avoids
+    false positives on genuinely incomplete data (where the whole balance sheet is
+    simply missing for the period).
+    """
+    def _resolves(concept: str) -> bool:
+        try:
+            _resolve(facts, concept, period_end, filed_before)
+            return True
+        except MissingDataError:
+            return False
+
+    return (
+        _resolves("total_assets")
+        and _resolves("total_liabilities")
+        and not _resolves("current_assets")
+        and not _resolves("current_liabilities")
+    )
+
+
 def diagnose_ratio(
     name: str,
     facts: dict,
@@ -594,7 +635,27 @@ def diagnose_ratio(
 
     `reason` is the original MissingDataError message — important for guard failures
     (e.g. zero EBITDA) where every input resolves but the ratio is still undefined.
+
+    Special case — current ratio on an unclassified balance sheet: the issuer never
+    reports current assets/liabilities, so the ratio is marked NOT APPLICABLE rather
+    than missing. `missing_inputs` is left empty (no red "tried these tags" chips)
+    and `reason` explains it's a reporting convention, not a tagging gap.
     """
+    if name == "current_ratio" and is_unclassified_balance_sheet(facts, period_end, filed_before):
+        return MissingRatio(
+            name=name,
+            period_end=period_end,
+            inputs={},
+            source_tags={},
+            missing_inputs=[],
+            reason=(
+                "Not applicable — issuer files an unclassified balance sheet and does "
+                "not report current assets/liabilities. Common for banks, insurers and "
+                "some lessors; the current ratio does not apply."
+            ),
+            not_applicable=True,
+        )
+
     inputs: dict[str, float] = {}
     source_tags: dict[str, str] = {}
     missing_inputs: list[dict] = []

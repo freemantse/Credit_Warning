@@ -202,9 +202,26 @@ def test_new_ratios_in_extract_all():
 
 
 def test_current_ratio_missing_input_pinpointed():
-    # Drop current assets → current_ratio becomes a MissingRatio naming that input.
+    # Drop current assets ONLY (current liabilities still present) → this is a
+    # genuine data gap, not an unclassified balance sheet, so it stays "missing"
+    # and names the absent input.
     facts = copy.deepcopy(FACTS)
     del facts["facts"]["us-gaap"]["AssetsCurrent"]
     miss = extract_all(facts, PERIOD)["current_ratio"]
     assert isinstance(miss, MissingRatio)
+    assert miss.not_applicable is False
     assert [m["field"] for m in miss.missing_inputs] == ["current_assets"]
+
+
+def test_current_ratio_not_applicable_on_unclassified_balance_sheet():
+    # Drop BOTH current assets and current liabilities while keeping total
+    # assets/liabilities → mimics a bank/insurer's unclassified balance sheet.
+    # The current ratio is marked N/A (not a data error): no missing_inputs chips.
+    facts = copy.deepcopy(FACTS)
+    del facts["facts"]["us-gaap"]["AssetsCurrent"]
+    del facts["facts"]["us-gaap"]["LiabilitiesCurrent"]
+    miss = extract_all(facts, PERIOD)["current_ratio"]
+    assert isinstance(miss, MissingRatio)
+    assert miss.not_applicable is True
+    assert miss.missing_inputs == []
+    assert "unclassified balance sheet" in miss.reason.lower()

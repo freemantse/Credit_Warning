@@ -598,7 +598,14 @@ function AuditPanel({ period }: { period: PeriodData }) {
                   missing ratio (value === null) gets a red "missing" badge. */}
               <p className="text-xs font-semibold text-slate-700 mb-2 capitalize flex items-center gap-2">
                 <span>{name.replace(/_/g, ' ')}</span>
-                {data.value === null && (
+                {/* N/A (structurally not applicable, e.g. current ratio on an
+                    unclassified balance sheet) reads as neutral, not an error.
+                    A genuine data gap stays red. */}
+                {data.not_applicable ? (
+                  <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 bg-slate-100 rounded px-1.5 py-0.5">
+                    N/A
+                  </span>
+                ) : data.value === null && (
                   <span className="text-[10px] font-semibold uppercase tracking-wide text-red-600 bg-red-50 rounded px-1.5 py-0.5">
                     missing
                   </span>
@@ -663,9 +670,15 @@ function AuditPanel({ period }: { period: PeriodData }) {
                 </div>
               ))}
 
+              {/* Not applicable (e.g. current ratio on an unclassified balance
+                  sheet): neutral slate note, never red. */}
+              {data.not_applicable && data.reason && (
+                <div className="text-xs text-slate-500 mt-1">{data.reason}</div>
+              )}
+
               {/* Guard failure (all inputs resolved but ratio undefined, e.g. zero
                   EBITDA): no missing inputs, so show the reason instead. */}
-              {data.value === null && !data.missing_inputs?.length && data.reason && (
+              {!data.not_applicable && data.value === null && !data.missing_inputs?.length && data.reason && (
                 <div className="text-xs text-red-600 mt-1">{data.reason}</div>
               )}
             </div>

@@ -49,6 +49,8 @@ export interface RatioData {
   // Present only for a missing ratio: which raw inputs are absent and the tags tried.
   missing_inputs?: { field: string; tags_tried: string[] }[]
   reason?: string                      // why it's missing (e.g. guard "EBITDA is zero")
+  not_applicable?: boolean             // ratio is structurally N/A for this issuer
+                                       // (e.g. current ratio on an unclassified balance sheet)
 }
 
 /**

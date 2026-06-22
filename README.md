@@ -178,7 +178,24 @@ Vercel auto-detects the Next.js frontend and the Python serverless function from
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY`
 - `ANTHROPIC_API_KEY` (if using LLM review)
+- `CRON_SECRET` (enables/secures the daily auto-refresh — see below)
 
 Do **not** set `PYTHON_API_URL` in production — it is for local dev only.
+
+### Automatic issuer refresh (Vercel Cron)
+
+A daily Vercel Cron job (`vercel.json` → `crons`, `0 6 * * *` = 06:00 UTC) calls
+`GET /api/cron/refresh-all`, which re-tracks every portfolio issuer from EDGAR so
+newly-filed 10-Ks flow into history with no manual action. It refreshes only the
+deterministic ratio + debt-maturity data (the LLM pass is always skipped).
+
+- Set a random `CRON_SECRET` in the project's env vars. Vercel automatically
+  sends it as `Authorization: Bearer ${CRON_SECRET}` on cron invocations; the
+  endpoint rejects calls without it (401), so it isn't publicly abusable.
+- Issuers are processed oldest-refreshed-first within a ~50s wall-clock budget
+  (under the 60s function `maxDuration`). If the portfolio is too large for one
+  run, the remainder is picked up on the next day's run (rotation via the
+  `companies.last_refreshed` column). On a Vercel Pro plan you can raise
+  `maxDuration` and/or use a finer cron schedule.
 
 See [`DEPLOY.md`](./DEPLOY.md) for the full deployment guide.

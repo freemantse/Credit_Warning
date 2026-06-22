@@ -18,6 +18,7 @@ Data flow per request:
 from __future__ import annotations
 
 import logging
+import os
 import re
 import sys
 from datetime import datetime
@@ -25,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -75,6 +76,7 @@ from src.store import (
     save_maturities_bulk,
     save_ratios_bulk,
     save_score_config,
+    touch_last_refreshed,
 )
 
 app = FastAPI(title="Credit Warning API", version="1.0")
@@ -271,16 +273,16 @@ def list_issuers():
     return result
 
 
-@app.post("/api/track")
-def track_issuer(req: TrackRequest):
+def _track_one(identifier: str, *, no_llm: bool = True, periods: int | None = None) -> dict:
     """
-    Resolve a ticker to a CIK, fetch XBRL facts from EDGAR, extract ratios for
-    each available annual period, and persist them to Supabase.
+    Core track pipeline: resolve a ticker-or-CIK to a CIK, fetch XBRL facts from
+    EDGAR, extract ratios + debt maturities for each available annual period, and
+    persist them to Supabase. Optionally runs the (slow) LLM qualitative review.
 
-    Optionally runs an LLM qualitative review of the 10-K MD&A text for each
-    period if no_llm=False (slow; disabled by default in the UI).
+    Shared by the POST /api/track route and the auto-refresh cron so both go
+    through exactly the same ingestion path. Raises HTTPException on failure.
     """
-    identifier = req.ticker.upper().strip()
+    identifier = identifier.upper().strip()
 
     # Step 1: Resolve the input (ticker OR CIK) → canonical CIK.
     try:
@@ -309,7 +311,7 @@ def track_issuer(req: TrackRequest):
     # history by default (req.periods=None); a caller may still cap it to the
     # most recent N. XBRL data only goes back to ~2009, so "full" is ~15 years.
     available = _get_available_periods(facts)
-    periods = available if req.periods is None else available[: req.periods]
+    periods = available if periods is None else available[: periods]
     if not periods:
         raise HTTPException(404, f"No annual XBRL periods found for {identifier}")
 
@@ -330,7 +332,7 @@ def track_issuer(req: TrackRequest):
     # review_filing fetches the 10-K once, locates the MD&A / debt /
     # contingencies sections, and runs the three LLM passes on the located
     # slices only.
-    if not req.no_llm:
+    if not no_llm:
         filings = get_filings(cik, ["10-K"])
         for period in periods:
             try:
@@ -355,6 +357,84 @@ def track_issuer(req: TrackRequest):
         "periods_saved": len(periods),
         "periods": periods,
     }
+
+
+@app.post("/api/track")
+def track_issuer(req: TrackRequest):
+    """
+    Resolve a ticker to a CIK, fetch XBRL facts from EDGAR, extract ratios for
+    each available annual period, and persist them to Supabase.
+
+    Optionally runs an LLM qualitative review of the 10-K MD&A text for each
+    period if no_llm=False (slow; disabled by default in the UI). Thin wrapper
+    around _track_one, which is also used by the auto-refresh cron.
+    """
+    return _track_one(req.ticker, no_llm=req.no_llm, periods=req.periods)
+
+
+# Number of seconds into the run after which the cron stops *starting* new
+# issuers. Kept under vercel.json's maxDuration (60s) with headroom for the
+# in-flight issuer to finish. Leftover issuers roll to the next run (they sort
+# last by last_refreshed), so coverage rotates across runs.
+_CRON_TIME_BUDGET_SEC = 50
+
+
+@app.get("/api/cron/refresh-all")
+def cron_refresh_all(authorization: str = Header(default="")):
+    """
+    Re-track every portfolio issuer from EDGAR so newly-filed 10-Ks flow into
+    history automatically. Invoked daily by a Vercel Cron job (see vercel.json).
+
+    Auth: Vercel sends `Authorization: Bearer ${CRON_SECRET}` on cron calls when
+    a CRON_SECRET env var is set. We require it so the endpoint isn't publicly
+    abusable. If CRON_SECRET is unset (e.g. local dev without the var), auth is
+    skipped — set it in production.
+
+    Issuers are processed oldest-refreshed-first (NULLs, i.e. never-refreshed,
+    first) within a wall-clock budget so a single run never trips the function
+    timeout; any issuers not reached are picked up on the next run. The LLM pass
+    is always skipped here (no_llm=True) — only deterministic ratio + maturity
+    data is refreshed.
+    """
+    secret = os.environ.get("CRON_SECRET")
+    if secret and authorization != f"Bearer {secret}":
+        raise HTTPException(401, "Unauthorized")
+
+    # Oldest-refreshed-first; None (never refreshed) sorts before any timestamp.
+    issuers = sorted(
+        get_issuers(), key=lambda i: (i.get("last_refreshed") is not None, i.get("last_refreshed") or "")
+    )
+
+    start = datetime.now()
+    refreshed: list[dict] = []
+    skipped_for_time: list[str] = []
+    errors: list[dict] = []
+
+    for issuer in issuers:
+        cik = issuer["cik"]
+        if (datetime.now() - start).total_seconds() >= _CRON_TIME_BUDGET_SEC:
+            skipped_for_time.append(cik)
+            continue
+        try:
+            result = _track_one(cik, no_llm=True)
+            touch_last_refreshed(cik)
+            refreshed.append({"cik": cik, "periods_saved": result["periods_saved"]})
+        except Exception as e:
+            # One bad issuer must not abort the whole run.
+            errors.append({"cik": cik, "error": str(e)})
+            logging.warning("Cron refresh failed for %s", cik, exc_info=True)
+
+    summary = {
+        "total": len(issuers),
+        "refreshed": refreshed,
+        "skipped_for_time": skipped_for_time,
+        "errors": errors,
+    }
+    logging.info(
+        "Cron refresh-all: %d refreshed, %d skipped (time), %d errors of %d total",
+        len(refreshed), len(skipped_for_time), len(errors), len(issuers),
+    )
+    return summary
 
 
 @app.get("/api/issuer/{ticker}")

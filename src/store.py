@@ -343,6 +343,7 @@ def _ratio_rows(cik: str, period_end: str, results: dict[str, RatioResult | Miss
                 "missing_json": {
                     "missing_inputs": result.missing_inputs,
                     "reason": result.reason,
+                    "not_applicable": result.not_applicable,
                 },
             })
     return rows
@@ -537,12 +538,16 @@ def get_issuers(**_) -> list[dict[str, Any]]:
     """
     Return one identity row per tracked company (all rows in the companies table).
 
-    Each row is {cik, name, ticker} where `ticker` is the first current ticker
-    (or "" if unknown). Querying companies directly — rather than deriving CIKs
-    from the ratios table — ensures issuers whose ratio extraction failed (e.g.
-    banks with non-standard XBRL) are still visible in the portfolio list.
+    Each row is {cik, name, ticker, last_refreshed} where `ticker` is the first
+    current ticker (or "" if unknown) and `last_refreshed` is when the issuer was
+    last re-tracked from EDGAR (None = never). Querying companies directly —
+    rather than deriving CIKs from the ratios table — ensures issuers whose ratio
+    extraction failed (e.g. banks with non-standard XBRL) are still visible in
+    the portfolio list.
     """
-    res = _client().table("companies").select("cik, name, tickers").execute()
+    res = _client().table("companies").select(
+        "cik, name, tickers, last_refreshed"
+    ).execute()
     issuers = []
     for row in sorted(res.data, key=lambda r: r["cik"]):
         tickers = row.get("tickers") or []
@@ -550,8 +555,23 @@ def get_issuers(**_) -> list[dict[str, Any]]:
             "cik": row["cik"],
             "name": row.get("name", ""),
             "ticker": tickers[0] if tickers else "",
+            "last_refreshed": row.get("last_refreshed"),
         })
     return issuers
+
+
+def touch_last_refreshed(cik: str, **_) -> None:
+    """
+    Stamp companies.last_refreshed = now() for one issuer.
+
+    Called by the auto-refresh cron after a successful re-track so the next run
+    can process issuers oldest-refreshed-first (NULLs — i.e. never-refreshed —
+    sort first). Keyed on the permanent CIK.
+    """
+    from datetime import datetime, timezone
+    _client().table("companies").update(
+        {"last_refreshed": datetime.now(timezone.utc).isoformat()}
+    ).eq("cik", cik.zfill(10)).execute()
 
 
 def get_periods(cik: str, **_) -> list[str]:
@@ -594,6 +614,7 @@ def _ratio_data_from_row(row: dict) -> dict:
     if missing:
         data["missing_inputs"] = missing.get("missing_inputs", [])
         data["reason"] = missing.get("reason", "")
+        data["not_applicable"] = missing.get("not_applicable", False)
     return data
 
 

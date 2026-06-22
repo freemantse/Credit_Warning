@@ -142,3 +142,31 @@ def test_short_term_debt_falls_back_to_commercial_paper():
     val, tag = resolve_tag(facts, "short_term_debt", "2023-12-31")
     assert val == 75_000
     assert tag == "us-gaap/CommercialPaper"
+
+
+def test_revenue_falls_back_to_bank_interest_income():
+    # Bank with no Revenues tag — resolves via the newly-added net-interest-income tag.
+    facts = {
+        "facts": {"us-gaap": {
+            "InterestAndDividendIncomeOperating": {
+                "units": {"USD": [{"end": "2023-12-31", "val": 410_000, "filed": "2024-02-15", "form": "10-K"}]}
+            }
+        }}
+    }
+    val, tag = resolve_tag(facts, "revenue", "2023-12-31")
+    assert val == 410_000
+    assert tag == "us-gaap/InterestAndDividendIncomeOperating"
+
+
+def test_debt_maturity_falls_back_to_rolling_variant():
+    # Filer using the rolling-window maturity taxonomy — newly-added fallback.
+    facts = {
+        "facts": {"us-gaap": {
+            "LongTermDebtMaturitiesRepaymentsOfPrincipalInRollingYearTwo": {
+                "units": {"USD": [{"end": "2023-12-31", "val": 50_000, "filed": "2024-02-15", "form": "10-K"}]}
+            }
+        }}
+    }
+    val, tag = resolve_tag(facts, "debt_maturity_y2", "2023-12-31")
+    assert val == 50_000
+    assert tag == "us-gaap/LongTermDebtMaturitiesRepaymentsOfPrincipalInRollingYearTwo"

@@ -29,6 +29,10 @@ TAGS: dict[str, list[str]] = {
         "us-gaap/RevenuesNetOfInterestExpense",                          # banks / broker-dealers
         "us-gaap/RegulatedAndUnregulatedOperatingRevenue",              # utilities
         "us-gaap/SalesRevenueServicesNet",                               # services-only legacy tag
+        "us-gaap/InterestAndDividendIncomeOperating",                    # banks: net interest income line
+        "us-gaap/SalesRevenueServicesGross",                             # gross services revenue (pre-606)
+        "us-gaap/OilAndGasRevenue",                                      # oil & gas operators
+        "us-gaap/ContractsRevenue",                                      # construction / long-term contracts
     ],
 
     # ── Operating Income ─────────────────────────────────────────────────────
@@ -50,6 +54,8 @@ TAGS: dict[str, list[str]] = {
         "us-gaap/FinanceLeaseInterestExpense", # finance lease interest (post-ASC 842)
         "us-gaap/InterestExpenseBorrowings",  # interest on borrowings
         "us-gaap/InterestExpenseDebtExcludingAmortization", # debt interest ex-amortisation
+        "us-gaap/InterestExpenseOperating",   # operating interest expense (finance/leasing cos)
+        "us-gaap/InterestCostsIncurred",      # gross interest incurred (before capitalisation)
         "us-gaap/InterestPaidNet",            # last resort: cash interest paid (cash flow stmt)
     ],
 
@@ -63,6 +69,9 @@ TAGS: dict[str, list[str]] = {
         "us-gaap/DepreciationAmortizationAndAccretionNet", # incl. accretion (extractives, ARO)
         "us-gaap/CostOfGoodsAndServicesDepreciationAndAmortization", # D&A embedded in COGS
         "us-gaap/Depreciation",                          # depreciation only
+        "us-gaap/CostOfServicesDepreciation",            # D&A embedded in cost of services
+        "us-gaap/DepreciationNonproduction",             # non-production (SG&A) depreciation
+        "us-gaap/AmortizationOfDeferredCharges",         # amortisation of deferred charges
         "us-gaap/AmortizationOfIntangibleAssets",        # last resort: intangibles only
     ],
 
@@ -78,6 +87,11 @@ TAGS: dict[str, list[str]] = {
         "us-gaap/LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities", # gross incl. current
         "us-gaap/DebtLongtermAndShorttermCombinedAmount", # combined long + short term debt
         "us-gaap/NotesAndLoansPayable",
+        "us-gaap/NotesPayable",                           # total notes payable (e.g. insurers)
+        "us-gaap/SeniorNotes",                            # senior notes outstanding
+        "us-gaap/SubordinatedDebt",                       # subordinated debt outstanding
+        "us-gaap/SecuredDebt",                            # total secured debt
+        "us-gaap/UnsecuredDebt",                          # total unsecured debt
     ],
 
     # ── Short-Term Debt ──────────────────────────────────────────────────────
@@ -92,6 +106,12 @@ TAGS: dict[str, list[str]] = {
         "us-gaap/LinesOfCreditCurrent",          # drawn revolving credit (current)
         "us-gaap/OtherShortTermBorrowings",      # residual short-term borrowings
         "us-gaap/SecuredDebtCurrent",            # current portion of secured debt
+        "us-gaap/LoansPayableCurrent",           # current loans payable
+        "us-gaap/OtherLoansPayableCurrent",      # other current loans payable
+        "us-gaap/ConvertibleNotesPayableCurrent",# current convertible notes
+        "us-gaap/ShortTermBankLoansAndNotesPayable", # short-term bank loans & notes
+        "us-gaap/BankOverdrafts",                # bank overdrafts
+        "us-gaap/BridgeLoan",                    # bridge financing
     ],
 
     # ── Cash ─────────────────────────────────────────────────────────────────
@@ -104,6 +124,7 @@ TAGS: dict[str, list[str]] = {
         "us-gaap/CashAndCashEquivalentsAtCarryingValueIncludingDiscontinuedOperations", # incl. disc. ops
         "us-gaap/CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents", # post-ASU 2016-18 total
         "us-gaap/Cash",                                        # narrower: cash only
+        "us-gaap/RestrictedCashAndCashEquivalentsAtCarryingValue", # restricted cash (last-resort level)
         "us-gaap/CashAndCashEquivalentsPeriodIncreaseDecrease", # last resort: flow tag
     ],
 
@@ -126,6 +147,11 @@ TAGS: dict[str, list[str]] = {
         "us-gaap/PaymentsForCapitalImprovements",              # capital improvements (e.g. REITs)
         "us-gaap/PaymentsToAcquireOtherPropertyPlantAndEquipment", # other PP&E purchases
         "us-gaap/PaymentsToAcquireMachineryAndEquipment",      # machinery & equipment only
+        "us-gaap/PaymentsToAcquireBuildings",                  # buildings
+        "us-gaap/PaymentsToAcquireEquipmentOnLease",           # equipment leased to others
+        "us-gaap/PaymentsToAcquireRealEstate",                 # REITs / real estate
+        "us-gaap/PaymentsToDevelopRealEstateAssets",           # REIT development spend
+        "us-gaap/PaymentsToAcquireOilAndGasProperty",          # oil & gas property
     ],
 
     # ── Net Income ───────────────────────────────────────────────────────────
@@ -135,13 +161,18 @@ TAGS: dict[str, list[str]] = {
         "us-gaap/NetIncomeLoss",
         "us-gaap/ProfitLoss",                               # IFRS-influenced filers
         "us-gaap/IncomeLossFromContinuingOperations",
+        "us-gaap/IncomeLossFromContinuingOperationsIncludingPortionAttributableToNoncontrollingInterest", # incl. NCI
         "us-gaap/NetIncomeLossAvailableToCommonStockholdersBasic", # net of preferred dividends
+        "us-gaap/NetIncomeLossAllocatedToLimitedPartners",  # MLPs / partnerships
     ],
 
     # ── Total Assets ─────────────────────────────────────────────────────────
     # Used as the "anchor" concept in _get_available_periods() (extract.py).
     # Total assets (us-gaap/Assets) is reported exactly once per fiscal year in a
     # 10-K — making its 'end' dates a reliable list of fiscal year-end dates.
+    # Intentionally SINGLE-TAG: us-gaap/Assets is the only clean balance-sheet
+    # total, and this list anchors the fiscal-year-end period scan. Adding
+    # "equivalents" here would pollute that period list, so do not expand it.
     "total_assets": [
         "us-gaap/Assets",
     ],
@@ -149,20 +180,30 @@ TAGS: dict[str, list[str]] = {
     # ── Total Liabilities ────────────────────────────────────────────────────
     # Numerator of the liabilities-to-assets solvency ratio (total_liabilities /
     # total_assets): a value > 1 implies negative book equity.
+    # Intentionally SINGLE-TAG: us-gaap/Liabilities is the only unambiguous total;
+    # there is no standard alternative tag for total liabilities.
     "total_liabilities": [
         "us-gaap/Liabilities",
     ],
 
     # ── Current Assets ─────────────────────────────────────────────────────────
     # Numerator of the current ratio (current_assets / current_liabilities), the
-    # classic working-capital liquidity measure. Reported once per year-end on the
-    # balance sheet by non-financial filers (banks/insurers don't classify).
+    # classic working-capital liquidity measure.
+    # Intentionally SINGLE-TAG: us-gaap/AssetsCurrent is the ONLY standard US-GAAP
+    # tag for total current assets — there is no fallback to add. Filers with an
+    # UNCLASSIFIED balance sheet (banks, insurers such as AFLAC, some REITs) do not
+    # split assets into current/non-current, so this concept is simply absent from
+    # their filings. A missing current ratio for such issuers is expected, not a
+    # tagging gap — no additional tag can recover it.
     "current_assets": [
         "us-gaap/AssetsCurrent",
     ],
 
     # ── Current Liabilities ──────────────────────────────────────────────────
     # Denominator of the current ratio. Obligations due within one year.
+    # Intentionally SINGLE-TAG: us-gaap/LiabilitiesCurrent is the ONLY standard
+    # total-current-liabilities tag. Same unclassified-balance-sheet caveat as
+    # current_assets above applies (banks/insurers do not report it).
     "current_liabilities": [
         "us-gaap/LiabilitiesCurrent",
     ],
@@ -173,24 +214,32 @@ TAGS: dict[str, list[str]] = {
     # the deterministic maturity-wall extraction (debt_maturity_schedule in
     # extract.py): a heavy near-term concentration signals refinancing risk.
     # Per-bucket misses are tolerated — many filers omit some buckets.
+    # Each bucket also accepts the "Rolling" taxonomy variant used by filers that
+    # disclose maturities on a rolling-12-month basis rather than fiscal years.
     "debt_maturity_y1": [
         "us-gaap/LongTermDebtMaturitiesRepaymentsOfPrincipalInNextTwelveMonths",
         "us-gaap/LongTermDebtMaturitiesRepaymentsOfPrincipalRemainderOfFiscalYear",
+        "us-gaap/LongTermDebtMaturitiesRepaymentsOfPrincipalInNextRollingTwelveMonths",
     ],
     "debt_maturity_y2": [
         "us-gaap/LongTermDebtMaturitiesRepaymentsOfPrincipalInYearTwo",
+        "us-gaap/LongTermDebtMaturitiesRepaymentsOfPrincipalInRollingYearTwo",
     ],
     "debt_maturity_y3": [
         "us-gaap/LongTermDebtMaturitiesRepaymentsOfPrincipalInYearThree",
+        "us-gaap/LongTermDebtMaturitiesRepaymentsOfPrincipalInRollingYearThree",
     ],
     "debt_maturity_y4": [
         "us-gaap/LongTermDebtMaturitiesRepaymentsOfPrincipalInYearFour",
+        "us-gaap/LongTermDebtMaturitiesRepaymentsOfPrincipalInRollingYearFour",
     ],
     "debt_maturity_y5": [
         "us-gaap/LongTermDebtMaturitiesRepaymentsOfPrincipalInYearFive",
+        "us-gaap/LongTermDebtMaturitiesRepaymentsOfPrincipalInRollingYearFive",
     ],
     "debt_maturity_thereafter": [
         "us-gaap/LongTermDebtMaturitiesRepaymentsOfPrincipalAfterYearFive",
+        "us-gaap/LongTermDebtMaturitiesRepaymentsOfPrincipalInRollingAfterYearFive",
     ],
 
     # ── Loss contingency accrual ───────────────────────────────────────────────
@@ -200,6 +249,7 @@ TAGS: dict[str, list[str]] = {
     "loss_contingency_accrual": [
         "us-gaap/LossContingencyAccrualAtCarryingValue",
         "us-gaap/LossContingencyAccrualCarryingValueCurrent",
+        "us-gaap/LossContingencyAccrualCarryingValueNoncurrent",
     ],
 }
 

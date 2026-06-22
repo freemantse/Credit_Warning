@@ -6,5 +6,8 @@
   },
   "rewrites": [
     { "source": "/api/:path*", "destination": "/api/main" }
+  ],
+  "crons": [
+    { "path": "/api/cron/refresh-all", "schedule": "0 6 * * *" }
   ]
 }

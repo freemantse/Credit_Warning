@@ -26,8 +26,14 @@ CREATE TABLE IF NOT EXISTS companies (
   tickers       JSONB NOT NULL DEFAULT '[]',       -- current ticker symbol(s)
   exchanges     JSONB NOT NULL DEFAULT '[]',       -- exchanges the tickers trade on
   former_names  JSONB NOT NULL DEFAULT '[]',       -- [{name, from, to}] prior names
-  updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW() -- when this snapshot was last refreshed
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),-- when this snapshot was last refreshed
+  last_refreshed TIMESTAMPTZ                        -- when this issuer was last re-tracked from EDGAR (NULL = never; auto-refresh cron picks NULLs first)
 );
+
+-- Additive migration for projects created before last_refreshed existed.
+-- Safe to re-run (IF NOT EXISTS); existing rows stay NULL so the cron, which
+-- orders by last_refreshed ascending (NULLs first), refreshes them first.
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS last_refreshed TIMESTAMPTZ;
 
 
 -- ── ratios ───────────────────────────────────────────────────────────────────
