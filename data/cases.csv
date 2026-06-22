@@ -10,7 +10,7 @@ deanfoods-2019,Dean Foods,DF,0000931336,distressed,2019-11-12,Chapter 11 petitio
 whiting-2020,Whiting Petroleum,WLL,0001255474,distressed,2020-04-01,Chapter 11 petition; oil price crash
 frontier-2020,Frontier Communications,FTR,0000020520,distressed,2020-04-14,Chapter 11 petition
 jcpenney-2020,J.C. Penney,JCP,0001166126,distressed,2020-05-15,Chapter 11 petition; now Old COPPER Company
-hertz-2020,Hertz,HTZ,0000047129,distressed,2020-05-22,Chapter 11 petition; COVID travel collapse. Uses The Hertz Corporation (operating co.) CIK for full XBRL history — the post-2016 holdco CIK only goes back to 2015
+hertz-2020,Hertz,HTZ,0000047129,distressed,2020-05-22,Chapter 11 petition; uses The Hertz Corporation (operating co.) CIK for full pre-2016 XBRL history
 gnc-2020,GNC Holdings,GNC,0001502034,distressed,2020-06-23,Chapter 11 petition
 chesapeake-2020,Chesapeake Energy,CHK,0000895126,distressed,2020-06-28,Chapter 11 petition; now Expand Energy
 mallinckrodt-2020,Mallinckrodt,MNK,0001567892,distressed,2020-10-12,Chapter 11 petition; opioid litigation
@@ -20,10 +20,77 @@ bbby-2023,Bed Bath & Beyond,BBBY,0000886158,distressed,2023-04-23,Chapter 11 pet
 yellow-2023,Yellow Corp,YELL,0000716006,distressed,2023-08-06,Chapter 11 petition; formerly YRC Worldwide
 riteaid-2023,Rite Aid,RAD,0000084129,distressed,2023-10-15,Chapter 11 petition
 diebold-2023,Diebold Nixdorf,DBD,0000028823,distressed,2023-06-01,Chapter 11 petition (prepackaged); ATM/banking-hardware debt load
-aapl,Apple,AAPL,0000320193,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility
-msft,Microsoft,MSFT,0000789019,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility
-jnj,Johnson & Johnson,JNJ,0000200406,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility
-pg,Procter & Gamble,PG,0000080424,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility
-ko,Coca-Cola,KO,0000021344,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility
-wmt,Walmart,WMT,0000104169,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility
-hd,Home Depot,HD,0000354950,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility
+pier1-2020,Pier 1 Imports,PIR,0000278130,distressed,2020-02-17,Chapter 11 petition
+tailoredbrands-2020,Tailored Brands,TLRD,0000884217,distressed,2020-08-02,Chapter 11 petition; Men's Wearhouse / Jos. A. Bank parent
+tupperware-2024,Tupperware Brands,TUP,0001008654,distressed,2024-09-17,Chapter 11 petition
+denbury-2020,Denbury Resources,DNR,0000945764,distressed,2020-07-30,Chapter 11 petition
+lilis-2020,Lilis Energy,LLEX,0001437557,distressed,2020-06-28,Chapter 11 petition
+extraction-2020,Extraction Oil & Gas,XOG,0001655020,distressed,2020-06-14,Chapter 11 petition; now Civitas Resources
+sanchez-2019,Sanchez Energy,SNEC,0001528837,distressed,2019-08-11,Chapter 11 petition
+briggs-2020,Briggs & Stratton,BGG,0000014195,distressed,2020-07-20,Chapter 11 petition
+cumulus-2017,Cumulus Media,CMLS,0001058623,distressed,2017-11-29,Chapter 11 petition
+garrett-2020,Garrett Motion,GTX,0001735707,distressed,2020-09-20,Chapter 11 petition
+intelsat-2020,Intelsat,I,0001525773,distressed,2020-05-13,Chapter 11 petition
+wework-2023,WeWork,WE,0001813756,distressed,2023-11-06,Chapter 11 petition
+conduent-2024,Conduent,CNDT,0001677703,distressed,2024-12-09,Chapter 11 petition
+coty-2020,Coty,COTY,0001024305,distressed,2020-04-01,debt exchange not formal bankruptcy — verify stress signal
+lannett-2023,Lannett Company,LCI,0000057725,distressed,2023-04-10,Chapter 11 petition
+akorn-2020,Akorn,AKRX,0000003116,distressed,2020-05-20,Chapter 11 petition
+envision-2023,Envision Healthcare,EVHC,0001678531,distressed,2023-05-15,Chapter 11 petition
+quorum-2020,Quorum Health,QHC,0001650445,distressed,2020-04-07,Chapter 11 petition
+radioshack-2015,RadioShack,RSH,0000096289,distressed,2015-02-05,Chapter 11 petition; now RS Legacy
+gymboree-2017,Gymboree,GYMB,0000786110,distressed,2017-06-11,Chapter 11 petition
+coldwater-2014,Coldwater Creek,CWTR,0001018005,distressed,2014-04-11,Chapter 11 petition
+steinmart-2020,Stein Mart,SMRT,0000884940,distressed,2020-08-02,Chapter 11 petition
+christopherbanks-2021,Christopher & Banks,CBKC,0000883943,distressed,2021-01-13,Chapter 11 petition
+tuesdaymorning-2020,Tuesday Morning,TUES,0000878726,distressed,2020-05-27,Chapter 11 petition
+jcrew-2020,J.Crew,JCG,0001051251,distressed,2020-05-04,Chapter 11 petition
+neimanmarcus-2020,Neiman Marcus,NMG,0001358651,distressed,2020-05-07,Chapter 11 petition
+walter-2015,Walter Energy,WLT,0000837173,distressed,2015-07-15,Chapter 11 petition
+patriot-2012,Patriot Coal,PCX,0001376812,distressed,2012-07-09,Chapter 11 petition
+arch-2016,Arch Coal,ACI,0001037676,distressed,2016-01-11,Chapter 11 petition; now Arch Resources
+alpha-2015,Alpha Natural Resources,ANR,0001301063,distressed,2015-08-03,Chapter 11 petition
+midstates-2016,Midstates Petroleum,MPO,0001533924,distressed,2016-04-30,Chapter 11 petition; now Amplify Energy
+pennvirginia-2016,Penn Virginia,PVA,0000077159,distressed,2016-05-12,Chapter 11 petition; now Baytex
+oasis-2020,Oasis Petroleum,OAS,0001486159,distressed,2020-09-30,Chapter 11 petition; now Chord Energy
+verso-2016,Verso,VRS,0001421182,distressed,2016-01-26,Chapter 11 petition; now Billerud
+exide-2013,Exide Technologies,XIDE,0000813781,distressed,2013-06-10,Chapter 11 petition
+noranda-2016,Noranda Aluminum,NOR,0001422105,distressed,2016-02-08,Chapter 11 petition
+horsehead-2016,Horsehead Holding,ZINC,0001385544,distressed,2016-02-02,Chapter 11 petition
+kodak-2012,Eastman Kodak,KODK,0000031235,distressed,2012-01-19,Chapter 11 petition
+emmis-2012,Emmis Communications,EMMS,0000783005,distressed,2012-04-30,Chapter 11 petition
+wetseal-2015,Wet Seal,WTSL,0000863456,distressed,2015-01-15,Chapter 11 petition
+delias-2014,Delia's,DLIA,0001337885,distressed,2014-12-07,Chapter 11 petition
+quiksilver-2015,Quiksilver,ZQK,0000805305,distressed,2015-09-09,Chapter 11 petition
+bebe-2017,bebe stores,BEBE,0001059272,distressed,2017-05-01,store-fleet liquidation / wind-down 2017 — not formal Ch.11; severe distress signal
+gordmans-2017,Gordmans Stores,GMAN,0001490636,distressed,2017-03-13,Chapter 11 petition; now G-Estate Liquidation
+magnumhunter-2015,Magnum Hunter Resources,MHRC,0001335190,distressed,2015-12-15,Chapter 11 petition
+halcon-2016,Halcon Resources,HK,0001282648,distressed,2016-07-27,Chapter 11 petition; now Battalion Oil
+breitburn-2016,Breitburn Energy Partners,BBEP,0001357371,distressed,2016-05-15,Chapter 11 petition
+exco-2018,EXCO Resources,XCO,0000316300,distressed,2018-01-15,Chapter 11 petition
+goodrich-2016,Goodrich Petroleum,GDP,0000943861,distressed,2016-04-15,Chapter 11 petition
+armstrong-2017,Armstrong Energy,ARMS,0001532288,distressed,2017-11-01,Chapter 11 petition
+hexion-2019,Hexion (Momentive),HXN,0000013239,distressed,2019-04-01,Chapter 11 petition; ex-Momentive Specialty Chemicals
+molycorp-2015,Molycorp,MCP,0001489137,distressed,2015-06-25,Chapter 11 petition
+avaya-2017,Avaya,AVYA,0001418100,distressed,2017-01-19,Chapter 11 petition; private until 2018 IPO — limited pre-event XBRL
+lee-2024,Lee Enterprises,LEE,0000058361,distressed,2024-01-30,Chapter 11 petition
+monitronics-2019,Monitronics,SCTY,0001265107,distressed,2019-06-30,Chapter 11 petition; now Brinks Home
+costco,Costco Wholesale,COST,0000909832,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility
+itw,Illinois Tool Works,ITW,0000049826,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility
+adp,Automatic Data Processing,ADP,0000008670,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility
+colgate,Colgate-Palmolive,CL,0000021665,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility
+ecolab,Ecolab,ECL,0000031462,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility
+cintas,Cintas,CTAS,0000723254,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility
+fastenal,Fastenal,FAST,0000815556,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility
+visa,Visa,V,0001403161,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility
+amgen,Amgen,AMGN,0000318154,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility
+lilly,Eli Lilly,LLY,0000059478,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility
+caterpillar,Caterpillar,CAT,0000018230,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility
+lockheed,Lockheed Martin,LMT,0000936468,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility
+motorola,Motorola Solutions,MSI,0000068505,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility
+generalmills,General Mills,GIS,0000040704,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility
+kimberlyclark,Kimberly-Clark,KMB,0000055785,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility
+ups,United Parcel Service,UPS,0001090727,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility
+paychex,Paychex,PAYX,0000723531,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility
+exxon,Exxon Mobil,XOM,0000034088,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility
+aflac,Aflac,AFL,0000004977,healthy,2025-12-31,Healthy control; pinned anchor date for reproducibility; tests financial-institution suppression boundary
