@@ -19,6 +19,52 @@ import {
   fmtRatio, fmtFCF, fmtPct, scoreLabel, scoreBg,
 } from '@/lib/api'
 
+// ── Sorting model ────────────────────────────────────────────────────────────
+// Every column the user can order the portfolio by. 'status' sorts on the raw
+// stress score; 'period' sorts on the fiscal year-end date (chronological);
+// the rest map 1:1 to numeric ratio fields on IssuerSummary. 'default' keeps
+// the order the API returned (as-added).
+type SortField =
+  | 'default' | 'status' | 'period'
+  | 'ebitda_margin' | 'leverage' | 'interest_coverage' | 'free_cash_flow'
+  | 'liquidity' | 'cash_flow_to_debt' | 'current_ratio' | 'debt_to_assets'
+
+type SortDir = 'asc' | 'desc'
+
+// Options shown in the sort overlay, grouped roughly as the user described:
+// status, chronological period, then each ratio.
+const SORT_FIELDS: { key: SortField; label: string }[] = [
+  { key: 'status',            label: 'Status (risk score)' },
+  { key: 'period',            label: 'Latest period (date)' },
+  { key: 'ebitda_margin',     label: 'EBITDA Margin' },
+  { key: 'leverage',          label: 'Leverage' },
+  { key: 'interest_coverage', label: 'Interest Coverage' },
+  { key: 'free_cash_flow',    label: 'Free Cash Flow' },
+  { key: 'liquidity',         label: 'Liquidity' },
+  { key: 'cash_flow_to_debt', label: 'Cash Flow / Debt' },
+  { key: 'current_ratio',     label: 'Current Ratio' },
+  { key: 'debt_to_assets',    label: 'Debt / Assets' },
+]
+
+// Direction button labels are contextual so each axis reads naturally:
+// status runs healthy↔stressed, period runs old↔new, ratios run low↔high.
+function dirLabels(field: SortField): { asc: string; desc: string } {
+  if (field === 'status') return { asc: 'Healthy → Stressed', desc: 'Stressed → Healthy' }
+  if (field === 'period') return { asc: 'Oldest first',        desc: 'Newest first' }
+  return { asc: 'Lowest first', desc: 'Highest first' }
+}
+
+// Pull the comparable value for a given sort field off an issuer. Returns a
+// number for scores/ratios, an ISO date string for 'period' (lexical compare ==
+// chronological), or null when the issuer has no value for that field.
+function sortValue(iss: IssuerSummary, field: SortField): number | string | null {
+  if (field === 'status') return iss.score
+  if (field === 'period') return iss.latest_period
+  // The remaining fields are all numeric ratio keys on IssuerSummary. (Never
+  // called with 'default' — sorting is skipped entirely in that case.)
+  return iss[field as keyof IssuerSummary] as number | null
+}
+
 export default function Dashboard() {
 
   // ── State ───────────────────────────────────────────────────────────────────
@@ -53,6 +99,15 @@ export default function Dashboard() {
   // Pagination — 7 rows per page.
   const PAGE_SIZE = 7
   const [page, setPage] = useState(0)
+
+  // ── Filtering & sorting ─────────────────────────────────────────────────────
+  // Free-text query matched against ticker / name / CIK (always-visible bar).
+  const [query, setQuery] = useState('')
+  // Sort axis + direction, edited from the filter overlay. 'default' = as-added.
+  const [sortField, setSortField] = useState<SortField>('default')
+  const [sortDir, setSortDir] = useState<SortDir>('desc')
+  // Whether the filter/sort overlay is open.
+  const [filterOpen, setFilterOpen] = useState(false)
 
 
   // ── Data loading ────────────────────────────────────────────────────────────
@@ -160,6 +215,43 @@ export default function Dashboard() {
   }
 
 
+  // ── Derived: filtered + sorted issuers ────────────────────────────────────
+  // 1) Filter by the text query, then 2) sort by the chosen axis. Both run
+  // before pagination so the count, rows, and page controls all operate on the
+  // same visible subset.
+  const q = query.trim().toLowerCase()
+  const filtered = issuers.filter(iss =>
+    !q ||
+    iss.ticker.toLowerCase().includes(q) ||
+    iss.name.toLowerCase().includes(q) ||
+    iss.cik.includes(q)
+  )
+
+  // Issuers with no value for the active sort field (null score / ratio /
+  // period) always sink to the bottom, regardless of direction.
+  const visible = sortField === 'default'
+    ? filtered
+    : [...filtered].sort((a, b) => {
+        const va = sortValue(a, sortField)
+        const vb = sortValue(b, sortField)
+        if (va == null && vb == null) return 0
+        if (va == null) return 1
+        if (vb == null) return -1
+        const cmp = typeof va === 'string'
+          ? va.localeCompare(vb as string)
+          : (va as number) - (vb as number)
+        return sortDir === 'asc' ? cmp : -cmp
+      })
+
+  // Snap back to the first page whenever the filter/sort changes, so we never
+  // land on a now-empty page or a confusing mid-list scroll position.
+  useEffect(() => { setPage(0) }, [query, sortField, sortDir])
+
+  // A non-default sort is "active" — used to badge the filter button and to
+  // decide whether the Clear control appears.
+  const filterActive = !!query || sortField !== 'default'
+
+
   // ── Render ──────────────────────────────────────────────────────────────────
 
   return (
@@ -243,10 +335,13 @@ export default function Dashboard() {
         <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
           <h2 className="font-semibold text-slate-800">
             Portfolio
-            {/* Show the issuer count in a muted badge next to the heading. */}
+            {/* Show the issuer count in a muted badge next to the heading. When a
+                filter is narrowing the list, show "X of Y" instead of a bare count. */}
             {issuers.length > 0 && (
               <span className="ml-2 text-slate-400 font-normal text-sm">
-                ({issuers.length} issuers)
+                ({filtered.length < issuers.length
+                  ? `${filtered.length} of ${issuers.length} issuers`
+                  : `${issuers.length} issuers`})
               </span>
             )}
           </h2>
@@ -260,6 +355,136 @@ export default function Dashboard() {
           </button>
         </div>
 
+        {/* ── Filter bar ──
+            Always-visible search box (ticker / name / CIK) plus a filter button
+            that opens the sort overlay. The search narrows the list; the overlay
+            reorders it. */}
+        {!initialLoad && issuers.length > 0 && (
+          <div className="px-6 py-3 border-b border-gray-100 flex flex-wrap items-center gap-3">
+            <div className="relative flex-1 min-w-[12rem] mr-4">
+              {/* Search icon inside the input. */}
+              <svg
+                xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"
+                fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" aria-hidden="true"
+              >
+                <circle cx="11" cy="11" r="8" />
+                <path d="m21 21-4.3-4.3" />
+              </svg>
+              <input
+                type="text"
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                placeholder="Search by ticker, name, or CIK…"
+                aria-label="Search issuers"
+                className="w-full border border-gray-300 rounded-lg pl-9 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
+              />
+            </div>
+
+            {/* Clear-all — only when a search or sort is active. Sits left of the
+                Filters button so Filters stays flush right (aligned with Refresh). */}
+            {filterActive && (
+              <button
+                onClick={() => { setQuery(''); setSortField('default'); setSortDir('desc') }}
+                className="text-xs text-slate-400 hover:text-slate-600 transition-colors whitespace-nowrap"
+              >
+                Clear all
+              </button>
+            )}
+
+            {/* Filter / sort button — opens the overlay. A dot badge marks an
+                active (non-default) sort. */}
+            <div className="relative">
+              <button
+                onClick={() => setFilterOpen(o => !o)}
+                aria-haspopup="dialog"
+                aria-expanded={filterOpen}
+                className={`relative inline py-2 text-sm font-medium transition-colors hover:text-slate-900 ${
+                  filterOpen || sortField !== 'default' ? 'text-slate-900' : 'text-slate-400'
+                }`}
+              >
+                {/* Funnel / filter icon — inline so the hover underline spans it too. */}
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="inline-block align-[-0.125em] mr-1">
+                  <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+                </svg>
+                Filters
+                {sortField !== 'default' && (
+                  <span className="ml-0.5 h-1.5 w-1.5 rounded-full bg-blue-500" aria-hidden="true" />
+                )}
+              </button>
+
+              {/* Overlay panel. A transparent fixed backdrop catches outside
+                  clicks to close it; the panel itself is anchored to the button. */}
+              {filterOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setFilterOpen(false)} aria-hidden="true" />
+                  <div
+                    role="dialog"
+                    aria-label="Sort options"
+                    className="absolute right-0 mt-2 z-50 w-72 bg-white rounded-xl border border-gray-200 shadow-xl p-4"
+                  >
+                    <div className="flex items-center justify-between mb-3">
+                      <h3 className="text-sm font-semibold text-slate-800">Sort portfolio</h3>
+                      <button
+                        onClick={() => setFilterOpen(false)}
+                        className="text-slate-400 hover:text-slate-600 transition-colors"
+                        aria-label="Close"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d="M18 6 6 18" /><path d="m6 6 12 12" />
+                        </svg>
+                      </button>
+                    </div>
+
+                    {/* Sort field */}
+                    <label className="block text-xs font-medium text-slate-500 mb-1">Sort by</label>
+                    <select
+                      value={sortField}
+                      onChange={e => setSortField(e.target.value as SortField)}
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white"
+                    >
+                      <option value="default">Default (as added)</option>
+                      {SORT_FIELDS.map(f => (
+                        <option key={f.key} value={f.key}>{f.label}</option>
+                      ))}
+                    </select>
+
+                    {/* Direction — disabled while on Default. Labels adapt to the
+                        chosen axis (healthy↔stressed, old↔new, low↔high). */}
+                    <label className="block text-xs font-medium text-slate-500 mt-3 mb-1">Order</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      {(['asc', 'desc'] as SortDir[]).map(dir => (
+                        <button
+                          key={dir}
+                          onClick={() => setSortDir(dir)}
+                          disabled={sortField === 'default'}
+                          className={`px-2 py-2 rounded-lg text-xs font-medium border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                            sortDir === dir && sortField !== 'default'
+                              ? 'border-slate-800 bg-slate-800 text-white'
+                              : 'border-gray-300 text-slate-600 hover:bg-gray-50'
+                          }`}
+                        >
+                          {dirLabels(sortField)[dir]}
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Reset just the sort (leaves the search box alone). */}
+                    {sortField !== 'default' && (
+                      <button
+                        onClick={() => { setSortField('default'); setSortDir('desc') }}
+                        className="mt-3 text-xs text-slate-400 hover:text-slate-600 transition-colors"
+                      >
+                        Reset sort
+                      </button>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
         {/*
           Three possible states:
           1. initialLoad=true  → show a loading placeholder (prevents empty-table flash)
@@ -271,6 +496,16 @@ export default function Dashboard() {
         ) : issuers.length === 0 ? (
           <div className="py-16 text-center text-slate-400 text-sm">
             No issuers tracked yet. Add a ticker above to get started.
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="py-16 text-center text-slate-400 text-sm">
+            No issuers match “{query}”.{' '}
+            <button
+              onClick={() => setQuery('')}
+              className="text-slate-500 hover:text-slate-700 underline transition-colors"
+            >
+              Clear search
+            </button>
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -317,7 +552,7 @@ export default function Dashboard() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {issuers.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE).map(iss => {
+                {visible.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE).map(iss => {
                   // Delisted issuers (e.g. WeWork) have no current ticker. The detail
                   // route accepts a CIK too, so fall back to it for the link target.
                   const href = `/issuer/${iss.ticker || iss.cik}`
@@ -410,10 +645,10 @@ export default function Dashboard() {
               </tbody>
             </table>
             {/* Pagination controls — only shown when there's more than one page. */}
-            {issuers.length > PAGE_SIZE && (
+            {visible.length > PAGE_SIZE && (
               <div className="flex items-center justify-between px-4 py-3 border-t border-gray-100">
                 <span className="text-xs text-slate-400">
-                  {page * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE + PAGE_SIZE, issuers.length)} of {issuers.length}
+                  {page * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE + PAGE_SIZE, visible.length)} of {visible.length}
                 </span>
                 <div className="flex items-center gap-1">
                   <button
@@ -424,7 +659,7 @@ export default function Dashboard() {
                     ‹ Prev
                   </button>
                   {(() => {
-                    const total = Math.ceil(issuers.length / PAGE_SIZE)
+                    const total = Math.ceil(visible.length / PAGE_SIZE)
                     const pages: (number | '…')[] = []
                     if (total <= 7) {
                       for (let i = 0; i < total; i++) pages.push(i)
@@ -453,7 +688,7 @@ export default function Dashboard() {
                   })()}
                   <button
                     onClick={() => setPage(p => p + 1)}
-                    disabled={page >= Math.ceil(issuers.length / PAGE_SIZE) - 1}
+                    disabled={page >= Math.ceil(visible.length / PAGE_SIZE) - 1}
                     className="px-2 py-1 text-xs rounded border border-gray-200 text-slate-500 hover:bg-gray-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                   >
                     Next ›
