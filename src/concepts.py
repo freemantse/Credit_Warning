@@ -94,6 +94,57 @@ TAGS: dict[str, list[str]] = {
         "us-gaap/SecuredDebtCurrent",            # current portion of secured debt
     ],
 
+    # ── Debt-waterfall components (Phase 1.5) ──────────────────────────────────
+    # gross_debt() builds total debt additively from these components instead of
+    # adding total_debt + short_term_debt (which double-counted the current
+    # portion and undercounted multi-instrument short-term debt). The old
+    # total_debt / short_term_debt keys above are RETAINED for backward
+    # compatibility (diagnose_ratio / RATIO_INPUTS still reference them).
+    #
+    # Component A — genuinely-additive short-term instruments, SUMMED (not
+    # first-only) via _resolve_sum. Deliberately EXCLUDES LongTermDebtCurrent
+    # (that is the current portion of LTD = Component B, not a separate
+    # instrument). Deduplicated — each tag is summed at most once.
+    "st_debt_components": [
+        "us-gaap/ShortTermBorrowings",
+        "us-gaap/CommercialPaper",
+        "us-gaap/NotesPayableCurrent",
+        "us-gaap/LinesOfCreditCurrent",
+        "us-gaap/ShortTermBankLoansAndNotesPayable",
+    ],
+    # Component B — current portion of long-term debt (first-match).
+    "current_ltd": [
+        "us-gaap/LongTermDebtCurrent",
+        "us-gaap/LongTermDebtAndCapitalLeaseObligationsCurrent",
+    ],
+    # Component B fallback — used only when current_ltd is absent.
+    "debt_current_fallback": [
+        "us-gaap/DebtCurrent",
+    ],
+    # Component C — non-current long-term debt (first-match). LongTermDebt is
+    # included but frequently bundles the current maturities, so gross_debt()
+    # applies a double-count guard when C resolves via exactly us-gaap/LongTermDebt.
+    "lt_debt_noncurrent": [
+        "us-gaap/LongTermDebtNoncurrent",
+        "us-gaap/LongTermDebt",
+        "us-gaap/LongTermDebtAndCapitalLeaseObligationsNoncurrent",
+    ],
+    # Aggregate combined-debt tags (first-match) — the Level-2 fallback / override.
+    # The last two are NOT in the Phase-1.5 spec list but ARE in the legacy
+    # total_debt chain this waterfall replaces; without them, capital-lease
+    # filers that report ONLY an "including current maturities" aggregate (e.g.
+    # GM → us-gaap/LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities,
+    # ~$131.6B) would resolve no components and regress to data_gap. Added to
+    # preserve the legacy coverage exactly while keeping the double-count fix.
+    # FLAGGED for review (Step 7) — revert if strict spec adherence is preferred.
+    "debt_aggregate": [
+        "us-gaap/DebtLongtermAndShorttermCombinedAmount",
+        "us-gaap/DebtAndCapitalLeaseObligations",
+        "us-gaap/LongTermDebtAndCapitalLeaseObligations",
+        "us-gaap/LongTermDebtAndCapitalLeaseObligationsIncludingCurrentMaturities",  # legacy-parity
+        "us-gaap/NotesAndLoansPayable",                                              # legacy-parity (last resort)
+    ],
+
     # ── Cash ─────────────────────────────────────────────────────────────────
     # Used in: net_debt = total_debt - cash, and liquidity = cash / short_term_debt.
     # Prefer the balance-sheet carrying value; the period-increase tag is a last
@@ -300,45 +351,13 @@ def resolve_tag(
 
     tag_list = TAGS[concept]
 
-    # Navigate to the us-gaap section of the EDGAR facts JSON.
-    # Use .get() with defaults so we don't crash on malformed/empty data.
-    us_gaap = facts.get("facts", {}).get("us-gaap", {})
-
+    # Walk the fallback list and return the first tag that resolves. The per-tag
+    # scan lives in resolve_one_tag so the additive _resolve_sum path (Phase 1.5)
+    # can reuse the exact same matching rules.
     for tag_path in tag_list:
-        # tag_path format: "us-gaap/ConceptName"
-        # The EDGAR JSON uses just "ConceptName" as the dict key (no taxonomy prefix).
-        tag_name = tag_path.split("/", 1)[1]  # e.g. "us-gaap/Revenues" → "Revenues"
-
-        concept_data = us_gaap.get(tag_name)
-        if not concept_data:
-            # This company doesn't use this tag at all — try the next fallback.
-            continue
-
-        # EDGAR groups values by their unit of measurement.
-        # Financial dollar amounts use "USD". Some concepts also have a "USD/shares"
-        # unit (e.g. EPS). We iterate all units to be safe rather than hard-coding "USD".
-        for unit_key, entries in concept_data.get("units", {}).items():
-            for entry in entries:
-
-                # Each entry represents one reported value. We only want entries
-                # whose fiscal period-end date matches what we're looking for.
-                if entry.get("end") != period_end:
-                    continue
-
-                # Point-in-time filter for the backtest: if filed_before is set,
-                # skip entries from filings that weren't yet public at that date.
-                # String comparison works here because dates are ISO format "YYYY-MM-DD".
-                if filed_before and entry.get("filed", "") > filed_before:
-                    continue
-
-                # Some XBRL entries describe context (e.g. segment labels) without
-                # a numeric value. The "val" key only exists for numeric entries.
-                if "val" not in entry:
-                    continue
-
-                # This entry matches — return the value and the tag that supplied it.
-                # Converting to float handles both int and float values from the JSON.
-                return float(entry["val"]), tag_path
+        value = resolve_one_tag(facts, tag_path, period_end, filed_before)
+        if value is not None:
+            return value, tag_path
 
     # We exhausted every fallback tag without finding a matching entry.
     # Build a helpful error message listing exactly which tags were tried.
@@ -347,3 +366,44 @@ def resolve_tag(
         f"Concept {concept!r} not found for period_end={period_end!r}. "
         f"Tried: {attempted}"
     )
+
+
+def resolve_one_tag(
+    facts: dict,
+    tag_path: str,
+    period_end: str,
+    filed_before: str | None = None,
+) -> float | None:
+    """
+    Resolve a SINGLE explicit XBRL tag path (e.g. "us-gaap/CommercialPaper") for
+    one fiscal period. Returns the float value, or None when the tag is absent or
+    has no matching entry (never raises — callers decide what a miss means).
+
+    Applies the same per-entry rules as resolve_tag: match period_end, honour the
+    filed_before point-in-time filter, and require a numeric "val". This is the
+    shared building block for both resolve_tag (first-match) and extract._resolve_sum
+    (sum-all-matches across an additive component list).
+    """
+    us_gaap = facts.get("facts", {}).get("us-gaap", {})
+    tag_name = tag_path.split("/", 1)[1]  # "us-gaap/Revenues" → "Revenues"
+
+    concept_data = us_gaap.get(tag_name)
+    if not concept_data:
+        return None
+
+    # EDGAR groups values by unit of measurement; iterate all units rather than
+    # hard-coding "USD" (some concepts also carry "USD/shares" etc.).
+    for unit_key, entries in concept_data.get("units", {}).items():
+        for entry in entries:
+            if entry.get("end") != period_end:
+                continue
+            # Point-in-time filter: skip filings not yet public at filed_before.
+            # ISO dates compare lexicographically.
+            if filed_before and entry.get("filed", "") > filed_before:
+                continue
+            # Context-only entries (segment labels etc.) have no "val".
+            if "val" not in entry:
+                continue
+            return float(entry["val"])
+
+    return None

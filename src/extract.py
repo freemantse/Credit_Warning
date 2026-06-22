@@ -29,7 +29,7 @@ import sys
 from dataclasses import dataclass, field
 from typing import Any
 
-from src.concepts import resolve_tag, MissingDataError, TAGS
+from src.concepts import resolve_tag, resolve_one_tag, MissingDataError, TAGS
 
 
 # ── Data container ───────────────────────────────────────────────────────────
@@ -139,9 +139,35 @@ def _resolve(facts: dict, concept: str, period_end: str, filed_before: str | Non
     """
     Thin wrapper around concepts.resolve_tag.
     Kept private because only this module calls it directly.
-    Returns (value, winning_tag_path).
+    Returns (value, winning_tag_path) — the FIRST non-null tag in the fallback list.
     """
     return resolve_tag(facts, concept, period_end, filed_before=filed_before)
+
+
+def _resolve_sum(facts: dict, concept: str, period_end: str, filed_before: str | None = None) -> tuple[float, list[str]]:
+    """
+    SUM-capable sibling of _resolve. For the given `concept` (a TAGS key), resolve
+    EVERY tag in its list and SUM all non-null matches — not first-only.
+
+    This is the additive counterpart to _resolve, needed for short-term debt where
+    a filer can carry several distinct instruments simultaneously (commercial paper
+    + revolver + short-term notes); first-match would undercount them.
+
+    Tags are de-duplicated so the same tag path is never summed twice. Returns
+    (summed_value, [matched_tag_paths]); (0.0, []) when nothing in the list matches.
+    """
+    total = 0.0
+    matched: list[str] = []
+    seen: set[str] = set()
+    for tag_path in TAGS.get(concept, []):
+        if tag_path in seen:
+            continue
+        seen.add(tag_path)
+        value = resolve_one_tag(facts, tag_path, period_end, filed_before)
+        if value is not None:
+            total += value
+            matched.append(tag_path)
+    return total, matched
 
 
 # ── Intermediate building-block helpers ─────────────────────────────────────
@@ -178,56 +204,156 @@ def ebitda(facts: dict, period_end: str, filed_before: str | None = None) -> tup
     )
 
 
+def _resolve_first_opt(facts: dict, concept: str, period_end: str, filed_before: str | None):
+    """First-match resolve that returns (None, None) instead of raising on a miss."""
+    try:
+        return _resolve(facts, concept, period_end, filed_before)
+    except MissingDataError:
+        return None, None
+
+
 def net_debt(facts: dict, period_end: str, filed_before: str | None = None) -> tuple[float, dict, dict]:
     """
-    Compute net debt = total_debt - cash for a given period.
+    Compute net debt = gross_debt − cash for a given period.
 
-    Net debt is the leverage numerator. A negative result means the company
-    holds more cash than debt — which makes leverage negative (financial strength).
+    Net debt is the leverage numerator. As of Phase 1.5 the debt figure is the
+    full component-based waterfall total from gross_debt() (interest-bearing
+    short-term + current + non-current debt), NOT a single LongTermDebt tag — so
+    leverage now reflects the complete obligation.
+
+    A negative RESULT means the company holds more cash than debt (net cash) —
+    preserved here as financial strength (leverage goes negative). A negative
+    gross-debt TOTAL, by contrast, is a tagging error and is surfaced (raised) by
+    gross_debt() before it ever reaches this function.
 
     Returns:
         (net_debt_value, inputs_dict, source_tags_dict)
     """
-    debt, debt_tag = _resolve(facts, "total_debt", period_end, filed_before)
+    total, gd_inputs, gd_tags = gross_debt(facts, period_end, filed_before)
     cash, cash_tag = _resolve(facts, "cash", period_end, filed_before)
-    value = debt - cash  # positive = more debt than cash (typical); negative = net cash
-    return (
-        value,
-        {"total_debt": debt, "cash": cash},
-        {"total_debt": debt_tag, "cash": cash_tag},
-    )
+    value = total - cash  # positive = more debt than cash (typical); negative = net cash
+    inputs = {**gd_inputs, "cash": cash}
+    tags = {**gd_tags, "cash": cash_tag}
+    return value, inputs, tags
 
 
 def gross_debt(facts: dict, period_end: str, filed_before: str | None = None) -> tuple[float, dict, dict]:
     """
-    Compute gross debt = total_debt + short_term_debt for a given period.
+    Compute gross (total interest-bearing) debt via a component-based waterfall.
 
-    Unlike net_debt (which nets out cash and uses long-term debt only), gross debt
-    is the full interest-bearing obligation — the denominator credit analysts use
-    for cash-flow-to-debt (FFO/Debt proxy) and debt-to-assets (gearing).
+    Ported from Yuetong's validated _total_debt. Replaces the old
+    total_debt + short_term_debt addition, which (a) double-counted the current
+    portion of long-term debt for filers who tagged both LongTermDebt (incl.
+    current) and LongTermDebtCurrent, and (b) undercounted short-term debt by
+    taking only the first non-null instrument.
 
-    total_debt (typically the long-term figure) is required and raises if missing.
-    short_term_debt is OPTIONAL: many issuers legitimately carry none, so when it
-    can't be resolved we treat it as 0 and record that 0 explicitly in the inputs
-    (with no source tag) — keeping the audit trail honest rather than silently
-    dropping the ratio.
+    Components:
+      A = sum of additive short-term instruments (st_debt_components, summed).
+      B = current portion of long-term debt (current_ltd; else debt_current_fallback).
+      C = non-current long-term debt (lt_debt_noncurrent, first-match).
+
+    Double-count guard: when C resolved via exactly us-gaap/LongTermDebt (which
+    typically already includes the current maturities), subtract B from C before
+    summing, so the current portion isn't counted in both B and C.
+
+    Waterfall:
+      Level 1 — C present: total = A + B + C_adjusted.
+                If debt_aggregate resolves ABOVE the Level-1 sum, the components
+                missed something → prefer the aggregate (level "2-override").
+      Level 2 — C absent but an aggregate tag exists: total = aggregate.
+      All-current — C and aggregate absent but A/B exist: total = A + B.
+      Failure — nothing resolves: raise MissingDataError (never return 0).
+
+    A computed negative total is a tagging inconsistency (e.g. current portion
+    larger than the LongTermDebt it was subtracted from) and is raised, not returned.
 
     Returns:
         (gross_debt_value, inputs_dict, source_tags_dict)
+        inputs holds the numeric component breakdown (+ double_count_adjustment);
+        source_tags holds the per-component tags plus the qualitative audit flags
+        (_waterfall_level, _double_count_guard) as strings.
     """
-    debt, debt_tag = _resolve(facts, "total_debt", period_end, filed_before)
-    try:
-        st_debt, st_tag = _resolve(facts, "short_term_debt", period_end, filed_before)
-    except MissingDataError:
-        # No short-term-debt tag for this filer/period — treat as zero (recorded so
-        # the source-audit panel shows it was considered, not skipped).
-        st_debt, st_tag = 0.0, None
-    value = debt + st_debt
-    inputs = {"total_debt": debt, "short_term_debt": st_debt}
-    tags = {"total_debt": debt_tag}
-    if st_tag is not None:
-        tags["short_term_debt"] = st_tag
-    return value, inputs, tags
+    # Component A — additive short-term instruments (SUMMED, not first-only).
+    a_short_term, a_tags = _resolve_sum(facts, "st_debt_components", period_end, filed_before)
+
+    # Component B — current portion of LTD; fall back to the broad DebtCurrent tag.
+    b_current, b_tag = _resolve_first_opt(facts, "current_ltd", period_end, filed_before)
+    if b_current is None:
+        b_current, b_tag = _resolve_first_opt(facts, "debt_current_fallback", period_end, filed_before)
+    b_val = b_current if b_current is not None else 0.0
+
+    # Component C — non-current long-term debt (first-match).
+    c_noncurrent, c_tag = _resolve_first_opt(facts, "lt_debt_noncurrent", period_end, filed_before)
+
+    # Aggregate combined-debt tag — Level-2 fallback / override.
+    aggregate, agg_tag = _resolve_first_opt(facts, "debt_aggregate", period_end, filed_before)
+
+    # Double-count guard: LongTermDebt often bundles the current maturities, so when
+    # C resolved via exactly us-gaap/LongTermDebt, remove B (already inside C).
+    double_count_adj = 0.0
+    c_used = c_noncurrent
+    if c_noncurrent is not None and c_tag == "us-gaap/LongTermDebt" and b_current is not None:
+        double_count_adj = -b_val
+        c_used = c_noncurrent - b_val
+
+    inputs: dict[str, float] = {
+        "short_term_components": a_short_term,
+        "current_portion_ltd": b_val,
+        "long_term_noncurrent": (c_used if c_used is not None else 0.0),
+        "double_count_adjustment": double_count_adj,
+    }
+    tags: dict[str, Any] = {}
+    if a_tags:
+        tags["short_term_components"] = a_tags          # list of summed tags
+    if b_tag:
+        tags["current_portion_ltd"] = b_tag
+    if c_tag:
+        tags["long_term_noncurrent"] = c_tag
+
+    # ── Waterfall ─────────────────────────────────────────────────────────────
+    if c_noncurrent is not None:
+        level1 = a_short_term + b_val + (c_used if c_used is not None else 0.0)
+        total = level1
+        level = "1"
+        # Level-2 override: a combined-debt aggregate above the component sum means
+        # the components missed something — trust the aggregate instead.
+        if aggregate is not None and aggregate > level1:
+            total = aggregate
+            level = "2-override"
+            tags["debt_aggregate"] = agg_tag
+    elif aggregate is not None:
+        total = aggregate
+        level = "2"
+        tags["debt_aggregate"] = agg_tag
+    elif a_short_term != 0.0 or b_current is not None:
+        # No non-current tranche and no aggregate, but the firm does carry
+        # short-term / current debt (e.g. all debt is current) — don't fail.
+        total = a_short_term + b_val
+        level = "1"
+    else:
+        raise MissingDataError(
+            f"No debt components resolved for period_end={period_end!r}. Tried: "
+            f"st_debt_components, current_ltd, debt_current_fallback, "
+            f"lt_debt_noncurrent, debt_aggregate"
+        )
+
+    if total < 0:
+        # Negative gross debt is impossible for a real balance sheet — surface the
+        # tagging inconsistency / double-count over-subtraction rather than hide it.
+        raise MissingDataError(
+            f"Computed negative gross debt ({total:,.0f}) for period_end={period_end!r} "
+            f"— tagging inconsistency or double-count over-subtraction; surfacing instead "
+            f"of returning a bad value"
+        )
+
+    inputs["total_debt"] = total  # waterfall result (kept under the legacy key, numeric)
+    tags["_waterfall_level"] = level
+    tags["_double_count_guard"] = (
+        "applied — C resolved via us-gaap/LongTermDebt (incl. current portion); subtracted B"
+        if double_count_adj
+        else "not applied"
+    )
+    return total, inputs, tags
 
 
 # ── Public ratio functions ───────────────────────────────────────────────────
