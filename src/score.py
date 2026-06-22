@@ -85,6 +85,21 @@ DEFAULT_CONFIG: dict = {
         "current_ratio<1.5x":    {"weight": 6.0,  "healthy": 1.5,  "severe": 0.75},
         "debt_to_assets>40%":    {"weight": 9.0,  "healthy": 0.40, "severe": 0.65},
         "maturity_wall":         {"weight": 6.0,  "healthy": 0.30, "severe": 0.80},
+        # ── 10 additional rules (analytical depth) ───────────────────────────
+        # Scored and added to the total, but NOT part of _CORE_RULE_KEYS, so the
+        # distress-escalation severe-count still references only the original 9
+        # validated core rules. The original 9 still sum to 100, so score_cap
+        # stays 100 and the 50-pt threshold / 60-pt floor are unchanged.
+        "debt_to_equity>2x":              {"weight": 8.0,  "healthy": 1.0,  "severe": 3.0},
+        "revenue_yoy_growth<-5%":         {"weight": 8.0,  "healthy": 0.02, "severe": -0.10},
+        "asset_coverage<1.5x":            {"weight": 6.0,  "healthy": 2.0,  "severe": 1.0},
+        "tangible_asset_coverage<1x":     {"weight": 8.0,  "healthy": 1.5,  "severe": 0.4},
+        "liquidation_asset_coverage<0.7x":{"weight": 8.0,  "healthy": 1.2,  "severe": 0.3},
+        "quick_ratio<1x":                 {"weight": 5.0,  "healthy": 1.2,  "severe": 0.5},
+        "ocf_ebitda_conversion<0.7x":     {"weight": 6.0,  "healthy": 0.85, "severe": 0.5},
+        "moody_adjusted_fcf_negative":    {"weight": 8.0,  "healthy": 0.0,  "severe": -0.10},
+        "rcf_net_debt<15%":               {"weight": 10.0, "healthy": 0.30, "severe": 0.05},
+        "maturity_coverage_near_term<1x": {"weight": 7.0,  "healthy": 1.5,  "severe": 0.5},
     },
     # Points forced on these rules when EBITDA <= 0 (the ramp would flip sign).
     "ebitda_override": {"leverage>5x": 17.0, "coverage<2x": 14.0},
@@ -111,6 +126,25 @@ _CORE_RULE_KEYS = (
     "fcf_negative", "liquidity<1x", "current_ratio<1.5x", "debt_to_assets>40%",
     "maturity_wall",
 )
+
+# The 10 additional rules: rule key → the ratio name (in extract_all's output)
+# whose value drives the ramp. These are scored and added to the additive total,
+# but deliberately NOT included in _CORE_RULE_KEYS — the distress-escalation
+# severe-count must keep counting only the original 9 validated core rules.
+# Direction (higher- vs lower-worse) is inferred by _ramp from each rule's
+# healthy/severe pair, so no per-rule direction flag is needed.
+_ADDITIONAL_RULE_RATIOS = {
+    "debt_to_equity>2x":              "debt_to_equity",
+    "revenue_yoy_growth<-5%":         "revenue_yoy_growth",
+    "asset_coverage<1.5x":            "asset_coverage",
+    "tangible_asset_coverage<1x":     "tangible_asset_coverage",
+    "liquidation_asset_coverage<0.7x":"liquidation_asset_coverage",
+    "quick_ratio<1x":                 "quick_ratio",
+    "ocf_ebitda_conversion<0.7x":     "ocf_ebitda_conversion",
+    "moody_adjusted_fcf_negative":    "moody_adjusted_fcf",
+    "rcf_net_debt<15%":               "rcf_net_debt",
+    "maturity_coverage_near_term<1x": "maturity_coverage_near_term",
+}
 
 
 @dataclass(frozen=True)
@@ -434,6 +468,24 @@ def compute_score(
     if dta_pts > 0:
         alerts.append(f"Debt to assets {dta * 100:.0f}% elevated ({dta_pts:.0f}/{dta_w:.0f} pts)")
 
+    # ── Additional rules (10): scored like the core ratio rules ──────────────
+    # Each maps to one ratio value and ramps on its own healthy/severe pair.
+    # They add to the breakdown and the additive total, but are excluded from
+    # the escalation severe-count (which counts only _CORE_RULE_KEYS). A rule is
+    # silently skipped if it isn't present in the active config (back-compat with
+    # configs saved before these rules existed).
+    for rule_key, ratio_name in _ADDITIONAL_RULE_RATIOS.items():
+        rule = rules.get(rule_key)
+        if rule is None:
+            breakdown[rule_key] = 0.0
+            continue
+        add_w = rule["weight"]
+        add_val = _val(ratio_name)
+        add_pts = _ramp(add_val, rule["healthy"], rule["severe"], add_w)
+        breakdown[rule_key] = add_pts
+        if add_pts > 0:
+            alerts.append(f"{ratio_name} {add_val:.2f} stressed ({add_pts:.0f}/{add_w:.0f} pts)")
+
     # ── LLM qualitative adjustment ───────────────────────────────────────────
     # High-severity findings each add `high_severity_per` pts, capped at
     # `high_severity_cap`. Findings may be Finding dataclasses or dicts loaded
@@ -484,13 +536,18 @@ def compute_score(
     core_maxima = {key: rules[key]["weight"] for key in _CORE_RULE_KEYS}
     core_total = sum(breakdown[k] for k in core_maxima)
 
+    # Additional (deterministic) rules: full-weight, added to the total like the
+    # core rules. They are NOT in core_maxima, so they don't feed the escalation
+    # severe-count. score_cap (100) still clamps the combined sum.
+    additional_total = sum(breakdown.get(k, 0.0) for k in _ADDITIONAL_RULE_RATIOS)
+
     # LLM signals: each rule keeps its own cap, but the COMBINED contribution is
     # clamped (combined_cap) so qualitative-only signals can never cross the
     # threshold alone.
     llm_keys = ("llm_high_severity", "covenant_proximity", "litigation_provision")
     llm_total = min(sum(breakdown[k] for k in llm_keys), config.llm["combined_cap"])
 
-    score = min(core_total + llm_total, config.score_cap)
+    score = min(core_total + additional_total + llm_total, config.score_cap)
 
     # ── Distress escalation floor ────────────────────────────────────────────
     # Count core rules that are "severe" (>= severe_frac of their max). When

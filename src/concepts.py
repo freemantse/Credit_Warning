@@ -201,6 +201,67 @@ TAGS: dict[str, list[str]] = {
         "us-gaap/LossContingencyAccrualAtCarryingValue",
         "us-gaap/LossContingencyAccrualCarryingValueCurrent",
     ],
+
+    # ── Shareholders' Equity (for debt_to_equity) ──────────────────────────────
+    "stockholders_equity": [
+        "us-gaap/StockholdersEquity",
+        "us-gaap/StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+    ],
+
+    # ── Goodwill (for tangible_asset_coverage) ─────────────────────────────────
+    "goodwill": [
+        "us-gaap/Goodwill",
+        "us-gaap/GoodwillNet",
+    ],
+
+    # ── Intangible Assets net of goodwill (for tangible_asset_coverage) ────────
+    "intangible_assets": [
+        "us-gaap/IntangibleAssetsNetExcludingGoodwill",
+        "us-gaap/FiniteLivedIntangibleAssetsNet",
+        "us-gaap/IndefiniteLivedIntangibleAssetsExcludingGoodwill",
+    ],
+
+    # ── Deferred Tax Asset (for tangible_asset_coverage) ───────────────────────
+    "deferred_tax_asset": [
+        "us-gaap/DeferredTaxAssetsLiabilitiesNet",
+        "us-gaap/DeferredTaxAssetsNet",
+    ],
+
+    # ── Inventory (for quick_ratio and liquidation_asset_coverage) ─────────────
+    "inventory": [
+        "us-gaap/InventoryNet",
+        "us-gaap/InventoryGross",
+        "us-gaap/FIFOInventoryAmount",
+    ],
+
+    # ── Accounts Receivable (for quick_ratio and liquidation_asset_coverage) ───
+    "accounts_receivable": [
+        "us-gaap/AccountsReceivableNetCurrent",
+        "us-gaap/ReceivablesNetCurrent",
+        "us-gaap/AccountsAndNotesReceivableNet",
+    ],
+
+    # ── PP&E net (for liquidation_asset_coverage) ──────────────────────────────
+    "ppe_net": [
+        "us-gaap/PropertyPlantAndEquipmentNet",
+        "us-gaap/PropertyPlantAndEquipmentAndFinanceLeaseRightOfUseAssetAfterAccumulatedDepreciationAndAmortization",
+    ],
+
+    # ── Prepaid expenses (for quick_ratio — excluded from numerator) ───────────
+    "prepaid_expenses": [
+        "us-gaap/PrepaidExpenseAndOtherAssetsCurrent",
+        "us-gaap/PrepaidExpenseCurrent",
+    ],
+
+    # ── Dividends paid (for moody_adjusted_fcf) ────────────────────────────────
+    "dividends_paid": [
+        "us-gaap/PaymentsOfDividendsCommonStock",
+        "us-gaap/PaymentsOfDividends",
+        "us-gaap/PaymentsOfDividendsAndDividendEquivalentsOnCommonStockAndRestrictedStockUnits",
+    ],
+
+    # Note: "total_liabilities" (supplementary for debt_to_equity) is already
+    # defined above (us-gaap/Liabilities) — not re-added here to avoid a dup key.
 }
 
 

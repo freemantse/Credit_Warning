@@ -500,6 +500,295 @@ def current_ratio(facts: dict, period_end: str, filed_before: str | None = None)
     )
 
 
+def debt_to_equity(facts, period_end, filed_before=None):
+    """
+    Debt-to-Equity = Total Debt / Shareholders' Equity.
+    If equity is zero: raise MissingDataError.
+    If equity is negative: compute and return — negative D/E is itself the stress signal.
+    Total Debt reuses the same tags as leverage() — see gross_debt().
+    """
+    gd, gd_inputs, gd_tags = gross_debt(facts, period_end, filed_before)
+    equity, eq_tag = _resolve(facts, "stockholders_equity", period_end, filed_before)
+    if equity == 0:
+        raise MissingDataError(f"Shareholders equity is zero for {period_end}")
+    return RatioResult(
+        name="debt_to_equity",
+        value=gd / equity,
+        inputs={**gd_inputs, "stockholders_equity": equity},
+        source_tags={**gd_tags, "stockholders_equity": eq_tag},
+        period_end=period_end,
+    )
+
+
+def revenue_yoy_growth(facts, period_end, filed_before=None):
+    """
+    Revenue YoY Growth = (Current Revenue − Prior Year Revenue) / Prior Year Revenue.
+    Prior year period_end = subtract exactly 365 days from period_end.
+    If prior year revenue not found: raise MissingDataError.
+    Returns growth as a decimal fraction (e.g. -0.05 = -5% decline).
+    """
+    from datetime import date, timedelta
+    rev, rev_tag = _resolve(facts, "revenue", period_end, filed_before)
+    prior_date = (date.fromisoformat(period_end) - timedelta(days=365)).isoformat()
+    try:
+        prior_rev, prior_tag = _resolve(facts, "revenue", prior_date, filed_before)
+    except MissingDataError:
+        # Try ±15 days around the prior year date to handle fiscal year shifts
+        found = False
+        for delta in range(1, 16):
+            for sign in (1, -1):
+                try_date = (date.fromisoformat(prior_date) + timedelta(days=sign*delta)).isoformat()
+                try:
+                    prior_rev, prior_tag = _resolve(facts, "revenue", try_date, filed_before)
+                    found = True
+                    break
+                except MissingDataError:
+                    continue
+            if found:
+                break
+        if not found:
+            raise MissingDataError(f"Prior year revenue not found for {period_end}")
+    if prior_rev == 0:
+        raise MissingDataError(f"Prior year revenue is zero for {period_end}")
+    return RatioResult(
+        name="revenue_yoy_growth",
+        value=(rev - prior_rev) / prior_rev,
+        inputs={"revenue": rev, "prior_year_revenue": prior_rev},
+        source_tags={"revenue": rev_tag, "prior_year_revenue": prior_tag},
+        period_end=period_end,
+    )
+
+
+def asset_coverage(facts, period_end, filed_before=None):
+    """
+    Asset Coverage = Total Assets / Total Debt.
+    MissingDataError if Total Debt is zero (no debt = ratio undefined, not stress).
+    """
+    assets, assets_tag = _resolve(facts, "total_assets", period_end, filed_before)
+    gd, gd_inputs, gd_tags = gross_debt(facts, period_end, filed_before)
+    if gd == 0:
+        raise MissingDataError(f"Total debt is zero for {period_end}")
+    return RatioResult(
+        name="asset_coverage",
+        value=assets / gd,
+        inputs={"total_assets": assets, **gd_inputs},
+        source_tags={"total_assets": assets_tag, **gd_tags},
+        period_end=period_end,
+    )
+
+
+def tangible_asset_coverage(facts, period_end, filed_before=None):
+    """
+    Tangible Asset Coverage = (Total Assets − Goodwill − Intangibles − DTA) / Total Debt.
+    Goodwill, intangibles, DTA are optional — if missing treat as zero (no flag needed
+    for industrial companies; flag for tech/pharma is handled in alerts not here).
+    MissingDataError if Total Assets or Total Debt is missing.
+    """
+    assets, assets_tag = _resolve(facts, "total_assets", period_end, filed_before)
+    gd, gd_inputs, gd_tags = gross_debt(facts, period_end, filed_before)
+    if gd == 0:
+        raise MissingDataError(f"Total debt is zero for {period_end}")
+
+    deductions = {}
+    deduction_tags = {}
+    for concept in ("goodwill", "intangible_assets", "deferred_tax_asset"):
+        try:
+            val, tag = _resolve(facts, concept, period_end, filed_before)
+            deductions[concept] = max(val, 0)  # DTA can be negative (net liability) → treat as 0
+            deduction_tags[concept] = tag
+        except MissingDataError:
+            deductions[concept] = 0.0
+
+    tangible = assets - sum(deductions.values())
+    return RatioResult(
+        name="tangible_asset_coverage",
+        value=tangible / gd,
+        inputs={"total_assets": assets, **deductions, **gd_inputs},
+        source_tags={"total_assets": assets_tag, **deduction_tags, **gd_tags},
+        period_end=period_end,
+    )
+
+
+def liquidation_asset_coverage(facts, period_end, filed_before=None):
+    """
+    Liquidation Asset Coverage = Liquidation Value / Total Debt.
+    Applies standard distressed-lending haircuts per asset class:
+      Cash: 100%, Receivables: 75% (midpoint 70-80%), Inventory: 50% (midpoint 40-60%),
+      PP&E: 45% (midpoint 30-60%), Intangibles/Goodwill: 0%.
+    Uses gross_debt() as denominator (consistent with asset_coverage).
+    MissingDataError if Total Debt is zero or if Cash and all asset components are missing.
+    """
+    gd, gd_inputs, gd_tags = gross_debt(facts, period_end, filed_before)
+    if gd == 0:
+        raise MissingDataError(f"Total debt is zero for {period_end}")
+
+    cash, cash_tag = _resolve(facts, "cash", period_end, filed_before)
+
+    inputs = {"cash": cash, **gd_inputs}
+    tags = {"cash": cash_tag, **gd_tags}
+    liquidation_value = cash * 1.0  # 100% haircut
+
+    for concept, haircut in [("accounts_receivable", 0.75), ("inventory", 0.50), ("ppe_net", 0.45)]:
+        try:
+            val, tag = _resolve(facts, concept, period_end, filed_before)
+            inputs[concept] = val
+            tags[concept] = tag
+            liquidation_value += val * haircut
+        except MissingDataError:
+            pass  # asset class absent — skip, do not raise
+
+    return RatioResult(
+        name="liquidation_asset_coverage",
+        value=liquidation_value / gd,
+        inputs=inputs,
+        source_tags=tags,
+        period_end=period_end,
+    )
+
+
+def quick_ratio(facts, period_end, filed_before=None):
+    """
+    Quick Ratio = (Current Assets − Inventory − Prepaid Expenses) / Current Liabilities.
+    Inventory and prepaid are optional — if missing treat as zero (conservative: assumes
+    all current assets are liquid, which is the safer direction for credit analysis).
+    MissingDataError if Current Liabilities is zero.
+    """
+    ca, ca_tag = _resolve(facts, "current_assets", period_end, filed_before)
+    cl, cl_tag = _resolve(facts, "current_liabilities", period_end, filed_before)
+    if cl == 0:
+        raise MissingDataError(f"Current liabilities is zero for {period_end}")
+
+    inputs = {"current_assets": ca, "current_liabilities": cl}
+    tags = {"current_assets": ca_tag, "current_liabilities": cl_tag}
+    deductions = 0.0
+
+    for concept in ("inventory", "prepaid_expenses"):
+        try:
+            val, tag = _resolve(facts, concept, period_end, filed_before)
+            inputs[concept] = val
+            tags[concept] = tag
+            deductions += val
+        except MissingDataError:
+            pass
+
+    return RatioResult(
+        name="quick_ratio",
+        value=(ca - deductions) / cl,
+        inputs=inputs,
+        source_tags=tags,
+        period_end=period_end,
+    )
+
+
+def ocf_ebitda_conversion(facts, period_end, filed_before=None):
+    """
+    OCF/EBITDA Conversion = Operating Cash Flow / EBITDA.
+    MissingDataError if EBITDA is zero (same guard as interest_coverage).
+    High conversion (>0.9x) = clean earnings; low conversion (<0.6x) = working capital drag.
+    """
+    ocf, ocf_tag = _resolve(facts, "operating_cashflow", period_end, filed_before)
+    ebit, ebit_inputs, ebit_tags = ebitda(facts, period_end, filed_before)
+    if ebit == 0:
+        raise MissingDataError(f"EBITDA is zero for {period_end}")
+    return RatioResult(
+        name="ocf_ebitda_conversion",
+        value=ocf / ebit,
+        inputs={"operating_cashflow": ocf, **ebit_inputs},
+        source_tags={"operating_cashflow": ocf_tag, **ebit_tags},
+        period_end=period_end,
+    )
+
+
+def moody_adjusted_fcf(facts, period_end, filed_before=None):
+    """
+    Moody's Adjusted FCF = Operating Cash Flow − Dividends Paid − Maintenance Capex.
+    Since maintenance capex is rarely disclosed, use D&A as proxy for maintenance capex
+    (standard analyst convention when split not available).
+    Dividends paid is optional — if not tagged, use OCF − D&A (excludes dividend adjustment).
+    This is the Moody's RCF approximation: OCF + pension addback − dividends.
+    Pension addback requires LLM (Phase 3) — omit here; use OCF directly.
+    """
+    ocf, ocf_tag = _resolve(facts, "operating_cashflow", period_end, filed_before)
+    dep, dep_tag = _resolve(facts, "depreciation", period_end, filed_before)
+
+    inputs = {"operating_cashflow": ocf, "depreciation_proxy_for_maintenance_capex": dep}
+    tags = {"operating_cashflow": ocf_tag, "depreciation": dep_tag}
+
+    # Dividends paid — optional, from financing activities on cash flow statement
+    try:
+        div, div_tag = _resolve(facts, "dividends_paid", period_end, filed_before)
+        inputs["dividends_paid"] = div
+        tags["dividends_paid"] = div_tag
+    except MissingDataError:
+        div = 0.0
+
+    # Moody's Adjusted FCF = OCF − maintenance capex (proxy: D&A) − dividends
+    value = ocf - dep - div
+    return RatioResult(
+        name="moody_adjusted_fcf",
+        value=value,
+        inputs=inputs,
+        source_tags=tags,
+        period_end=period_end,
+    )
+
+
+def rcf_net_debt(facts, period_end, filed_before=None):
+    """
+    RCF/Net Debt = Retained Cash Flow / Net Debt.
+    Retained Cash Flow (Moody's RCF) = OCF − Dividends Paid.
+    Net Debt reuses net_debt() helper (same as leverage numerator).
+    MissingDataError if Net Debt is zero or negative (net cash = ratio undefined as stress signal).
+    RCF/Net Debt is a companion to Debt/EBITDA — measures cash generation vs debt burden.
+    """
+    ocf, ocf_tag = _resolve(facts, "operating_cashflow", period_end, filed_before)
+
+    try:
+        div, div_tag = _resolve(facts, "dividends_paid", period_end, filed_before)
+    except MissingDataError:
+        div, div_tag = 0.0, None
+
+    rcf = ocf - div
+    nd, nd_inputs, nd_tags = net_debt(facts, period_end, filed_before)
+
+    if nd <= 0:
+        raise MissingDataError(f"Net debt is zero or negative for {period_end} — ratio undefined for net-cash companies")
+
+    inputs = {"operating_cashflow": ocf, "dividends_paid": div, **nd_inputs}
+    tags = {"operating_cashflow": ocf_tag, **nd_tags}
+    if div_tag:
+        tags["dividends_paid"] = div_tag
+
+    return RatioResult(
+        name="rcf_net_debt",
+        value=rcf / nd,
+        inputs=inputs,
+        source_tags=tags,
+        period_end=period_end,
+    )
+
+
+def maturity_coverage_near_term(facts, period_end, filed_before=None):
+    """
+    Maturity Coverage (Near-Term) = Cash / Year-1 Debt Maturities.
+    Uses the same XBRL maturity tags already in concepts.py (debt_maturity_y1).
+    MissingDataError if Year-1 maturities not tagged (common — many filers omit).
+    MissingDataError if Year-1 maturities is zero (no near-term maturities = not a stress signal).
+    A ratio below 1.0x means cash cannot cover the next 12 months of maturities alone.
+    """
+    cash, cash_tag = _resolve(facts, "cash", period_end, filed_before)
+    y1, y1_tag = _resolve(facts, "debt_maturity_y1", period_end, filed_before)
+    if y1 == 0:
+        raise MissingDataError(f"Year-1 debt maturities is zero for {period_end}")
+    return RatioResult(
+        name="maturity_coverage_near_term",
+        value=cash / y1,
+        inputs={"cash": cash, "debt_maturity_y1": y1},
+        source_tags={"cash": cash_tag, "debt_maturity_y1": y1_tag},
+        period_end=period_end,
+    )
+
+
 def debt_maturity_schedule(
     facts: dict,
     period_end: str,
@@ -556,6 +845,10 @@ def debt_maturity_schedule(
 _RATIO_FUNCTIONS = [
     leverage, interest_coverage, free_cash_flow, fcf_margin, ebitda_margin, liquidity,
     cash_flow_to_debt, debt_to_assets, current_ratio,
+    # 10 additional metrics
+    debt_to_equity, revenue_yoy_growth, asset_coverage, tangible_asset_coverage,
+    liquidation_asset_coverage, quick_ratio, ocf_ebitda_conversion, moody_adjusted_fcf,
+    rcf_net_debt, maturity_coverage_near_term,
 ]
 
 
@@ -573,6 +866,16 @@ RATIO_INPUTS: dict[str, list[str]] = {
     "cash_flow_to_debt":     ["operating_cashflow", "total_debt", "short_term_debt"],
     "debt_to_assets":        ["total_debt", "short_term_debt", "total_assets"],
     "current_ratio":         ["current_assets", "current_liabilities"],
+    "debt_to_equity":             ["total_debt", "short_term_debt", "stockholders_equity"],
+    "revenue_yoy_growth":         ["revenue"],
+    "asset_coverage":             ["total_assets", "total_debt", "short_term_debt"],
+    "tangible_asset_coverage":    ["total_assets", "goodwill", "intangible_assets", "deferred_tax_asset", "total_debt", "short_term_debt"],
+    "liquidation_asset_coverage": ["cash", "accounts_receivable", "inventory", "ppe_net", "total_debt", "short_term_debt"],
+    "quick_ratio":                ["current_assets", "current_liabilities", "inventory", "prepaid_expenses"],
+    "ocf_ebitda_conversion":      ["operating_cashflow", "operating_income", "depreciation"],
+    "moody_adjusted_fcf":         ["operating_cashflow", "depreciation", "dividends_paid"],
+    "rcf_net_debt":               ["operating_cashflow", "dividends_paid", "total_debt", "cash"],
+    "maturity_coverage_near_term":["cash", "debt_maturity_y1"],
 }
 
 
