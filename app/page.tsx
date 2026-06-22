@@ -399,12 +399,10 @@ export default function Dashboard() {
                 onClick={() => setFilterOpen(o => !o)}
                 aria-haspopup="dialog"
                 aria-expanded={filterOpen}
-                className={`relative inline py-2 text-sm font-medium transition-colors hover:text-slate-900 ${
-                  filterOpen || sortField !== 'default' ? 'text-slate-900' : 'text-slate-400'
-                }`}
+                className="relative inline-flex items-center gap-1 text-xs text-slate-400 hover:text-slate-600 transition-colors"
               >
-                {/* Funnel / filter icon — inline so the hover underline spans it too. */}
-                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="inline-block align-[-0.125em] mr-1">
+                {/* Funnel / filter icon — same 12px size as the Refresh icon. */}
+                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                   <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
                 </svg>
                 Filters
