@@ -36,6 +36,46 @@ export interface IssuerSummary {
   current_ratio: number | null          // current_assets / current_liabilities
   score: number | null             // 0–100 stress score; null when no ratios are stored yet
   alerts: string[]                // human-readable triggered threshold messages
+  implied_rating?: string | null  // S&P-style implied rating letter (e.g. "BBB-"); null when uncomputable
+  rating_index?: number | null    // its position in RATING_SCALE (0 = AAA) — used for sorting
+  outlook?: string | null         // Rating Outlook: "Positive" | "Stable" | "Negative" | null
+}
+
+/**
+ * Rating Outlook — a directional signal (where the rating is headed) from the
+ * trend of the ratio-derived score plus the implied-vs-agency gap (Stage 0).
+ * Returned at the issuer level by GET /api/issuer/{ticker}.
+ */
+export interface RatingOutlook {
+  outlook: 'Positive' | 'Stable' | 'Negative'
+  trend_pressure: number          // -1 improving, 0 flat, +1 worsening (from the score/rating trend)
+  gap_pressure: number            // -1, 0, +1 (from implied − agency gap; 0 until agency data exists)
+  gap: number | null              // implied − agency rating_index (+ = implied worse); null when no agency rating
+  rating_change: number | null    // implied rating_index change over the window (+ = worse)
+  score_change: number | null     // stress-score change over the window (+ = worse)
+  reasons: string[]               // human-readable "why" lines (the auditable explanation)
+  periods_used: number
+}
+
+/**
+ * S&P-style implied credit rating for one fiscal period (from src/rating.py).
+ * Derived deterministically from the period's ratios — orthogonal to the stress score.
+ */
+export interface ImpliedRating {
+  implied_rating: string                  // rating letter, e.g. "BBB-"
+  rating_index: number                    // position in RATING_SCALE (0 = AAA)
+  financial_risk_profile: string          // e.g. "Intermediate"
+  financial_risk_index: number            // 1..6 (1 = Minimal)
+  business_risk_index: number             // 1..6 (1 = Excellent); default until supplied
+  // Per-sub-factor audit: { ffo_to_debt: { value, profile, profile_name, source_ratio, overridden }, ... }
+  subscores: Record<string, {
+    value: number | null
+    profile: number | null
+    profile_name: string | null
+    source_ratio: string
+    overridden: boolean
+  }>
+  notes: string[]                         // human-readable explanation lines (proxy caveat, overrides, …)
 }
 
 /**
@@ -104,6 +144,45 @@ export interface LossProvision {
 }
 
 /**
+ * One debt instrument enumerated from the debt footnote (LLM, hybrid), with its
+ * seniority — the basis for issue-level notching and the senior-secured screen.
+ */
+export interface BondInstrument {
+  instrument_name: string
+  seniority: 'senior_secured' | 'senior_unsecured' | 'subordinated' | 'other'
+  principal_amount: number | null
+  coupon: number | null
+  maturity_year: number | null
+  evidence_quote: string
+  source: string
+}
+
+/**
+ * One signed driver behind a migration prediction (baseline-difference attribution).
+ * `contribution` is in probability points (+ raised downgrade risk, − lowered it).
+ */
+export interface MigrationDriver {
+  feature: string
+  value: number | null
+  baseline: number
+  contribution: number
+  direction: 'raises' | 'lowers'
+}
+
+/**
+ * Calibrated rating-migration prediction for one period (Stage 3 model). Present
+ * only after the model has been trained and predictions written; null otherwise.
+ */
+export interface MigrationPrediction {
+  horizon_months: number
+  p_downgrade: number | null
+  p_upgrade: number | null
+  p_default: number | null
+  drivers_json: MigrationDriver[]
+  model_version: string
+}
+
+/**
  * All data for one fiscal year of one issuer.
  * Returned as an array in the IssuerDetail response, newest period first.
  */
@@ -118,6 +197,9 @@ export interface PeriodData {
   covenants?: Covenant[]              // LLM-extracted covenants (empty if no LLM review)
   loss_provisions?: LossProvision[]   // LLM-extracted provisions (empty if no LLM review)
   source_url?: string | null          // public SEC EDGAR URL of the 10-K these ratios came from
+  implied_rating?: ImpliedRating | null  // S&P-style implied rating (null when uncomputable)
+  bond_instruments?: BondInstrument[]  // LLM-extracted debt instruments + seniority (empty if no LLM review)
+  migration?: MigrationPrediction | null  // calibrated migration prediction (null until the model runs)
 }
 
 /**
@@ -128,6 +210,7 @@ export interface IssuerDetail {
   ticker: string
   name: string                     // company display name, e.g. "Apple Inc."
   periods: PeriodData[]
+  outlook?: RatingOutlook | null   // directional Rating Outlook (null when no usable history)
 }
 
 /**
@@ -480,6 +563,56 @@ export async function saveScoreConfig(config: ScoreConfig): Promise<{ active: Sc
 }
 
 
+// ── Senior-secured screen ─────────────────────────────────────────────────────
+
+/** One ranked row of the senior-secured screen (GET /api/screen/senior-secured). */
+export interface ScreenRow {
+  cik: string
+  ticker: string
+  name: string
+  instrument_name: string | null
+  seniority: string
+  principal_amount: number | null
+  coupon: number | null
+  maturity_year: number | null
+  issuer_implied_rating: string         // issuer's implied rating letter
+  issuer_rating_index: number
+  instrument_notched_rating: string | null  // issuer rating notched for seniority
+  instrument_notched_index: number | null
+  outlook: string | null                // Rating Outlook (fallback forward filter)
+  p_downgrade: number | null            // calibrated P(downgrade) when the model has run, else null
+  period_end: string
+  evidence_quote: string | null
+  source: string | null
+}
+
+export interface ScreenResponse {
+  meta: {
+    min_rating: string
+    exclude_negative_outlook: boolean
+    seniority: string
+    issuers_with_instruments: number
+    matches: number
+    downgrade_signal: string            // "rating_outlook" until the ML model lands
+  }
+  rows: ScreenRow[]
+}
+
+/**
+ * Fetch the senior-secured screen. `minRating` is the issuer health floor (default
+ * "BBB-"); `excludeNegative` drops issuers with a Negative Rating Outlook.
+ */
+export async function fetchScreen(minRating = 'BBB-', excludeNegative = true): Promise<ScreenResponse> {
+  const params = new URLSearchParams({ min_rating: minRating, exclude_negative: String(excludeNegative) })
+  const res = await fetch(`/api/screen/senior-secured?${params}`)
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Unknown error' }))
+    throw new Error(err.detail || 'Failed to fetch screen')
+  }
+  return res.json()
+}
+
+
 // ── Display formatting helpers ────────────────────────────────────────────────
 // These are pure functions — no side effects, no API calls.
 // Centralised here so every page uses the same formatting logic.
@@ -547,6 +680,81 @@ export function scoreBg(score: number): string {
   if (score >= 50) return 'bg-orange-100 text-orange-800 border border-orange-200'
   if (score >= 25) return 'bg-yellow-100 text-yellow-800 border border-yellow-200'
   return 'bg-green-100 text-green-800 border border-green-200'
+}
+
+/**
+ * The ordered rating scale, best (index 0) to worst. Mirrors src/rating.py's
+ * RATING_SCALE so the frontend can map a stored rating_index back to its letter
+ * (e.g. for the rating trend chart's Y-axis ticks).
+ */
+export const RATING_SCALE = [
+  'AAA',
+  'AA+', 'AA', 'AA-',
+  'A+', 'A', 'A-',
+  'BBB+', 'BBB', 'BBB-',
+  'BB+', 'BB', 'BB-',
+  'B+', 'B', 'B-',
+  'CCC+', 'CCC', 'CCC-',
+] as const
+
+/** Map a rating_index back to its letter (clamped). Returns '—' for null/undefined. */
+export function ratingFromIndex(idx: number | null | undefined): string {
+  if (idx == null) return '—'
+  const i = Math.max(0, Math.min(RATING_SCALE.length - 1, Math.round(idx)))
+  return RATING_SCALE[i]
+}
+
+/**
+ * Return a Tailwind CSS class string for an implied-rating badge, banded by
+ * broad credit grade (parallels scoreBg — but for the rating letter, not the
+ * stress score):
+ *   A- and above  → green   (high investment grade)
+ *   BBB+ … BBB-   → yellow  (low investment grade — the IG floor / crossover)
+ *   BB+ … B-      → orange  (speculative grade)
+ *   CCC and below → red     (distressed)
+ * Matching is by the letter prefix so every +/- notch maps to the right band.
+ */
+export function ratingBg(rating: string): string {
+  if (rating.startsWith('CCC') || rating.startsWith('CC') || rating === 'C' || rating === 'D')
+    return 'bg-red-100 text-red-800 border border-red-200'
+  // BBB must be tested before BB/B since "BBB".startsWith("BB") is also true.
+  if (rating.startsWith('BBB'))
+    return 'bg-yellow-100 text-yellow-800 border border-yellow-200'
+  if (rating.startsWith('BB') || rating.startsWith('B'))
+    return 'bg-orange-100 text-orange-800 border border-orange-200'
+  // AAA, AA*, A* → high investment grade.
+  return 'bg-green-100 text-green-800 border border-green-200'
+}
+
+/**
+ * Visual treatment for a Rating Outlook signal: an arrow + colour banded by
+ * direction. Negative (downgrade pressure) is red with a down arrow, Positive
+ * (upgrade) green with an up arrow, Stable slate with a right arrow.
+ * Note the inversion vs. an equity view: a *downgrade* outlook is the risk, so
+ * Negative is red (bad for a bondholder).
+ */
+export function outlookBadge(outlook: string | null | undefined): { arrow: string; label: string; cls: string } | null {
+  if (!outlook) return null
+  if (outlook === 'Negative') return { arrow: '↓', label: 'Negative', cls: 'bg-red-100 text-red-700 border border-red-200' }
+  if (outlook === 'Positive') return { arrow: '↑', label: 'Positive', cls: 'bg-green-100 text-green-700 border border-green-200' }
+  return { arrow: '→', label: 'Stable', cls: 'bg-slate-100 text-slate-600 border border-slate-200' }
+}
+
+/**
+ * Friendly label + badge classes for a debt instrument's seniority. Senior secured
+ * (best recovery) reads green; subordinated (worst) red; senior unsecured neutral.
+ */
+export function seniorityBadge(seniority: string): { label: string; cls: string } {
+  switch (seniority) {
+    case 'senior_secured':
+      return { label: 'Senior Secured', cls: 'bg-green-100 text-green-800 border border-green-200' }
+    case 'senior_unsecured':
+      return { label: 'Senior Unsecured', cls: 'bg-slate-100 text-slate-700 border border-slate-200' }
+    case 'subordinated':
+      return { label: 'Subordinated', cls: 'bg-red-100 text-red-700 border border-red-200' }
+    default:
+      return { label: 'Other', cls: 'bg-gray-100 text-gray-600 border border-gray-200' }
+  }
 }
 
 /**

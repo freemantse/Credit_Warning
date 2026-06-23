@@ -121,6 +121,27 @@ CREATE TABLE IF NOT EXISTS loss_provisions (
 );
 
 
+-- ── bond_instruments ─────────────────────────────────────────────────────────
+-- LLM-extracted individual debt instruments + their seniority, from the debt
+-- footnote (see footnote_review.extract_bond_instruments). Drives issue-level
+-- notching (rating.notch_instrument) and the senior-secured screen. Numeric fields
+-- are nullable (verbatim-backed only). Same anti-hallucination contract as covenants.
+CREATE TABLE IF NOT EXISTS bond_instruments (
+  id               BIGSERIAL PRIMARY KEY,
+  cik              TEXT NOT NULL,
+  period_end       TEXT NOT NULL,
+  instrument_name  TEXT NOT NULL,                   -- e.g. "5.25% Senior Secured Notes due 2027"
+  seniority        TEXT NOT NULL CHECK (seniority IN ('senior_secured', 'senior_unsecured', 'subordinated', 'other')),
+  principal_amount DOUBLE PRECISION,                -- face/principal in dollars, if quoted
+  coupon           DOUBLE PRECISION,                -- coupon rate %, if quoted
+  maturity_year    INTEGER,                         -- year of maturity, if quoted
+  evidence_quote   TEXT NOT NULL,                   -- verbatim quote from the filing
+  source           TEXT NOT NULL,                   -- e.g. "10-K 2023-09-30, Debt"
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (cik, period_end, instrument_name, evidence_quote)
+);
+
+
 -- ── cases ────────────────────────────────────────────────────────────────────
 -- Backtest case library: the roster of distressed issuers (with their
 -- bankruptcy/Chapter-11 date) and healthy controls (with a pinned anchor date)
@@ -154,6 +175,27 @@ CREATE TABLE IF NOT EXISTS score_config (
 );
 
 
+-- ── implied_ratings ──────────────────────────────────────────────────────────
+-- S&P-style implied credit rating per (cik, period_end), derived deterministically
+-- from the stored ratios (see src.rating.compute_implied_rating). One row per
+-- period — a separate table from `ratios` because a rating is one categorical
+-- result per period, not one value per ratio_name. subscores_json carries the
+-- per-sub-factor audit trail (which ratio fed each, the band it landed in).
+CREATE TABLE IF NOT EXISTS implied_ratings (
+  cik                    TEXT NOT NULL,
+  period_end             TEXT NOT NULL,                  -- fiscal year-end, e.g. "2023-09-30"
+  implied_rating         TEXT NOT NULL,                  -- rating letter, e.g. "BBB-"
+  rating_index           INTEGER NOT NULL,               -- position in RATING_SCALE (0 = AAA)
+  financial_risk_profile TEXT NOT NULL,                  -- e.g. "Intermediate"
+  financial_risk_index   INTEGER NOT NULL,               -- 1..6 (1 = Minimal)
+  business_risk_index    INTEGER NOT NULL,               -- 1..6 (1 = Excellent); default until supplied
+  subscores_json         JSONB NOT NULL DEFAULT '{}',    -- {sub_factor: {value, profile, source_ratio, overridden}}
+  notes_json             JSONB NOT NULL DEFAULT '[]',    -- human-readable explanation lines
+  created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (cik, period_end)
+);
+
+
 -- ── Indexes ──────────────────────────────────────────────────────────────────
 CREATE INDEX IF NOT EXISTS idx_ratios_cik         ON ratios (cik);
 CREATE INDEX IF NOT EXISTS idx_ratios_cik_period  ON ratios (cik, period_end);
@@ -162,6 +204,8 @@ CREATE INDEX IF NOT EXISTS idx_maturities_cik     ON debt_maturities (cik, perio
 CREATE INDEX IF NOT EXISTS idx_covenants_cik      ON covenants (cik, period_end);
 CREATE INDEX IF NOT EXISTS idx_provisions_cik     ON loss_provisions (cik, period_end);
 CREATE INDEX IF NOT EXISTS idx_cases_cik          ON cases (cik);
+CREATE INDEX IF NOT EXISTS idx_implied_ratings_cik ON implied_ratings (cik, period_end);
+CREATE INDEX IF NOT EXISTS idx_bond_instruments_cik ON bond_instruments (cik, period_end);
 -- GIN index so ticker → cik lookups (companies WHERE tickers @> '["AAPL"]') stay fast.
 CREATE INDEX IF NOT EXISTS idx_companies_tickers  ON companies USING GIN (tickers);
 
@@ -178,6 +222,8 @@ ALTER TABLE covenants       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE loss_provisions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cases           ENABLE ROW LEVEL SECURITY;
 ALTER TABLE score_config    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE implied_ratings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE bond_instruments ENABLE ROW LEVEL SECURITY;
 
 -- DROP-then-CREATE makes the policy block re-runnable (CREATE POLICY has no
 -- IF NOT EXISTS, so a bare re-run would otherwise fail with "already exists").
@@ -204,3 +250,9 @@ CREATE POLICY "Public read cases" ON cases FOR SELECT USING (true);
 
 DROP POLICY IF EXISTS "Public read score_config" ON score_config;
 CREATE POLICY "Public read score_config" ON score_config FOR SELECT USING (true);
+
+DROP POLICY IF EXISTS "Public read implied_ratings" ON implied_ratings;
+CREATE POLICY "Public read implied_ratings" ON implied_ratings FOR SELECT USING (true);
+
+DROP POLICY IF EXISTS "Public read bond_instruments" ON bond_instruments;
+CREATE POLICY "Public read bond_instruments" ON bond_instruments FOR SELECT USING (true);

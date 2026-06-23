@@ -470,6 +470,237 @@ def save_maturities_bulk(
         _client().table("debt_maturities").upsert(rows).execute()
 
 
+def save_implied_ratings_bulk(
+    cik: str,
+    results_by_period: dict[str, Any],
+    **_,
+) -> None:
+    """
+    Persist implied credit ratings for MANY periods in one upsert round-trip.
+
+    `results_by_period` maps period_end → ImpliedRatingResult (see
+    src.rating.compute_implied_rating). One row per period; same
+    overwrite-on-PK-conflict semantics as save_ratios_bulk, so re-tracking an
+    issuer refreshes its ratings rather than duplicating them. Periods whose
+    rating couldn't be computed (None) are simply absent from the dict.
+    """
+    cik = cik.zfill(10)
+    rows = [
+        {
+            "cik": cik,
+            "period_end": period_end,
+            "implied_rating": r.implied_rating,
+            "rating_index": r.rating_index,
+            "financial_risk_profile": r.financial_risk_profile,
+            "financial_risk_index": r.financial_risk_index,
+            "business_risk_index": r.business_risk_index,
+            "subscores_json": r.subscores,   # Python dict → JSONB
+            "notes_json": r.notes,           # Python list → JSONB
+        }
+        for period_end, r in results_by_period.items()
+    ]
+    if rows:
+        _client().table("implied_ratings").upsert(rows).execute()
+
+
+# ── Agency ratings + ML labels (ratings data workstream) ─────────────────────
+
+# Columns persisted to agency_ratings / rating_labels, mirroring
+# supabase/schema_ratings_addon.sql. Listed explicitly so an event/label dict with
+# extra keys (e.g. the transient "ric") is projected to exactly the table's columns.
+_AGENCY_RATING_COLUMNS = (
+    "cik", "agency", "effective_date", "rating_index", "rating_raw",
+    "rating_status", "rating_action", "source_permid", "source_ric",
+)
+_RATING_LABEL_COLUMNS = (
+    "cik", "period_end", "agency", "rating_index",
+    "rating_index_3m", "rating_index_6m", "rating_index_12m",
+    "label_3m", "label_6m", "label_12m", "notch_change_12m", "default_12m",
+)
+
+
+def save_agency_ratings_bulk(events: list[dict[str, Any]], **_) -> None:
+    """
+    Upsert event-grain agency-rating actions (one row per cik+agency+effective_date).
+
+    `events` are the crosswalked event dicts from src.ratings (after attach_cik). CIK
+    is zero-padded; only the table's columns are sent. Same overwrite-on-PK-conflict
+    semantics as the other bulk writers, so re-ingesting a drop is idempotent.
+    """
+    rows = [
+        {**{c: e.get(c) for c in _AGENCY_RATING_COLUMNS}, "cik": str(e["cik"]).zfill(10)}
+        for e in events
+    ]
+    if rows:
+        _client().table("agency_ratings").upsert(rows).execute()
+
+
+def save_rating_labels_bulk(labels: list[dict[str, Any]], **_) -> None:
+    """
+    Upsert ML label rows (one per cik+period_end+agency) from build_rating_labels.
+    CIK zero-padded; projected to the rating_labels columns.
+    """
+    rows = [
+        {**{c: lab.get(c) for c in _RATING_LABEL_COLUMNS}, "cik": str(lab["cik"]).zfill(10)}
+        for lab in labels
+    ]
+    if rows:
+        _client().table("rating_labels").upsert(rows).execute()
+
+
+def get_rating_scale(**_) -> list[dict[str, Any]]:
+    """Return the rating_scale lookup rows ordered by rating_index (0=AAA…21=D)."""
+    res = (
+        _client()
+        .table("rating_scale")
+        .select("rating_index, sp_fitch, moody, grade")
+        .order("rating_index")
+        .execute()
+    )
+    return list(res.data)
+
+
+def agency_rating_asof(cik: str, agency: str, as_of: str, **_) -> dict[str, Any] | None:
+    """
+    The most recent agency-rating action on/before `as_of` (point-in-time correct).
+
+    Returns {effective_date, rating_index, rating_status, rating_action} or None when
+    the issuer had no action by that date. The query filters effective_date <= as_of
+    and takes the latest, so it never reads a future action.
+    """
+    res = (
+        _client()
+        .table("agency_ratings")
+        .select("effective_date, rating_index, rating_status, rating_action")
+        .eq("cik", cik.zfill(10))
+        .eq("agency", agency)
+        .lte("effective_date", as_of)
+        .order("effective_date", desc=True)
+        .limit(1)
+        .execute()
+    )
+    return res.data[0] if res.data else None
+
+
+# ── Migration predictions + model registry (Stage 3) ─────────────────────────
+
+_MIGRATION_PREDICTION_COLUMNS = (
+    "cik", "period_end", "horizon_months", "p_downgrade", "p_upgrade",
+    "p_default", "drivers_json", "model_version",
+)
+
+
+def save_migration_predictions_bulk(rows: list[dict[str, Any]], **_) -> None:
+    """
+    Upsert calibrated migration predictions (one row per cik+period_end+horizon).
+    Written offline by src.model.predict; read by the API/screen. CIK zero-padded;
+    projected to the migration_predictions columns.
+    """
+    out = [
+        {**{c: r.get(c) for c in _MIGRATION_PREDICTION_COLUMNS},
+         "cik": str(r["cik"]).zfill(10),
+         "horizon_months": int(r.get("horizon_months") or 12)}
+        for r in rows
+    ]
+    if out:
+        _client().table("migration_predictions").upsert(out).execute()
+
+
+def get_migration_predictions_grouped(cik: str | None = None, **_) -> dict[str, dict[str, dict]]:
+    """
+    Fetch migration predictions in ONE query, grouped as cik → period_end → row.
+
+    Resilient to the table not existing yet (Stage 3 not deployed): returns {} on
+    any query error, so the API/screen degrade gracefully to the rule-based outlook.
+    """
+    def build():
+        q = (
+            _client()
+            .table("migration_predictions")
+            .select(",".join(_MIGRATION_PREDICTION_COLUMNS))
+            .order("cik").order("period_end")
+        )
+        return q.eq("cik", cik.zfill(10)) if cik is not None else q
+
+    out: dict[str, dict[str, dict]] = {}
+    try:
+        rows = _fetch_all(build)
+    except Exception:
+        return {}
+    for row in rows:
+        out.setdefault(row["cik"], {})[row["period_end"]] = row
+    return out
+
+
+def save_model_registry(*, version: str, artifact_path: str, feature_list: list,
+                        train_window: dict, metrics: dict, **_) -> None:
+    """Upsert the single active model_registry row (id='active')."""
+    from datetime import datetime, timezone
+    _client().table("model_registry").upsert({
+        "id": "active",
+        "version": version,
+        "artifact_path": artifact_path,
+        "feature_list": feature_list,
+        "train_window": train_window,
+        "metrics_json": metrics,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }).execute()
+
+
+def get_model_registry(**_) -> dict[str, Any] | None:
+    """Return the active model_registry row, or None (incl. when the table is absent)."""
+    try:
+        res = _client().table("model_registry").select("*").eq("id", "active").limit(1).execute()
+    except Exception:
+        return None
+    return res.data[0] if res.data else None
+
+
+def get_agency_ratings_grouped(cik: str | None = None, **_) -> dict[str, dict[str, list[dict]]]:
+    """
+    Fetch agency-rating events in ONE query, grouped as cik → agency → [events],
+    each agency's events sorted by effective_date ascending.
+
+    Used to derive point-in-time features such as time-in-rating (months since the
+    last action). Pass a cik to scope to one issuer; omit it to read everything.
+    """
+    def build():
+        q = (
+            _client()
+            .table("agency_ratings")
+            .select(",".join(_AGENCY_RATING_COLUMNS))
+            .order("cik").order("agency").order("effective_date")  # stable + chronological
+        )
+        return q.eq("cik", cik.zfill(10)) if cik is not None else q
+
+    out: dict[str, dict[str, list[dict]]] = {}
+    for row in _fetch_all(build):
+        out.setdefault(row["cik"], {}).setdefault(row["agency"], []).append(row)
+    return out
+
+
+def get_rating_labels_grouped(cik: str | None = None, **_) -> dict[str, dict[str, dict[str, dict]]]:
+    """
+    Fetch rating labels in ONE query, grouped as cik → period_end → agency → row.
+
+    Each row is the label dict the ML trainer consumes. Pass a cik to scope to one
+    issuer; omit it to read the whole training set.
+    """
+    def build():
+        q = (
+            _client()
+            .table("rating_labels")
+            .select(",".join(_RATING_LABEL_COLUMNS))
+            .order("cik").order("period_end").order("agency")  # stable order for paging
+        )
+        return q.eq("cik", cik.zfill(10)) if cik is not None else q
+
+    out: dict[str, dict[str, dict[str, dict]]] = {}
+    for row in _fetch_all(build):
+        out.setdefault(row["cik"], {}).setdefault(row["period_end"], {})[row["agency"]] = row
+    return out
+
+
 def save_covenants(
     cik: str,
     period_end: str,
@@ -530,6 +761,38 @@ def save_loss_provisions(
     ]
     if rows:
         _client().table("loss_provisions").upsert(rows, ignore_duplicates=True).execute()
+
+
+def save_bond_instruments(
+    cik: str,
+    period_end: str,
+    instruments: list[Any],
+    **_,
+) -> None:
+    """
+    Persist LLM-extracted bond instruments (with seniority) for one (cik, period_end).
+
+    Same ignore_duplicates semantics as save_covenants; UNIQUE constraint covers
+    (cik, period_end, instrument_name, evidence_quote), so re-running the review on
+    a period won't multiply rows.
+    """
+    cik = cik.zfill(10)
+    rows = [
+        {
+            "cik": cik,
+            "period_end": period_end,
+            "instrument_name": b.instrument_name,
+            "seniority": b.seniority,
+            "principal_amount": b.principal_amount,
+            "coupon": b.coupon,
+            "maturity_year": b.maturity_year,
+            "evidence_quote": b.evidence_quote,
+            "source": b.source,
+        }
+        for b in instruments
+    ]
+    if rows:
+        _client().table("bond_instruments").upsert(rows, ignore_duplicates=True).execute()
 
 
 # ── Read operations ──────────────────────────────────────────────────────────
@@ -784,6 +1047,41 @@ def get_maturities_grouped(cik: str | None = None, **_) -> dict[str, dict[str, d
     return out
 
 
+def get_implied_ratings_grouped(cik: str | None = None, **_) -> dict[str, dict[str, dict]]:
+    """
+    Fetch implied ratings in ONE query, grouped as cik → period_end → rating dict.
+
+    Each rating dict is {implied_rating, rating_index, financial_risk_profile,
+    financial_risk_index, business_risk_index, subscores, notes} — the same shape
+    the API attaches to each period. Pass a cik to scope to one issuer (detail
+    page); omit it to fetch every issuer at once (portfolio list).
+    """
+    def build():
+        q = (
+            _client()
+            .table("implied_ratings")
+            .select(
+                "cik, period_end, implied_rating, rating_index, financial_risk_profile, "
+                "financial_risk_index, business_risk_index, subscores_json, notes_json"
+            )
+            .order("cik").order("period_end")  # stable order for paging
+        )
+        return q.eq("cik", cik.zfill(10)) if cik is not None else q
+
+    out: dict[str, dict[str, dict]] = {}
+    for row in _fetch_all(build):
+        out.setdefault(row["cik"], {})[row["period_end"]] = {
+            "implied_rating": row["implied_rating"],
+            "rating_index": row["rating_index"],
+            "financial_risk_profile": row["financial_risk_profile"],
+            "financial_risk_index": row["financial_risk_index"],
+            "business_risk_index": row["business_risk_index"],
+            "subscores": row.get("subscores_json") or {},
+            "notes": row.get("notes_json") or [],
+        }
+    return out
+
+
 def get_covenants_grouped(cik: str | None = None, **_) -> dict[str, dict[str, list[dict]]]:
     """Fetch covenants in ONE query, grouped as cik → period_end → [covenants]."""
     def build():
@@ -839,22 +1137,55 @@ def get_loss_provisions_grouped(cik: str | None = None, **_) -> dict[str, dict[s
     return out
 
 
+def get_bond_instruments_grouped(cik: str | None = None, **_) -> dict[str, dict[str, list[dict]]]:
+    """Fetch bond instruments in ONE query, grouped as cik → period_end → [instruments]."""
+    def build():
+        q = (
+            _client()
+            .table("bond_instruments")
+            .select(
+                "cik, period_end, instrument_name, seniority, principal_amount, "
+                "coupon, maturity_year, evidence_quote, source"
+            )
+            .order("id")  # stable order for paging (BIGSERIAL primary key)
+        )
+        return q.eq("cik", cik.zfill(10)) if cik is not None else q
+
+    out: dict[str, dict[str, list[dict]]] = {}
+    for row in _fetch_all(build):
+        out.setdefault(row["cik"], {}).setdefault(row["period_end"], []).append({
+            "instrument_name": row["instrument_name"],
+            "seniority": row["seniority"],
+            "principal_amount": row["principal_amount"],
+            "coupon": row["coupon"],
+            "maturity_year": row["maturity_year"],
+            "evidence_quote": row["evidence_quote"],
+            "source": row["source"],
+        })
+    return out
+
+
 def delete_issuer(cik: str, **_) -> None:
     """
-    Hard-delete all stored data for a company from all three tables.
+    Hard-delete all stored data for a company from every table.
 
     Called when the user clicks "Remove" in the portfolio dashboard.
-    All per-company rows (ratios, findings, maturities, covenants, loss
-    provisions) and the companies identity row are cleared so the issuer no
-    longer appears anywhere.
+    All per-company rows (ratios, implied ratings, findings, maturities,
+    covenants, loss provisions) and the companies identity row are cleared so the
+    issuer no longer appears anywhere.
     """
     cik = cik.zfill(10)
     client = _client()
     client.table("ratios").delete().eq("cik", cik).execute()
+    client.table("implied_ratings").delete().eq("cik", cik).execute()
+    client.table("agency_ratings").delete().eq("cik", cik).execute()
+    client.table("rating_labels").delete().eq("cik", cik).execute()
+    client.table("migration_predictions").delete().eq("cik", cik).execute()
     client.table("llm_findings").delete().eq("cik", cik).execute()
     client.table("debt_maturities").delete().eq("cik", cik).execute()
     client.table("covenants").delete().eq("cik", cik).execute()
     client.table("loss_provisions").delete().eq("cik", cik).execute()
+    client.table("bond_instruments").delete().eq("cik", cik).execute()
     resp = client.table("companies").delete().eq("cik", cik).execute()
     if not resp.data:
         raise ValueError(

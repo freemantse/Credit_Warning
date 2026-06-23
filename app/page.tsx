@@ -16,7 +16,7 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import {
   IssuerSummary, fetchIssuers, trackIssuer, deleteIssuer,
-  fmtRatio, fmtFCF, fmtPct, scoreLabel, scoreBg,
+  fmtRatio, fmtFCF, fmtPct, scoreLabel, scoreBg, ratingBg, outlookBadge,
 } from '@/lib/api'
 
 // ── Sorting model ────────────────────────────────────────────────────────────
@@ -25,7 +25,7 @@ import {
 // the rest map 1:1 to numeric ratio fields on IssuerSummary. 'default' keeps
 // the order the API returned (as-added).
 type SortField =
-  | 'default' | 'status' | 'period'
+  | 'default' | 'status' | 'period' | 'rating'
   | 'ebitda_margin' | 'leverage' | 'interest_coverage' | 'free_cash_flow'
   | 'liquidity' | 'cash_flow_to_debt' | 'current_ratio' | 'debt_to_assets'
 
@@ -35,6 +35,7 @@ type SortDir = 'asc' | 'desc'
 // status, chronological period, then each ratio.
 const SORT_FIELDS: { key: SortField; label: string }[] = [
   { key: 'status',            label: 'Status (risk score)' },
+  { key: 'rating',            label: 'Implied Rating' },
   { key: 'period',            label: 'Latest period (date)' },
   { key: 'ebitda_margin',     label: 'EBITDA Margin' },
   { key: 'leverage',          label: 'Leverage' },
@@ -50,6 +51,7 @@ const SORT_FIELDS: { key: SortField; label: string }[] = [
 // status runs healthy↔stressed, period runs old↔new, ratios run low↔high.
 function dirLabels(field: SortField): { asc: string; desc: string } {
   if (field === 'status') return { asc: 'Healthy → Stressed', desc: 'Stressed → Healthy' }
+  if (field === 'rating') return { asc: 'Best → Worst (AAA→CCC)', desc: 'Worst → Best (CCC→AAA)' }
   if (field === 'period') return { asc: 'Oldest first',        desc: 'Newest first' }
   return { asc: 'Lowest first', desc: 'Highest first' }
 }
@@ -59,6 +61,7 @@ function dirLabels(field: SortField): { asc: string; desc: string } {
 // chronological), or null when the issuer has no value for that field.
 function sortValue(iss: IssuerSummary, field: SortField): number | string | null {
   if (field === 'status') return iss.score
+  if (field === 'rating') return iss.rating_index ?? null
   if (field === 'period') return iss.latest_period
   // The remaining fields are all numeric ratio keys on IssuerSummary. (Never
   // called with 'default' — sorting is skipped entirely in that case.)
@@ -517,14 +520,15 @@ export default function Dashboard() {
               <colgroup>
                 <col className="w-[10%]" />  {/* Ticker */}
                 <col className="w-[7%]" />   {/* Latest Period */}
-                <col className="w-[8.25%]" />{/* EBITDA Margin */}
-                <col className="w-[8.25%]" />{/* Leverage */}
-                <col className="w-[8.25%]" />{/* Interest Coverage */}
-                <col className="w-[8.25%]" />{/* FCF */}
-                <col className="w-[8.25%]" />{/* Liquidity */}
-                <col className="w-[8.25%]" />{/* Cash Flow / Debt */}
-                <col className="w-[8.25%]" />{/* Current Ratio */}
-                <col className="w-[8.25%]" />{/* Debt / Assets */}
+                <col className="w-[7.5%]" /> {/* EBITDA Margin */}
+                <col className="w-[7.5%]" /> {/* Leverage */}
+                <col className="w-[7.5%]" /> {/* Interest Coverage */}
+                <col className="w-[7.5%]" /> {/* FCF */}
+                <col className="w-[7.5%]" /> {/* Liquidity */}
+                <col className="w-[7.5%]" /> {/* Cash Flow / Debt */}
+                <col className="w-[7.5%]" /> {/* Current Ratio */}
+                <col className="w-[7.5%]" /> {/* Debt / Assets */}
+                <col className="w-[6%]" />   {/* Implied Rating */}
                 <col className="w-[4%]" />   {/* Score */}
                 <col className="w-[7%]" />   {/* Status */}
                 <col className="w-[6%]" />   {/* Remove */}
@@ -543,6 +547,7 @@ export default function Dashboard() {
                   <th className="px-2 py-3 text-right">Cash Flow / Debt</th>
                   <th className="px-2 py-3 text-right">Current Ratio</th>
                   <th className="px-2 py-3 text-right">Debt / Assets</th>
+                  <th className="px-2 py-3 text-center">Implied Rating</th>
                   <th className="px-2 py-3 text-center">Score</th>
                   <th className="px-2 py-3 text-center">Status</th>
                   {/* Remove button column, no header */}
@@ -601,6 +606,31 @@ export default function Dashboard() {
                     <td className="px-2 py-4 text-right font-mono text-slate-700">{fmtPct(iss.cash_flow_to_debt)}</td>
                     <td className="px-2 py-4 text-right font-mono text-slate-700">{fmtRatio(iss.current_ratio)}</td>
                     <td className="px-2 py-4 text-right font-mono text-slate-700">{fmtPct(iss.debt_to_assets)}</td>
+
+                    {/* Implied S&P-style rating badge + directional outlook arrow
+                        (both null when uncomputable). */}
+                    <td className="px-2 py-4 text-center">
+                      {iss.implied_rating ? (
+                        <div className="inline-flex items-center gap-1">
+                          <span className={`inline-block text-xs font-mono font-semibold px-2.5 py-1 rounded-full whitespace-nowrap ${ratingBg(iss.implied_rating)}`}>
+                            {iss.implied_rating}
+                          </span>
+                          {(() => {
+                            const ob = outlookBadge(iss.outlook)
+                            return ob ? (
+                              <span
+                                className={`inline-block text-xs font-bold px-1.5 py-1 rounded-full ${ob.cls}`}
+                                title={`Outlook: ${ob.label}`}
+                              >
+                                {ob.arrow}
+                              </span>
+                            ) : null
+                          })()}
+                        </div>
+                      ) : (
+                        <span className="text-slate-300">—</span>
+                      )}
+                    </td>
 
                     {/* Score as a rounded integer — the exact value is shown in the detail page.
                         null = no ratios stored yet (e.g. tracking couldn't extract any), shown as —. */}
@@ -701,12 +731,22 @@ export default function Dashboard() {
       {/* ── Score legend ──
           Explains the four colour bands shown in the Status column.
           These cut-points mirror the scoreLabel() and scoreBg() functions in lib/api.ts. */}
-      <div className="flex gap-4 text-xs text-slate-400">
-        <span>Score:</span>
-        <span className="text-green-600">0–24 Healthy</span>
-        <span className="text-yellow-600">25–49 Watch</span>
-        <span className="text-orange-600">50–74 Stressed</span>
-        <span className="text-red-600">75–100 High Risk</span>
+      <div className="flex flex-col gap-1 text-xs text-slate-400">
+        <div className="flex gap-4">
+          <span>Score:</span>
+          <span className="text-green-600">0–24 Healthy</span>
+          <span className="text-yellow-600">25–49 Watch</span>
+          <span className="text-orange-600">50–74 Stressed</span>
+          <span className="text-red-600">75–100 High Risk</span>
+        </div>
+        <div className="flex gap-4">
+          <span>Implied Rating:</span>
+          <span className="text-green-600">A− & up</span>
+          <span className="text-yellow-600">BBB (IG floor)</span>
+          <span className="text-orange-600">BB–B (speculative)</span>
+          <span className="text-red-600">CCC & below</span>
+          <span className="text-slate-400">· S&P-style, ratio-derived</span>
+        </div>
       </div>
 
       {/* ── Remove-confirmation modal ──

@@ -60,7 +60,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from src.extract import RatioResult
+from src.extract import RatioResult, recover_ebitda
 
 
 # ── Tunable parameters ─────────────────────────────────────────────────────────
@@ -247,24 +247,6 @@ def _ramp(
     return round(frac * max_pts, 1)
 
 
-def _ebitda(ratios: dict[str, RatioResult]) -> float | None:
-    """
-    Recover the period's EBITDA value from whichever ratio carries it in its
-    inputs (operating_income + depreciation). ebitda_margin, leverage, and
-    interest_coverage all store these inputs; we check them in turn.
-
-    Returns the EBITDA value, or None if no ratio with those inputs was computed.
-    Used by the sign-aware leverage/coverage override.
-    """
-    for name in ("ebitda_margin", "leverage", "interest_coverage"):
-        r = ratios.get(name)
-        if isinstance(r, RatioResult):
-            inp = r.inputs
-            if "operating_income" in inp and "depreciation" in inp:
-                return inp["operating_income"] + inp["depreciation"]
-    return None
-
-
 def compute_score(
     ratios: dict[str, RatioResult],
     findings: list[Any] | None = None,
@@ -328,7 +310,7 @@ def compute_score(
 
     # EBITDA value (operating_income + depreciation) recovered from the ratio
     # inputs. Drives the sign-aware override on leverage and coverage below.
-    ebitda_value = _ebitda(ratios)
+    ebitda_value = recover_ebitda(ratios)
     ebitda_negative = ebitda_value is not None and ebitda_value <= 0
 
     rules = config.rules  # {rule_key: {weight, healthy, severe}}

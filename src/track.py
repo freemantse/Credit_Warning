@@ -43,13 +43,16 @@ from src.extract import (
 from src.store import (
     save_company,
     save_ratios_bulk,
+    save_implied_ratings_bulk,
     save_findings,
     save_maturities_bulk,
     save_covenants,
     save_loss_provisions,
+    save_bond_instruments,
     get_periods,
 )
 from src.score import compute_score, STRESS_THRESHOLD
+from src.rating import compute_implied_rating
 from src.concepts import MissingDataError
 
 
@@ -175,6 +178,15 @@ def track(ticker: str, n_periods: int | None = None, include_llm: bool = True) -
     results_by_period = {period: extract_all(facts, period) for period in periods}
     save_ratios_bulk(cik, results_by_period)
 
+    # Step 4a2: Implied credit ratings — pure compute over the ratios just
+    # extracted, bulk-saved alongside them (periods that can't be rated are omitted).
+    ratings_by_period = {
+        period: r
+        for period in periods
+        if (r := compute_implied_rating(results_by_period[period])) is not None
+    }
+    save_implied_ratings_bulk(cik, ratings_by_period)
+
     # Step 4b: Debt maturity schedules are pure XBRL compute (no LLM, no filing
     # fetch), so extract them for every period and bulk-save alongside the ratios.
     maturities_by_period = {
@@ -198,10 +210,11 @@ def track(ticker: str, n_periods: int | None = None, include_llm: bool = True) -
                 filings = get_filings(cik, ["10-K"])
 
                 from src.footnote_review import review_filing
-                findings, covenants, provisions = review_filing(cik, period, filings)
+                findings, covenants, provisions, instruments = review_filing(cik, period, filings)
                 save_findings(cik, period, findings)
                 save_covenants(cik, period, covenants)
                 save_loss_provisions(cik, period, provisions)
+                save_bond_instruments(cik, period, instruments)
 
             except Exception as e:
                 # LLM review is best-effort — ratio data is already saved.

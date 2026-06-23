@@ -556,6 +556,26 @@ def debt_maturity_schedule(
     )
 
 
+def recover_ebitda(ratios: dict[str, "RatioResult | MissingRatio"]) -> float | None:
+    """
+    Recover a period's EBITDA value (operating_income + depreciation) from
+    whichever extracted ratio carries those inputs. ebitda_margin, leverage, and
+    interest_coverage all store them; we check them in turn.
+
+    Returns the EBITDA value, or None if no ratio with those inputs was computed.
+    Shared by score.py (the sign-aware leverage/coverage override) and rating.py
+    (the EBITDA<=0 guard on the Debt/EBITDA & coverage sub-factors), so the EBITDA
+    recovery logic lives in exactly one place.
+    """
+    for name in ("ebitda_margin", "leverage", "interest_coverage"):
+        r = ratios.get(name)
+        if isinstance(r, RatioResult):
+            inp = r.inputs
+            if "operating_income" in inp and "depreciation" in inp:
+                return inp["operating_income"] + inp["depreciation"]
+    return None
+
+
 # ── Batch extraction ─────────────────────────────────────────────────────────
 
 # This list drives extract_all(). Adding a new ratio function here is all

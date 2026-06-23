@@ -19,9 +19,10 @@ import {
   XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer,
 } from 'recharts'
 import {
-  IssuerDetail, PeriodData, Finding, Covenant, LossProvision,
+  IssuerDetail, PeriodData, Finding, Covenant, LossProvision, RatingOutlook, BondInstrument,
   fetchIssuer, trackIssuer, startLlmReview, fetchLlmReviewStatus,
   fmtRatio, fmtFCF, fmtPct, scoreBg, scoreLabel, severityDot,
+  ratingBg, ratingFromIndex, RATING_SCALE, outlookBadge, seniorityBadge,
 } from '@/lib/api'
 
 // How many period rows to show per page in the Ratio History table.
@@ -38,8 +39,10 @@ const TREND_METRICS: {
   fmt: (v: number) => string
   domain?: [number, number]
   threshold?: number
+  reversed?: boolean   // invert the Y-axis (used by Implied Rating so AAA sits at top)
 }[] = [
   { key: 'score',             label: 'Stress Score',      accessor: p => p.score,                       fmt: v => `${Math.round(v)}`, domain: [0, 100], threshold: 50 },
+  { key: 'implied_rating',    label: 'Implied Rating',    accessor: p => p.implied_rating?.rating_index, fmt: v => ratingFromIndex(v), domain: [0, RATING_SCALE.length - 1], reversed: true },
   { key: 'ebitda_margin',     label: 'EBITDA Margin',     accessor: p => p.ratios.ebitda_margin?.value,     fmt: fmtPct },
   { key: 'leverage',          label: 'Leverage',          accessor: p => p.ratios.leverage?.value,          fmt: fmtRatio },
   { key: 'interest_coverage', label: 'Interest Coverage', accessor: p => p.ratios.interest_coverage?.value, fmt: fmtRatio },
@@ -328,6 +331,8 @@ export default function IssuerPage() {
                 />
                 <YAxis
                   domain={metric.domain ?? ['auto', 'auto']}  // score uses a fixed 0–100; ratios auto-scale
+                  reversed={metric.reversed}                   // Implied Rating: AAA (index 0) at the top
+                  allowDecimals={!metric.reversed}             // rating ticks are integer indices → letters
                   tick={{ fontSize: 11, fill: '#94a3b8' }}
                   tickFormatter={(v: number) => metric.fmt(v)}
                   width={48}
@@ -358,6 +363,11 @@ export default function IssuerPage() {
               </LineChart>
             </ResponsiveContainer>
           </div>
+
+          {/* ── Implied credit rating ──────────────────────────────────── */}
+          {/* S&P-style rating for the latest period, with its sub-factor breakdown
+              and the directional Rating Outlook. */}
+          <RatingProfileSection periods={data.periods} outlook={data.outlook} />
 
           {/* ── Ratio history table ────────────────────────────────────── */}
           {/* Each row shows one fiscal year's ratios and score. */}
@@ -522,6 +532,9 @@ export default function IssuerPage() {
 
           {/* Maintenance covenants — LLM-extracted from the debt footnote. */}
           <CovenantsSection periods={data.periods} />
+
+          {/* Bond instruments + seniority — LLM-extracted from the debt footnote. */}
+          <BondInstrumentsSection periods={data.periods} />
 
           {/* Loss provisions — LLM-extracted from the contingencies footnote. */}
           <LossProvisionsSection periods={data.periods} />
@@ -1055,6 +1068,193 @@ function MaturityWallSection({ periods }: { periods: PeriodData[] }) {
 }
 
 
+// ── RatingProfileSection component ────────────────────────────────────────────
+//
+// Shows the S&P-style implied credit rating for the most recent period that has
+// one, plus the three sub-factors that drove it (FFO/Debt, Debt/EBITDA, interest
+// coverage) and which financial-risk band each landed in. This is the rating
+// analogue of the AuditPanel — it makes the letter fully traceable to the ratios.
+
+// Friendly labels for the three rating sub-factors.
+const _SUBFACTOR_LABEL: Record<string, string> = {
+  ffo_to_debt: 'FFO / Debt',
+  debt_to_ebitda: 'Debt / EBITDA',
+  ebitda_to_interest: 'EBITDA / Interest',
+}
+
+// Format a sub-factor's raw value for display: FFO/Debt is a fraction (→ %),
+// the other two are multiples (→ ×).
+function fmtSubfactor(sub: string, value: number | null): string {
+  if (value == null) return '—'
+  if (sub === 'ffo_to_debt') return fmtPct(value)
+  return fmtRatio(value)
+}
+
+function RatingProfileSection({ periods, outlook }: { periods: PeriodData[]; outlook?: RatingOutlook | null }) {
+  // Use the most recent period that actually carries an implied rating.
+  const period = periods.find(p => p.implied_rating)
+  const rating = period?.implied_rating
+  if (!period || !rating) return null
+
+  const ob = outlookBadge(outlook?.outlook)
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      <div className="px-6 py-4 border-b border-gray-100 flex items-baseline justify-between gap-4">
+        <div>
+          <h2 className="font-semibold text-slate-800">Implied Credit Rating</h2>
+          <p className="text-xs text-slate-400 mt-0.5">
+            S&amp;P-style rating derived from the period&apos;s ratios (not an agency rating) · {period.period_end}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {ob && (
+            <span className={`inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-lg whitespace-nowrap ${ob.cls}`} title="Rating Outlook">
+              {ob.arrow} {ob.label}
+            </span>
+          )}
+          <span className={`inline-block text-base font-mono font-bold px-3 py-1 rounded-lg whitespace-nowrap ${ratingBg(rating.implied_rating)}`}>
+            {rating.implied_rating}
+          </span>
+        </div>
+      </div>
+
+      <div className="p-6 space-y-4">
+
+        {/* Directional Rating Outlook — trend + (when available) the implied-vs-agency
+            gap. The reasons are the auditable "why" behind the arrow. */}
+        {outlook && ob && (
+          <div className="rounded-lg border border-gray-200 bg-slate-50 p-3">
+            <p className="text-sm">
+              <span className="font-semibold text-slate-700">Outlook:</span>{' '}
+              <span className={`font-semibold ${outlook.outlook === 'Negative' ? 'text-red-700' : outlook.outlook === 'Positive' ? 'text-green-700' : 'text-slate-600'}`}>
+                {ob.arrow} {outlook.outlook}
+              </span>
+              <span className="text-slate-400"> — where the rating looks headed, from the score trend{outlook.gap != null ? ' and the implied-vs-agency gap' : ''}.</span>
+            </p>
+            {outlook.reasons.length > 0 && (
+              <ul className="mt-2 space-y-1">
+                {outlook.reasons.map((r, i) => (
+                  <li key={i} className="flex items-start gap-2 text-xs text-slate-500">
+                    <span className="mt-1 w-1 h-1 rounded-full bg-slate-300 flex-shrink-0" />
+                    {r}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+
+        {/* Calibrated migration prediction (Stage 3 model) — present once trained. */}
+        <MigrationPredictionBlock periods={periods} />
+        {/* Profile summary line. */}
+        <p className="text-sm text-slate-600">
+          Financial risk profile:{' '}
+          <span className="font-semibold text-slate-800">{rating.financial_risk_profile}</span>
+          {' '}· business risk:{' '}
+          <span className="font-semibold text-slate-800">{BUSINESS_RISK_LABEL[rating.business_risk_index] ?? rating.business_risk_index}</span>
+        </p>
+
+        {/* Sub-factor breakdown — one card per sub-factor, showing its value and band. */}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          {Object.entries(rating.subscores).map(([sub, s]) => (
+            <div key={sub} className="bg-slate-50 rounded-lg border border-gray-200 p-3">
+              <p className="text-xs font-semibold text-slate-700">{_SUBFACTOR_LABEL[sub] ?? sub}</p>
+              <p className="mt-1 font-mono text-lg text-slate-800">{fmtSubfactor(sub, s.value)}</p>
+              <p className="mt-0.5 text-xs text-slate-500">
+                {s.profile_name ?? 'no data'}
+                {s.overridden && <span className="text-orange-600"> · forced (EBITDA ≤ 0)</span>}
+              </p>
+              <p className="mt-1 text-[10px] text-slate-300 font-mono truncate" title={s.source_ratio}>
+                {s.source_ratio}
+              </p>
+            </div>
+          ))}
+        </div>
+
+        {/* Methodology / honesty notes from the rating engine. */}
+        {rating.notes.length > 0 && (
+          <ul className="space-y-1 border-t border-gray-100 pt-3">
+            {rating.notes.map((note, i) => (
+              <li key={i} className="flex items-start gap-2 text-xs text-slate-500">
+                <span className="mt-1 w-1 h-1 rounded-full bg-slate-300 flex-shrink-0" />
+                {note}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// Business-risk index → label (1 = Excellent … 6 = Vulnerable), mirroring
+// src/rating.py's BUSINESS_RISK_PROFILES.
+const BUSINESS_RISK_LABEL: Record<number, string> = {
+  1: 'Excellent', 2: 'Strong', 3: 'Satisfactory', 4: 'Fair', 5: 'Weak', 6: 'Vulnerable',
+}
+
+// Friendly labels for the model's feature drivers (mirrors the feature columns).
+function driverLabel(feature: string): string {
+  return feature
+    .replace(/_yoy$/, ' (Δ)')
+    .replace(/_/g, ' ')
+    .replace(/\bpct\b/, '%')
+}
+
+// Calibrated migration prediction for the latest period that has one. Renders
+// nothing until the Stage 3 model has been trained and predictions written.
+function MigrationPredictionBlock({ periods }: { periods: PeriodData[] }) {
+  const period = periods.find(p => p.migration)
+  const m = period?.migration
+  if (!period || !m) return null
+
+  const pct = (v: number | null) => (v == null ? '—' : `${(v * 100).toFixed(0)}%`)
+  return (
+    <div className="rounded-lg border border-gray-200 bg-white p-3">
+      <div className="flex items-center gap-4 flex-wrap">
+        <span className="text-sm font-semibold text-slate-700">
+          Predicted {m.horizon_months}-month migration
+        </span>
+        <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-red-50 text-red-700 border border-red-100">
+          Downgrade {pct(m.p_downgrade)}
+        </span>
+        <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-green-50 text-green-700 border border-green-100">
+          Upgrade {pct(m.p_upgrade)}
+        </span>
+        {m.p_default != null && (
+          <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-slate-100 text-slate-600 border border-slate-200">
+            Default {pct(m.p_default)}
+          </span>
+        )}
+        <span className="text-[10px] text-slate-300 font-mono ml-auto">{m.model_version}</span>
+      </div>
+      {m.drivers_json.length > 0 && (
+        <div className="mt-2">
+          <p className="text-xs text-slate-400 mb-1">Top drivers of downgrade risk:</p>
+          <ul className="space-y-1">
+            {m.drivers_json.map((d, i) => (
+              <li key={i} className="flex items-center gap-2 text-xs">
+                <span className={d.contribution > 0 ? 'text-red-600' : 'text-green-600'}>
+                  {d.contribution > 0 ? '▲' : '▼'}
+                </span>
+                <span className="text-slate-600">{driverLabel(d.feature)}</span>
+                <span className="text-slate-400 font-mono">
+                  {d.value == null ? 'n/a' : d.value}
+                </span>
+                <span className="text-slate-400 ml-auto font-mono">
+                  {d.contribution > 0 ? '+' : ''}{(d.contribution * 100).toFixed(1)} pts
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  )
+}
+
+
 // ── CovenantsSection component ────────────────────────────────────────────────
 //
 // Aggregates LLM-extracted maintenance covenants across all periods into a table.
@@ -1113,6 +1313,55 @@ function CovenantsSection({ periods }: { periods: PeriodData[] }) {
             <SourceLink sourceUrl={c.source_url} quote={c.evidence_quote} label={c.source} />
           </div>
         )}
+      />
+    </div>
+  )
+}
+
+
+// ── BondInstrumentsSection component ──────────────────────────────────────────
+//
+// LLM-extracted debt instruments + seniority across all periods. Mirrors
+// CovenantsSection. Each row shows the instrument, a seniority badge, coupon /
+// maturity / principal (where quote-backed), and the verbatim quote.
+
+function BondInstrumentsSection({ periods }: { periods: PeriodData[] }) {
+  const all = periods.flatMap(p =>
+    (p.bond_instruments ?? []).map(b => ({ ...b, period: p.period_end, source_url: p.source_url }))
+  )
+  if (all.length === 0) return null
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      <div className="px-6 py-4 border-b border-gray-100">
+        <h2 className="font-semibold text-slate-800">Debt Instruments &amp; Seniority</h2>
+        <p className="text-xs text-slate-400 mt-0.5">
+          Extracted from the debt footnote. Seniority drives the senior-secured screen and
+          issue-level notching. Figures shown only when quoted verbatim.
+        </p>
+      </div>
+      <YearGroupedList
+        items={all}
+        itemNoun="instrument"
+        renderItem={(b: BondInstrument & { period: string; source_url?: string | null }, i) => {
+          const sb = seniorityBadge(b.seniority)
+          return (
+            <div key={i} className="px-6 py-4">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-medium text-sm text-slate-800">{b.instrument_name}</span>
+                <span className="text-xs text-slate-400 font-mono">{b.period}</span>
+                <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${sb.cls}`}>{sb.label}</span>
+                {b.coupon != null && <span className="text-xs text-slate-500 font-mono">{b.coupon.toFixed(2)}%</span>}
+                {b.maturity_year != null && <span className="text-xs text-slate-500 font-mono">due {b.maturity_year}</span>}
+                {b.principal_amount != null && <span className="text-xs text-slate-500 font-mono">{fmtMoney(b.principal_amount)}</span>}
+              </div>
+              <blockquote className="mt-2 text-xs text-slate-500 italic border-l-2 border-slate-200 pl-3">
+                "{b.evidence_quote}"
+              </blockquote>
+              <SourceLink sourceUrl={b.source_url} quote={b.evidence_quote} label={b.source} />
+            </div>
+          )
+        }}
       />
     </div>
   )

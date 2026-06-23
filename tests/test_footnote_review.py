@@ -60,22 +60,35 @@ PROVISION_RESPONSE = json.dumps([
         "source": "10-K 2023-12-31, Contingencies",
     }
 ])
+SENIORITY_RESPONSE = json.dumps([
+    {
+        "instrument_name": "Senior Notes due 2027",
+        "seniority": "senior_unsecured",
+        "principal_amount": None,
+        "coupon": None,
+        "maturity_year": 2027,
+        "evidence_quote": "Our senior notes bear interest at a fixed rate and mature in 2027",
+        "source": "10-K 2023-12-31, Debt",
+    }
+])
 
 
-def test_review_filing_runs_three_passes_on_one_fetch():
+def test_review_filing_runs_four_passes_on_one_fetch():
     client = MagicMock()
+    # Call order: MD&A → debt(covenants) → debt(instruments) → contingencies.
     client.messages.create.side_effect = [
         _mock_message(MDNA_RESPONSE),
         _mock_message(COVENANT_RESPONSE),
+        _mock_message(SENIORITY_RESPONSE),
         _mock_message(PROVISION_RESPONSE),
     ]
     with patch("src.ingest.get_filing_text", return_value=_build_filing()) as fetch:
-        findings, covenants, provisions = review_filing(
+        findings, covenants, provisions, instruments = review_filing(
             "0000000001", "2023-12-31", [FILING], client=client
         )
 
     assert fetch.call_count == 1
-    assert client.messages.create.call_count == 3
+    assert client.messages.create.call_count == 4
 
     assert len(findings) == 1
     assert findings[0].severity == "high"
@@ -84,12 +97,15 @@ def test_review_filing_runs_three_passes_on_one_fetch():
     assert covenants[0].threshold == 4.0  # number appears in its quote → kept
     assert len(provisions) == 1
     assert provisions[0].is_material
+    assert len(instruments) == 1
+    assert instruments[0].seniority == "senior_unsecured"
+    assert instruments[0].maturity_year == 2027  # appears in its quote → kept
 
 
 def test_review_filing_sends_located_sections_not_raw_html():
     client = MagicMock()
     client.messages.create.side_effect = [
-        _mock_message("[]"), _mock_message("[]"), _mock_message("[]"),
+        _mock_message("[]"), _mock_message("[]"), _mock_message("[]"), _mock_message("[]"),
     ]
     with patch("src.ingest.get_filing_text", return_value=_build_filing()):
         review_filing("0000000001", "2023-12-31", [FILING], client=client)
@@ -120,9 +136,10 @@ def test_review_filing_drops_unverifiable_quotes():
         _mock_message("[]"),
         _mock_message(fabricated_covenant),
         _mock_message("[]"),
+        _mock_message("[]"),
     ]
     with patch("src.ingest.get_filing_text", return_value=_build_filing()):
-        _, covenants, _ = review_filing(
+        _, covenants, _, _ = review_filing(
             "0000000001", "2023-12-31", [FILING], client=client
         )
     assert covenants == []
@@ -132,7 +149,7 @@ def test_review_filing_no_matching_filing_returns_empty():
     client = MagicMock()
     with patch("src.ingest.get_filing_text") as fetch:
         result = review_filing("0000000001", "1999-12-31", [FILING], client=client)
-    assert result == ([], [], [])
+    assert result == ([], [], [], [])
     assert fetch.call_count == 0
     assert client.messages.create.call_count == 0
 

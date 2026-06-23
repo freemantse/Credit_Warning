@@ -88,6 +88,35 @@ Rules:
 """
 
 
+SENIORITY_PROMPT = """You are a credit analyst reading the DEBT footnote of a SEC 10-K filing.
+Enumerate the company's individual DEBT INSTRUMENTS (notes, bonds, term loans,
+debentures, credit facilities) and classify each by SENIORITY in the capital
+structure — this determines recovery in default:
+- "senior_secured":   secured / collateralized, or explicitly "senior secured" (best recovery)
+- "senior_unsecured": senior but unsecured (e.g. "senior notes", most investment-grade bonds)
+- "subordinated":     subordinated / junior / mezzanine (worst recovery)
+- "other":            if seniority cannot be determined from the text
+
+Return a JSON array. Each instrument must be:
+{
+  "instrument_name": "<short name, e.g. '5.25% Senior Secured Notes due 2027'>",
+  "seniority": "senior_secured" | "senior_unsecured" | "subordinated" | "other",
+  "principal_amount": <face/principal in dollars if stated, else null>,
+  "coupon": <coupon rate as a percent number, e.g. 5.25, if stated, else null>,
+  "maturity_year": <four-digit year of maturity if stated, else null>,
+  "evidence_quote": "<verbatim excerpt, max 240 chars, containing any number you report>",
+  "source": "<the filing label provided>"
+}
+
+Rules:
+- Every number you put in principal_amount, coupon, or maturity_year MUST appear verbatim in evidence_quote.
+- If a number is not explicitly stated, use null — never estimate or infer.
+- Classify seniority ONLY from explicit language; when unclear use "other".
+- evidence_quote must be a direct quote, not a paraphrase.
+- Omit instruments you cannot quote. Return [] if no debt instruments are described.
+"""
+
+
 @dataclass
 class Covenant:
     """
@@ -114,6 +143,30 @@ class LossProvision:
     is_material: bool
     qualitative_flag: str           # e.g. "reasonably possible loss, not accrued"
     evidence_quote: str             # verbatim quote (required)
+    source: str
+
+
+# Seniority tiers, best-recovery → worst. Drives the issue-level notching in
+# rating.notch_instrument and the senior-secured screen (Stage 4).
+_SENIORITIES = ("senior_secured", "senior_unsecured", "subordinated", "other")
+
+
+@dataclass
+class BondInstrument:
+    """
+    One debt instrument enumerated from the debt footnote, with its seniority.
+
+    Same hybrid/anti-hallucination contract as Covenant: principal_amount, coupon,
+    and maturity_year are kept only when the figure appears verbatim in
+    evidence_quote; otherwise nulled. seniority drives issue-level notching off the
+    issuer's implied rating (senior secured notched up, subordinated down).
+    """
+    instrument_name: str               # e.g. "5.25% Senior Secured Notes due 2027"
+    seniority: str                     # senior_secured | senior_unsecured | subordinated | other
+    principal_amount: float | None     # face/principal in dollars, if quoted
+    coupon: float | None               # coupon rate %, if quoted (e.g. 5.25)
+    maturity_year: int | None          # year of maturity, if quoted
+    evidence_quote: str                # verbatim quote (required)
     source: str
 
 
@@ -229,6 +282,40 @@ def _validate_provision(raw: dict, fallback_source: str) -> LossProvision | None
     )
 
 
+def _validate_instrument(raw: dict, fallback_source: str) -> BondInstrument | None:
+    """Validate one raw bond-instrument dict; drop any number not backed by the quote."""
+    if not isinstance(raw, dict):
+        return None
+    instrument_name = str(raw.get("instrument_name", "")).strip()
+    evidence_quote = str(raw.get("evidence_quote", "")).strip()
+    if not instrument_name or not evidence_quote:
+        return None
+
+    seniority = str(raw.get("seniority", "")).strip().lower()
+    if seniority not in _SENIORITIES:
+        seniority = "other"
+
+    principal = _to_float(raw.get("principal_amount"))
+    coupon = _to_float(raw.get("coupon"))
+    year = _to_float(raw.get("maturity_year"))
+    # Drop any figure not present verbatim in the quote.
+    if not _number_in_text(principal, evidence_quote):
+        principal = None
+    if not _number_in_text(coupon, evidence_quote):
+        coupon = None
+    maturity_year = int(year) if (year is not None and _number_in_text(year, evidence_quote)) else None
+
+    return BondInstrument(
+        instrument_name=instrument_name[:200],
+        seniority=seniority,
+        principal_amount=principal,
+        coupon=coupon,
+        maturity_year=maturity_year,
+        evidence_quote=evidence_quote[:240],
+        source=str(raw.get("source", "") or fallback_source).strip(),
+    )
+
+
 # Max section characters sent per footnote LLM call. The located sections are
 # capped at 40k chars by sections.py; this is the single trim applied here.
 MAX_SECTION_CHARS = 40_000
@@ -314,21 +401,40 @@ def extract_loss_provisions(
     return [p for p in out if p is not None and quote_in_text(p.evidence_quote, excerpt)]
 
 
+def extract_bond_instruments(
+    section_text: str,
+    filing_label: str,
+    client: anthropic.Anthropic | None = None,
+) -> list[BondInstrument]:
+    """
+    Enumerate debt instruments + their seniority from a located debt-footnote slice.
+
+    Same validation contract as extract_debt_footnote: numeric fields (principal,
+    coupon, maturity year) must be quote-backed or they are nulled; instruments
+    without a verifiable quote are dropped entirely. Runs on the SAME debt section
+    the covenant pass uses (one locate, two reads).
+    """
+    raw, excerpt = _extract(section_text, filing_label, SENIORITY_PROMPT, client)
+    out = [_validate_instrument(r, filing_label) for r in raw]
+    return [b for b in out if b is not None and quote_in_text(b.evidence_quote, excerpt)]
+
+
 def review_filing(
     cik: str,
     period: str,
     filings: list[dict],
     client: anthropic.Anthropic | None = None,
-) -> tuple[list[Finding], list[Covenant], list[LossProvision]]:
+) -> tuple[list[Finding], list[Covenant], list[LossProvision], list[BondInstrument]]:
     """
     End-to-end LLM review for one period's 10-K: fetch → locate → extract.
 
     Shared by the CLI (track.py) and the API (api/main.py) so the locate-then-LLM
     flow lives in one place. The filing is fetched once and locate_sections runs
-    once; three extraction passes follow:
+    once; four extraction passes follow:
       1. MD&A          → qualitative Findings (llm_review.review_text)
       2. debt footnote → Covenants
-      3. contingencies → LossProvisions
+      3. debt footnote → BondInstruments (seniority; same located section as 2)
+      4. contingencies → LossProvisions
 
     The MD&A pass runs ONLY on the located Item 7 section. If the section can't
     be found there is no fallback to the head of the raw HTML — that was the old
@@ -342,14 +448,14 @@ def review_filing(
     Imports ingest/sections lazily to avoid pulling the HTTP/parsing stack into
     modules that only need the dataclasses.
 
-    Returns ([], [], []) if no matching filing or no sections are found.
+    Returns ([], [], [], []) if no matching filing or no sections are found.
     """
     from src.ingest import filing_doc_url, find_filing_for_period, get_filing_text
     from src.sections import locate_sections
 
     filing = find_filing_for_period(filings, period)
     if filing is None:
-        return [], [], []
+        return [], [], [], []
 
     text = get_filing_text(cik, filing["accessionNumber"], filing["primaryDocument"])
     # Public EDGAR URL of this document, so qualitative findings can deep-link
@@ -360,6 +466,7 @@ def review_filing(
     findings: list[Finding] = []
     covenants: list[Covenant] = []
     provisions: list[LossProvision] = []
+    instruments: list[BondInstrument] = []
     if sections["mdna"] is not None:
         findings = review_text(
             sections["mdna"].text, f"10-K {period}, MD&A", client, source_url=doc_url
@@ -368,8 +475,11 @@ def review_filing(
         covenants = extract_debt_footnote(
             sections["debt"].text, f"10-K {period}, Debt", client
         )
+        instruments = extract_bond_instruments(
+            sections["debt"].text, f"10-K {period}, Debt", client
+        )
     if sections["contingencies"] is not None:
         provisions = extract_loss_provisions(
             sections["contingencies"].text, f"10-K {period}, Contingencies", client
         )
-    return findings, covenants, provisions
+    return findings, covenants, provisions, instruments

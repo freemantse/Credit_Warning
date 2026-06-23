@@ -5,3 +5,13 @@ fastapi
 uvicorn[standard]
 supabase
 python-dotenv
+# Ratings-data workstream (Stage 1+): CSV ingest / crosswalk / label-building.
+pandas
+# Rating-migration model (Stage 3): the offline trainer/predictor/backtest.
+# scikit-learn supplies the monotonic HistGradientBoostingClassifier (a
+# LightGBM-style histogram booster), the LogisticRegression baseline, and isotonic
+# calibration — no GPU/extra native deps. lightgbm + shap are OPTIONAL upgrades
+# (drop-in for the booster and per-prediction attribution); the code degrades to
+# sklearn-only without them. Only imported by src/model/* (offline CLI), never by
+# the API hot path.
+scikit-learn

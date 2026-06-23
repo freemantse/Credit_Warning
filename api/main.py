@@ -54,6 +54,7 @@ from src.ingest import (
     resolve_identifier,
 )
 from src.score import DEFAULT_CONFIG, ScoreConfig, compute_score
+from src.rating import compute_implied_rating, rating_outlook, OUTLOOK_DEFAULT, RatingOutlookResult
 from src.store import (
     add_case,
     delete_case,
@@ -61,17 +62,22 @@ from src.store import (
     get_case,
     get_cik_by_ticker,
     get_company,
+    get_bond_instruments_grouped,
     get_covenants_grouped,
     get_findings_grouped,
+    get_implied_ratings_grouped,
     get_issuers,
     get_loss_provisions_grouped,
+    get_migration_predictions_grouped,
     get_maturities_grouped,
     get_ratios_grouped,
     get_score_config,
     list_cases,
+    save_bond_instruments,
     save_company,
     save_covenants,
     save_findings,
+    save_implied_ratings_bulk,
     save_loss_provisions,
     save_maturities_bulk,
     save_ratios_bulk,
@@ -149,6 +155,22 @@ def _to_ratio_results(full_ratios: dict, period_end: str) -> dict[str, RatioResu
     }
 
 
+def _outlook_payload(res: RatingOutlookResult | None) -> dict | None:
+    """Shape a RatingOutlookResult into the JSON dict the frontend consumes (or None)."""
+    if res is None:
+        return None
+    return {
+        "outlook": res.outlook,
+        "trend_pressure": res.trend_pressure,
+        "gap_pressure": res.gap_pressure,
+        "gap": res.gap,
+        "rating_change": res.rating_change,
+        "score_change": res.score_change,
+        "reasons": res.reasons,
+        "periods_used": res.periods_used,
+    }
+
+
 def _resolve_cik_for_read(identifier: str) -> str:
     """
     Resolve a ticker-or-CIK path param to a canonical CIK for read endpoints.
@@ -198,6 +220,7 @@ def list_issuers():
     maturities_by_cik = get_maturities_grouped()       # 1 query for every issuer's maturities
     covenants_by_cik = get_covenants_grouped()         # 1 query for every issuer's covenants
     provisions_by_cik = get_loss_provisions_grouped()  # 1 query for every issuer's provisions
+    ratings_by_cik = get_implied_ratings_grouped()     # 1 query for every issuer's implied ratings
 
     result = []
     for issuer in issuers:
@@ -224,6 +247,9 @@ def list_issuers():
                 "current_ratio": None,
                 "score": None,
                 "alerts": [],
+                "implied_rating": None,
+                "rating_index": None,
+                "outlook": None,
             })
             continue
 
@@ -252,6 +278,32 @@ def list_issuers():
             r = full_ratios.get(name)
             return r["value"] if r else None
 
+        # Latest-period implied rating (None when it couldn't be computed).
+        cik_ratings = ratings_by_cik.get(cik, {})
+        rating = cik_ratings.get(latest)
+
+        # Rating Outlook: build the recent (period → rating_index, score) series and
+        # derive the directional signal. Scores for the window are recomputed from
+        # already-loaded ratios (compute_score is pure/fast) so portfolio and detail
+        # outlooks use identical inputs. Agency gap is None until Stage 1 data lands.
+        outlook_series = []
+        for per in periods[-OUTLOOK_DEFAULT.window:]:
+            rr = _to_ratio_results(by_period[per], per)
+            sc = compute_score(
+                rr,
+                findings_by_cik.get(cik, {}).get(per, []),
+                maturities_by_cik.get(cik, {}).get(per),
+                covenants_by_cik.get(cik, {}).get(per, []),
+                provisions_by_cik.get(cik, {}).get(per, []),
+                config=_active_config(),
+            )
+            outlook_series.append({
+                "period_end": per,
+                "rating_index": (cik_ratings.get(per) or {}).get("rating_index"),
+                "score": sc.score,
+            })
+        outlook = rating_outlook(outlook_series)
+
         result.append({
             "cik": cik,
             "ticker": issuer["ticker"],
@@ -269,6 +321,9 @@ def list_issuers():
             "current_ratio": _v("current_ratio"),
             "score": score_result.score,
             "alerts": score_result.alerts,
+            "implied_rating": rating["implied_rating"] if rating else None,
+            "rating_index": rating["rating_index"] if rating else None,
+            "outlook": outlook.outlook if outlook else None,
         })
     return result
 
@@ -321,6 +376,16 @@ def _track_one(identifier: str, *, no_llm: bool = True, periods: int | None = No
     results_by_period = {period: extract_all(facts, period) for period in periods}
     save_ratios_bulk(cik, results_by_period)
 
+    # Step 5a2: Implied credit ratings are pure compute over the ratios just
+    # extracted (no extra EDGAR round-trip), so derive and bulk-save them here.
+    # Periods whose rating can't be computed (too few sub-factors) are omitted.
+    ratings_by_period = {
+        period: r
+        for period in periods
+        if (r := compute_implied_rating(results_by_period[period])) is not None
+    }
+    save_implied_ratings_bulk(cik, ratings_by_period)
+
     # Step 5b: Debt maturity schedules are pure XBRL compute (no LLM, no filing
     # fetch) — extract for every period and bulk-save, always (even when no_llm).
     maturities_by_period = {
@@ -337,12 +402,13 @@ def _track_one(identifier: str, *, no_llm: bool = True, periods: int | None = No
         for period in periods:
             try:
                 from src.footnote_review import review_filing
-                findings_list, covenants, provisions = review_filing(
+                findings_list, covenants, provisions, instruments = review_filing(
                     cik, period, filings
                 )
                 save_findings(cik, period, findings_list)
                 save_covenants(cik, period, covenants)
                 save_loss_provisions(cik, period, provisions)
+                save_bond_instruments(cik, period, instruments)
             except Exception:
                 # LLM review is best-effort; ratio/maturity data has already been
                 # saved. Log it — silent swallowing previously hid pipeline bugs.
@@ -457,6 +523,11 @@ def get_issuer(ticker: str):
     maturities_by_period = get_maturities_grouped(cik).get(cik, {})
     covenants_by_period = get_covenants_grouped(cik).get(cik, {})
     provisions_by_period = get_loss_provisions_grouped(cik).get(cik, {})
+    ratings_by_period = get_implied_ratings_grouped(cik).get(cik, {})
+    instruments_by_period = get_bond_instruments_grouped(cik).get(cik, {})
+    # Migration predictions are optional (Stage 3 / may be undeployed) — the grouped
+    # reader returns {} if the table is absent, so this never fails the issuer load.
+    predictions_by_period = get_migration_predictions_grouped(cik).get(cik, {})
 
     # Per-period source link: the public SEC EDGAR URL of the 10-K each period's
     # ratios were extracted from, so an analyst can trace any figure on the audit
@@ -504,7 +575,22 @@ def get_issuer(ticker: str):
             "covenants": covenants,         # LLM-extracted covenants (may be empty)
             "loss_provisions": provisions,  # LLM-extracted provisions (may be empty)
             "source_url": source_url,       # public SEC EDGAR URL of the source 10-K
+            "implied_rating": ratings_by_period.get(period),  # rating dict or None
+            "bond_instruments": instruments_by_period.get(period, []),  # LLM-extracted (may be empty)
+            "migration": predictions_by_period.get(period),  # calibrated P(down)/P(up)/P(default) + drivers, or None
         })
+
+    # Rating Outlook: directional signal from the full (rating_index, score) history.
+    # Agency gap is None until Stage 1 ratings data is ingested.
+    outlook_series = [
+        {
+            "period_end": p["period_end"],
+            "rating_index": (p["implied_rating"] or {}).get("rating_index"),
+            "score": p["score"],
+        }
+        for p in period_data
+    ]
+    outlook = rating_outlook(outlook_series)
 
     tickers = company.get("tickers") or []
     return {
@@ -512,6 +598,7 @@ def get_issuer(ticker: str):
         "ticker": tickers[0] if tickers else ticker.upper(),
         "name": company.get("name", ""),
         "periods": period_data,
+        "outlook": _outlook_payload(outlook),
     }
 
 
@@ -521,6 +608,32 @@ def remove_issuer(ticker: str):
     cik = _resolve_cik_for_read(ticker)
     delete_issuer(cik)
     return {"status": "deleted", "cik": cik}
+
+
+@app.get("/api/screen/senior-secured")
+def screen_senior_secured_route(
+    min_rating: str = "BBB-",
+    exclude_negative: bool = True,
+):
+    """
+    The senior-secured screen: senior-secured bond instruments of credit-healthy,
+    not-deteriorating issuers, ranked best-first.
+
+    Query params:
+      - min_rating: issuer must be at least this healthy (default "BBB-", the IG floor).
+      - exclude_negative: drop issuers whose Rating Outlook is Negative (default true).
+
+    Returns {meta, rows}. Empty rows until issuers are tracked WITH the LLM pass
+    (bond-instrument extraction runs in the LLM review, off by default), so the page
+    explains how to populate it.
+    """
+    from src.screen import screen_senior_secured
+    try:
+        return screen_senior_secured(
+            min_rating=min_rating, exclude_negative_outlook=exclude_negative
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 # ── On-demand LLM review (per-issuer background task) ────────────────────────
@@ -560,10 +673,11 @@ def _run_llm_review_task(cik: str, periods: list[str]) -> None:
         filings = get_filings(cik, ["10-K"])
         for period in periods:
             try:
-                findings_list, covenants, provisions = review_filing(cik, period, filings)
+                findings_list, covenants, provisions, instruments = review_filing(cik, period, filings)
                 save_findings(cik, period, findings_list)
                 save_covenants(cik, period, covenants)
                 save_loss_provisions(cik, period, provisions)
+                save_bond_instruments(cik, period, instruments)
             except Exception:
                 # Best-effort per period: one bad filing must not abort the rest.
                 logging.warning(

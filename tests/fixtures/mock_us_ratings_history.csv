@@ -1,0 +1,7 @@
+Date,Instrument,CommonName,IssuerRating(BondRatingSrc=MDY),IssuerRating(BondRatingSrc=MDY).date,IssuerRating(BondRatingSrc=FTC),IssuerRating(BondRatingSrc=FTC).date
+2019-12-31,XYZ.O,Xyz Corp,A2,2018-05-01,A,2017-09-01
+2020-12-31,XYZ.O,Xyz Corp,Baa1,2020-03-15,BBB+,2020-04-01
+2021-12-31,XYZ.O,Xyz Corp,Baa1,2020-03-15,BBB+,2020-04-01
+2019-12-31,OLD.PK,Old Co,B3,2019-01-10,B,2019-02-01
+2020-12-31,OLD.PK,Old Co,Ca,2020-06-01,CCC,2020-05-01
+2021-12-31,OLD.PK,Old Co,WR,2021-02-01,D,2021-03-01
