@@ -506,7 +506,7 @@ def save_implied_ratings_bulk(
 # ── Agency ratings + ML labels (ratings data workstream) ─────────────────────
 
 # Columns persisted to agency_ratings / rating_labels, mirroring
-# supabase/schema_ratings_addon.sql. Listed explicitly so an event/label dict with
+# supabase/schema.sql. Listed explicitly so an event/label dict with
 # extra keys (e.g. the transient "ric") is projected to exactly the table's columns.
 _AGENCY_RATING_COLUMNS = (
     "cik", "agency", "effective_date", "rating_index", "rating_raw",

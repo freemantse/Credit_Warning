@@ -6,7 +6,7 @@ worse) — the SAME axis the implied rating uses, so agency and implied ratings 
 directly comparable. This module maps the three agencies' notations onto it and
 classifies non-notch statuses (withdrawn / not-rated / default).
 
-It is the Python-side source of truth for the mapping; supabase/schema_ratings_addon.sql
+It is the Python-side source of truth for the mapping; supabase/schema.sql
 seeds an equivalent `rating_scale` table for SQL-side joins (kept in sync by hand;
 test_ratings_scale asserts they agree).
 """
@@ -100,7 +100,7 @@ def grade_for_index(idx: int | None) -> str | None:
     return "HY"
 
 
-# Rows mirrored by the SQL seed in schema_ratings_addon.sql (rating_index, sp_fitch,
+# Rows mirrored by the SQL seed in schema.sql (rating_index, sp_fitch,
 # moody, grade). Built from the canonical scale so the two never drift.
 _SP_TO_MOODY: dict[str, str] = {v: k for k, v in MOODY_TO_SP.items()}
 RATING_SCALE_ROWS: list[tuple[int, str, str | None, str]] = [
