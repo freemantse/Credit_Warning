@@ -108,19 +108,19 @@ def test_net_cash_negative_leverage_not_penalised():
 
 def test_escalation_floor_four_severe_signals():
     # Four severe core signals (sum well under 60) prove the floor lifts the score
-    # to 60. With 9 core rules the trigger is >= 4 severe.
+    # to 60. With 8 core rules the trigger is >= 4 severe.
     ratios = {
-        "liquidity": make_ratio("liquidity", 0.25),              # severe → 9
-        "current_ratio": make_ratio("current_ratio", 0.75),      # severe → 6
-        "debt_to_assets": make_ratio("debt_to_assets", 0.65),    # severe → 9
-        "fcf_margin": make_ratio("fcf_margin", -0.10),           # severe → 10
+        "liquidity": make_ratio("liquidity", 0.25),                 # severe → 9
+        "cash_flow_to_debt": make_ratio("cash_flow_to_debt", 0.0),  # severe → 15
+        "debt_to_assets": make_ratio("debt_to_assets", 0.65),       # severe → 9
+        "fcf_margin": make_ratio("fcf_margin", -0.10),              # severe → 10
     }
     result = compute_score(ratios, [])
-    # Raw core sum is 9+6+9+10 = 34, but 4 severe signals floor it at 60.
+    # Raw core sum is 9+15+9+10 = 43, but 4 severe signals floor it at 60.
     assert result.score == 60.0
     # Drop one severe signal → only 3 severe → floor no longer applies → raw sum.
     ratios.pop("fcf_margin")
-    assert compute_score(ratios, []).score == 24.0  # 9+6+9
+    assert compute_score(ratios, []).score == 33.0  # 9+15+9
 
 
 def test_profitability_ramp_endpoints():
@@ -178,26 +178,26 @@ def all_severe_ratios():
         "fcf_margin": make_ratio("fcf_margin", -0.20),
         "liquidity": make_ratio("liquidity", 0.0),
         "cash_flow_to_debt": make_ratio("cash_flow_to_debt", 0.0),
-        "current_ratio": make_ratio("current_ratio", 0.0),
         "debt_to_assets": make_ratio("debt_to_assets", 0.95),
     }
 
 
-def test_core_maxima_sum_to_100():
-    # Maturity wall is the 9th core rule; feed it via the maturity arg at severe.
+def test_core_maxima_sum_to_94():
+    # Maturity wall is the 8th core rule; feed it via the maturity arg at severe.
     @dataclass
     class Mat:
         near_term_pct: float = 0.90
     result = compute_score(all_severe_ratios(), [], maturity=Mat())
-    # Every core rule maxed → the 9 rules sum to exactly the 100-pt budget.
-    assert result.score == 100.0
+    # Every core rule maxed → the 8 rules sum to exactly the 94-pt budget
+    # (100 minus the retired 6-pt current-ratio rule).
+    assert result.score == 94.0
 
 
 def test_score_capped_at_100():
-    # Core already maxes to 100; 10 high findings would add 10 more but the
-    # total is capped at 100 (and the combined LLM cap is 15).
+    # Core maxes to 94 (incl. the maturity wall); 10 high findings would push the
+    # total to 104, but it is capped at 100 (and the combined LLM cap is 15).
     findings = [MockFinding("x", "high") for _ in range(10)]
-    result = compute_score(all_severe_ratios(), findings)
+    result = compute_score(all_severe_ratios(), findings, maturity={"near_term_pct": 0.90})
     assert result.score == 100.0
 
 
@@ -241,13 +241,6 @@ def test_debt_to_assets_ramp():
     # healthy 0.40 → 0; severe 0.65 → full 9.
     assert compute_score({"debt_to_assets": make_ratio("debt_to_assets", 0.40)}).breakdown["debt_to_assets>40%"] == 0.0
     assert compute_score({"debt_to_assets": make_ratio("debt_to_assets", 0.65)}).breakdown["debt_to_assets>40%"] == 9.0
-
-
-def test_current_ratio_ramp():
-    # healthy 1.5 → 0; severe 0.75 → full 6; 1.0× → ~67% (4.0 pts).
-    assert compute_score({"current_ratio": make_ratio("current_ratio", 1.5)}).breakdown["current_ratio<1.5x"] == 0.0
-    assert compute_score({"current_ratio": make_ratio("current_ratio", 0.75)}).breakdown["current_ratio<1.5x"] == 6.0
-    assert compute_score({"current_ratio": make_ratio("current_ratio", 1.0)}).breakdown["current_ratio<1.5x"] == 4.0
 
 
 def test_missing_ratios_skip_gracefully():

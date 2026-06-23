@@ -2,15 +2,15 @@
 Deterministic stress scoring per (issuer, period).
 
 How the score is built:
-  The score is an additive sum of rule-based penalties over nine deterministic
-  core rules (max 100 pts combined), plus capped LLM nudges:
+  The score is an additive sum of rule-based penalties over eight deterministic
+  core rules (max 94 pts combined), plus capped LLM nudges:
     - Each quantitative ratio rule contributes points on a linear ramp: 0 while
       the ratio is at or healthier than its threshold, then rising continuously
       to the rule's maximum as the ratio worsens toward a severe extreme (and
       clamped at the maximum beyond it). Thresholds are calibrated to rating-agency
       grids and distress research, so a speculative-grade reading already carries
       roughly half a rule's points.
-    - The nine core rules and their maxima, grouped by what they measure. Debt
+    - The eight core rules and their maxima, grouped by what they measure. Debt
       serviceability dominates, led by the two strongest empirical distress
       predictors (leverage and cash-flow-to-debt):
         Debt serviceability (46):
@@ -20,13 +20,15 @@ How the score is built:
         Earnings / cash generation (24):
           profitability (EBITDA margin)     14
           free cash flow (FCF margin)       10
-        Liquidity (15):
+        Liquidity (9):
           liquidity (cash / short-term debt) 9
-          current ratio                      6
         Solvency (9):
           debt to assets (gearing)           9
         Refinancing (6):
           maturity wall                      6
+    - When the migration model has been trained, these eight weights are REPLACED
+      by model-learned weights (see src/model/train.derive_score_config); the
+      DEFAULT weights above are the pre-training fallback.
     - LLM signals (high-severity findings, covenant proximity, loss provisions)
       contribute up to 15 additional points combined.
     - The total is capped at 100.
@@ -82,7 +84,6 @@ DEFAULT_CONFIG: dict = {
         "cash_flow_to_debt<30%": {"weight": 15.0, "healthy": 0.30, "severe": 0.10},
         "fcf_negative":          {"weight": 10.0, "healthy": 0.0,  "severe": -0.10},
         "liquidity<1x":          {"weight": 9.0,  "healthy": 1.0,  "severe": 0.25},
-        "current_ratio<1.5x":    {"weight": 6.0,  "healthy": 1.5,  "severe": 0.75},
         "debt_to_assets>40%":    {"weight": 9.0,  "healthy": 0.40, "severe": 0.65},
         "maturity_wall":         {"weight": 6.0,  "healthy": 0.30, "severe": 0.80},
     },
@@ -108,7 +109,7 @@ DEFAULT_CONFIG: dict = {
 # stored/merged config dict was constructed.
 _CORE_RULE_KEYS = (
     "profitability", "leverage>5x", "coverage<2x", "cash_flow_to_debt<30%",
-    "fcf_negative", "liquidity<1x", "current_ratio<1.5x", "debt_to_assets>40%",
+    "fcf_negative", "liquidity<1x", "debt_to_assets>40%",
     "maturity_wall",
 )
 
@@ -395,15 +396,6 @@ def compute_score(
     breakdown["cash_flow_to_debt<30%"] = cfd_pts
     if cfd_pts > 0:
         alerts.append(f"Cash flow to debt {cfd * 100:.0f}% weak ({cfd_pts:.0f}/{cfd_w:.0f} pts)")
-
-    # ── Rule 4c: Current ratio < 1.5× ────────────────────────────────────────
-    # current_assets / current_liabilities — working-capital liquidity.
-    cur_w = rules["current_ratio<1.5x"]["weight"]
-    cur = _val("current_ratio")
-    cur_pts = _ramp(cur, rules["current_ratio<1.5x"]["healthy"], rules["current_ratio<1.5x"]["severe"], cur_w)
-    breakdown["current_ratio<1.5x"] = cur_pts
-    if cur_pts > 0:
-        alerts.append(f"Current ratio {cur:.2f}× thin ({cur_pts:.0f}/{cur_w:.0f} pts)")
 
     # ── Rule 4d: Debt to assets > 40% ────────────────────────────────────────
     # gross_debt / total_assets — capital-structure gearing, the sole balance-sheet

@@ -50,7 +50,6 @@ const TREND_METRICS: {
   { key: 'fcf_margin',        label: 'FCF Margin',        accessor: p => p.ratios.fcf_margin?.value,        fmt: fmtPct },
   { key: 'liquidity',         label: 'Liquidity',         accessor: p => p.ratios.liquidity?.value,         fmt: fmtRatio },
   { key: 'cash_flow_to_debt',     label: 'Cash Flow / Debt',   accessor: p => p.ratios.cash_flow_to_debt?.value,     fmt: fmtPct },
-  { key: 'current_ratio',         label: 'Current Ratio',      accessor: p => p.ratios.current_ratio?.value,         fmt: fmtRatio },
   { key: 'debt_to_assets',        label: 'Debt / Assets',      accessor: p => p.ratios.debt_to_assets?.value,        fmt: fmtPct },
 ]
 
@@ -395,7 +394,6 @@ export default function IssuerPage() {
                     <th className="px-4 py-3 text-right">FCF Margin</th>
                     <th className="px-4 py-3 text-right">Liquidity</th>
                     <th className="px-4 py-3 text-right">Cash Flow / Debt</th>
-                    <th className="px-4 py-3 text-right">Current Ratio</th>
                     <th className="px-4 py-3 text-right">Debt / Assets</th>
                     <th className="px-4 py-3 text-center">Score</th>
                     <th className="px-6 py-3 text-center">Status</th>
@@ -425,7 +423,6 @@ export default function IssuerPage() {
                         <td className="px-4 py-3 text-right font-mono text-slate-700">{fmtPct(p.ratios.fcf_margin?.value)}</td>
                         <td className="px-4 py-3 text-right font-mono text-slate-700">{fmtRatio(p.ratios.liquidity?.value)}</td>
                         <td className="px-4 py-3 text-right font-mono text-slate-700">{fmtPct(p.ratios.cash_flow_to_debt?.value)}</td>
-                        <td className="px-4 py-3 text-right font-mono text-slate-700">{fmtRatio(p.ratios.current_ratio?.value)}</td>
                         <td className="px-4 py-3 text-right font-mono text-slate-700">{fmtPct(p.ratios.debt_to_assets?.value)}</td>
 
                         <td className="px-4 py-3 text-center font-mono font-bold text-slate-800">
@@ -440,12 +437,12 @@ export default function IssuerPage() {
 
                       {/*
                         Audit panel row — rendered only when this period's row is open.
-                        Uses colSpan={12} to span the full table width.
+                        Uses colSpan={11} to span the full table width.
                         The AuditPanel component handles the detailed display.
                       */}
                       {openAudit === p.period_end && (
                         <tr>
-                          <td colSpan={12} className="bg-slate-50 px-6 py-4 border-t border-slate-100">
+                          <td colSpan={11} className="bg-slate-50 px-6 py-4 border-t border-slate-100">
                             <AuditPanel period={p} />
                           </td>
                         </tr>
@@ -1229,6 +1226,13 @@ function MigrationPredictionBlock({ periods }: { periods: PeriodData[] }) {
         )}
         <span className="text-[10px] text-slate-300 font-mono ml-auto">{m.model_version}</span>
       </div>
+      {/* Plain-language "why" — the model's reasoning, built server-side. */}
+      {m.reason && (
+        <p className="mt-2 text-sm text-slate-600">
+          <span className="font-medium text-slate-700 capitalize">{m.direction ?? 'change'} likely</span>
+          {' — '}{m.reason}.
+        </p>
+      )}
       {m.drivers_json.length > 0 && (
         <div className="mt-2">
           <p className="text-xs text-slate-400 mb-1">Top drivers of downgrade risk:</p>

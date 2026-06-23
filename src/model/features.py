@@ -31,7 +31,7 @@ from src.rating import rating_outlook, OUTLOOK_DEFAULT, OutlookConfig
 # YoY-delta feature.
 RATIO_FEATURES = [
     "leverage", "interest_coverage", "free_cash_flow", "fcf_margin", "ebitda_margin",
-    "liquidity", "cash_flow_to_debt", "debt_to_assets", "current_ratio",
+    "liquidity", "cash_flow_to_debt", "debt_to_assets",
 ]
 
 ID_COLUMNS = ["cik", "period_end", "agency"]
@@ -59,7 +59,6 @@ FEATURE_COLUMNS = (
 FEATURE_DIRECTIONS: dict[str, int] = {
     "leverage": 1, "interest_coverage": -1, "free_cash_flow": -1, "fcf_margin": -1,
     "ebitda_margin": -1, "liquidity": -1, "cash_flow_to_debt": -1, "debt_to_assets": 1,
-    "current_ratio": -1,
     "implied_rating_index": 1, "financial_risk_index": 1, "stress_score": 1,
     "maturity_near_term_pct": 1, "covenant_near_limit_count": 1,
     "material_provision_count": 1, "outlook_trend_pressure": 1,
@@ -273,14 +272,19 @@ def load_training_matrix(config: dict | None = None):
     """
     DB orchestrator: pull the grouped store reads and assemble the full training
     matrix as a DataFrame. Thin glue over build_issuer_features + merge_labels.
+
+    The `stress_score` FEATURE is computed with DEFAULT_CONFIG (not the active,
+    possibly model-learned config) on purpose: the learned score weights are derived
+    FROM this model, so feeding the learned-weight score back in as a feature would
+    be circular. Display paths use the learned config; training stays on DEFAULT.
     """
     from src.store import (
         get_ratios_grouped, get_implied_ratings_grouped, get_findings_grouped,
         get_maturities_grouped, get_covenants_grouped, get_loss_provisions_grouped,
-        get_rating_labels_grouped, get_agency_ratings_grouped, get_score_config,
+        get_rating_labels_grouped, get_agency_ratings_grouped,
     )
 
-    cfg = ScoreConfig.from_dict(config or get_score_config())
+    cfg = ScoreConfig.from_dict(config) if config else ScoreConfig.from_dict(DEFAULT_CONFIG)
     ratios = get_ratios_grouped()
     implied = get_implied_ratings_grouped()
     findings = get_findings_grouped()
@@ -305,3 +309,47 @@ def load_training_matrix(config: dict | None = None):
 
     rows = merge_labels(features_by_cik, labels, agency_events_by_cik=agency_events)
     return to_dataframe(rows)
+
+
+def build_scoring_matrix():
+    """
+    Assemble feature rows for every (cik, period_end) WITHOUT requiring labels — for
+    live prediction and the migration event backtest. One row per period with the
+    financial features; the agency-conditioning columns (agency_rating_index,
+    implied_vs_agency_gap, time_in_rating_months) are left NaN (no specific agency
+    in the scoring context — the model handles missing values natively).
+
+    Returns a DataFrame with columns [cik, period_end] + FEATURE_COLUMNS, computed
+    with DEFAULT_CONFIG (the stress_score feature stays non-circular).
+    """
+    import pandas as pd
+    from src.store import (
+        get_ratios_grouped, get_implied_ratings_grouped, get_findings_grouped,
+        get_maturities_grouped, get_covenants_grouped, get_loss_provisions_grouped,
+    )
+
+    cfg = ScoreConfig.from_dict(DEFAULT_CONFIG)
+    ratios = get_ratios_grouped()
+    implied = get_implied_ratings_grouped()
+    findings = get_findings_grouped()
+    maturities = get_maturities_grouped()
+    covenants = get_covenants_grouped()
+    provisions = get_loss_provisions_grouped()
+
+    rows: list[dict[str, Any]] = []
+    for cik in set(ratios) | set(implied):
+        feats = build_issuer_features(
+            sorted(ratios.get(cik, {})),
+            ratios_by_period=ratios.get(cik, {}),
+            implied_by_period=implied.get(cik, {}),
+            findings_by_period=findings.get(cik, {}),
+            maturities_by_period=maturities.get(cik, {}),
+            covenants_by_period=covenants.get(cik, {}),
+            provisions_by_period=provisions.get(cik, {}),
+            config=cfg,
+        )
+        for period_end, feat in feats.items():
+            rows.append({"cik": cik, "period_end": period_end, **feat})
+
+    cols = ["cik", "period_end"] + FEATURE_COLUMNS
+    return pd.DataFrame(rows).reindex(columns=cols)

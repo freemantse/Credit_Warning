@@ -187,10 +187,20 @@ CREATE TABLE IF NOT EXISTS cases (
   ticker        TEXT NOT NULL DEFAULT '',          -- current/last ticker (may be blank for delisted)
   cik           TEXT NOT NULL,                     -- zero-padded 10-digit, authoritative id
   label         TEXT NOT NULL CHECK (label IN ('distressed', 'healthy')),
-  event_date    TEXT,                              -- "YYYY-MM-DD"; Ch.11 date (distressed) or pinned anchor (healthy)
+  event_type    TEXT NOT NULL DEFAULT 'default' CHECK (event_type IN ('downgrade', 'upgrade', 'default', 'control')),
+  agency        TEXT,                              -- agency for a rating-migration event (MDY/FTC/SPI), else NULL
+  event_date    TEXT,                              -- "YYYY-MM-DD"; the rating-event / Ch.11 date (or pinned anchor for controls)
   notes         TEXT NOT NULL DEFAULT '',
   created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Additive migration + backfill: the unified rating-event backtest types each case
+-- as downgrade/upgrade/default/control. Legacy rows map distressed→default,
+-- healthy→control. Safe to re-run.
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS event_type TEXT;
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS agency     TEXT;
+UPDATE cases SET event_type = CASE WHEN label = 'healthy' THEN 'control' ELSE 'default' END
+  WHERE event_type IS NULL;
 
 
 -- ── score_config ─────────────────────────────────────────────────────────────

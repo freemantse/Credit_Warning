@@ -186,28 +186,6 @@ TAGS: dict[str, list[str]] = {
         "us-gaap/Liabilities",
     ],
 
-    # ── Current Assets ─────────────────────────────────────────────────────────
-    # Numerator of the current ratio (current_assets / current_liabilities), the
-    # classic working-capital liquidity measure.
-    # Intentionally SINGLE-TAG: us-gaap/AssetsCurrent is the ONLY standard US-GAAP
-    # tag for total current assets — there is no fallback to add. Filers with an
-    # UNCLASSIFIED balance sheet (banks, insurers such as AFLAC, some REITs) do not
-    # split assets into current/non-current, so this concept is simply absent from
-    # their filings. A missing current ratio for such issuers is expected, not a
-    # tagging gap — no additional tag can recover it.
-    "current_assets": [
-        "us-gaap/AssetsCurrent",
-    ],
-
-    # ── Current Liabilities ──────────────────────────────────────────────────
-    # Denominator of the current ratio. Obligations due within one year.
-    # Intentionally SINGLE-TAG: us-gaap/LiabilitiesCurrent is the ONLY standard
-    # total-current-liabilities tag. Same unclassified-balance-sheet caveat as
-    # current_assets above applies (banks/insurers do not report it).
-    "current_liabilities": [
-        "us-gaap/LiabilitiesCurrent",
-    ],
-
     # ── Debt maturity schedule (the "maturity wall") ───────────────────────────
     # Companies disclose how much long-term-debt principal comes due in each of
     # the next five fiscal years, plus a "thereafter" bucket. These tags drive

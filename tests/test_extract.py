@@ -5,7 +5,7 @@ import copy
 
 from src.extract import (
     leverage, interest_coverage, free_cash_flow, fcf_margin, liquidity,
-    cash_flow_to_debt, debt_to_assets, current_ratio,
+    cash_flow_to_debt, debt_to_assets,
     gross_debt, extract_all, RatioResult, MissingRatio,
 )
 from src.concepts import MissingDataError
@@ -21,7 +21,6 @@ from src.concepts import MissingDataError
 #   gross_debt = 4_000_000 + 500_000 = 4_500_000
 #   cash_flow_to_debt = 1_800_000 / 4_500_000 = 0.4
 #   debt_to_assets = 4_500_000 / 20_000_000 = 0.225
-#   current_ratio = 6_000_000 / 4_000_000 = 1.5
 PERIOD = "2023-12-31"
 
 FACTS = {
@@ -138,7 +137,7 @@ def test_missing_period_raises():
         leverage(FACTS, "2021-12-31")
 
 
-# ── New ratios: cash_flow_to_debt, debt_to_assets, current_ratio ──
+# ── New ratios: cash_flow_to_debt, debt_to_assets ──
 
 def test_gross_debt_includes_short_term():
     value, inputs, tags = gross_debt(FACTS, PERIOD)
@@ -173,13 +172,6 @@ def test_debt_to_assets():
     assert result.inputs["total_assets"] == 20_000_000
 
 
-def test_current_ratio():
-    result = current_ratio(FACTS, PERIOD)
-    assert abs(result.value - 1.5) < 1e-9
-    assert result.inputs["current_assets"] == 6_000_000
-    assert result.inputs["current_liabilities"] == 4_000_000
-
-
 def test_cash_flow_to_debt_zero_debt_raises():
     facts = copy.deepcopy(FACTS)
     facts["facts"]["us-gaap"]["LongTermDebt"]["units"]["USD"][0]["val"] = 0
@@ -188,40 +180,7 @@ def test_cash_flow_to_debt_zero_debt_raises():
         cash_flow_to_debt(facts, PERIOD)
 
 
-def test_current_ratio_zero_liabilities_raises():
-    facts = copy.deepcopy(FACTS)
-    facts["facts"]["us-gaap"]["LiabilitiesCurrent"]["units"]["USD"][0]["val"] = 0
-    with pytest.raises(MissingDataError):
-        current_ratio(facts, PERIOD)
-
-
 def test_new_ratios_in_extract_all():
     results = extract_all(FACTS, PERIOD)
-    for name in ("cash_flow_to_debt", "debt_to_assets", "current_ratio"):
+    for name in ("cash_flow_to_debt", "debt_to_assets"):
         assert isinstance(results[name], RatioResult), name
-
-
-def test_current_ratio_missing_input_pinpointed():
-    # Drop current assets ONLY (current liabilities still present) → this is a
-    # genuine data gap, not an unclassified balance sheet, so it stays "missing"
-    # and names the absent input.
-    facts = copy.deepcopy(FACTS)
-    del facts["facts"]["us-gaap"]["AssetsCurrent"]
-    miss = extract_all(facts, PERIOD)["current_ratio"]
-    assert isinstance(miss, MissingRatio)
-    assert miss.not_applicable is False
-    assert [m["field"] for m in miss.missing_inputs] == ["current_assets"]
-
-
-def test_current_ratio_not_applicable_on_unclassified_balance_sheet():
-    # Drop BOTH current assets and current liabilities while keeping total
-    # assets/liabilities → mimics a bank/insurer's unclassified balance sheet.
-    # The current ratio is marked N/A (not a data error): no missing_inputs chips.
-    facts = copy.deepcopy(FACTS)
-    del facts["facts"]["us-gaap"]["AssetsCurrent"]
-    del facts["facts"]["us-gaap"]["LiabilitiesCurrent"]
-    miss = extract_all(facts, PERIOD)["current_ratio"]
-    assert isinstance(miss, MissingRatio)
-    assert miss.not_applicable is True
-    assert miss.missing_inputs == []
-    assert "unclassified balance sheet" in miss.reason.lower()

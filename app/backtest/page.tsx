@@ -25,9 +25,11 @@ import {
 } from 'recharts'
 import {
   BacktestStatus, BacktestCase, TrajectoryPoint,
-  CaseLibrary, BacktestCaseInfo, AddCasePayload, ScoreConfig,
+  CaseLibrary, BacktestCaseInfo, AddCasePayload,
+  MigrationBacktestStatus, MigrationBacktest,
   startBacktest, fetchBacktestStatus, fetchBacktestCases,
-  addCase, deleteCase, fetchScoreConfig, saveScoreConfig,
+  addCase, deleteCase,
+  startMigrationBacktest, fetchMigrationBacktestStatus, fetchMigrationScorecard,
   fmtRatio, fmtPct, fmtFCF,
 } from '@/lib/api'
 
@@ -55,15 +57,6 @@ export default function BacktestPage() {
   // ── Case library (which companies the backtest uses) ───────────────────────
   const [library, setLibrary] = useState<CaseLibrary | null>(null)
 
-  // ── Scoring parameters ──────────────────────────────────────────────────────
-  // `scoreCfg` is the editable DRAFT; `scoreDefaults` are the built-in defaults
-  // (for "Reset"). Running the backtest TESTS the draft (transient); "Apply to
-  // portfolio" persists it as the active config the live dashboard uses.
-  const [scoreCfg, setScoreCfg] = useState<ScoreConfig | null>(null)
-  const [scoreDefaults, setScoreDefaults] = useState<ScoreConfig | null>(null)
-  const [applying, setApplying] = useState(false)
-  const [applyMsg, setApplyMsg] = useState('')
-
   // ── Polling interval ref ───────────────────────────────────────────────────
   // We use useRef instead of useState to store the interval ID.
   // Reason: calling clearInterval() in a state setter would trigger a re-render,
@@ -85,9 +78,8 @@ export default function BacktestPage() {
       // copy match what's displayed.
       if (s.result?.steps) setSteps(s.result.steps)
     }).catch(() => {})
-    // Fetch the case roster and the scoring parameters once alongside the status.
+    // Fetch the case roster once alongside the status.
     fetchBacktestCases().then(setLibrary).catch(() => {})
-    fetchScoreConfig().then(r => { setScoreCfg(r.active); setScoreDefaults(r.defaults) }).catch(() => {})
     return () => { if (pollRef.current) clearInterval(pollRef.current) }
   }, [])
 
@@ -125,10 +117,9 @@ export default function BacktestPage() {
     setStarting(true)
     setError('')
     try {
-      // Send the current draft config so the run TESTS these parameters without
-      // touching the live portfolio. When unedited, the draft equals the applied
-      // config, so the backtest matches the dashboard.
-      await startBacktest(steps, scoreCfg ?? undefined)
+      // Runs with the active stress-score config (model-learned weights when a model
+      // has been trained, else the built-in defaults).
+      await startBacktest(steps)
       // Immediately fetch status so the UI shows "Running…" without waiting for the
       // first poll interval to fire.
       setStatus(await fetchBacktestStatus())
@@ -136,25 +127,6 @@ export default function BacktestPage() {
       setError(e instanceof Error ? e.message : 'Failed to start backtest')
     } finally {
       setStarting(false)
-    }
-  }
-
-  /**
-   * Apply the draft scoring parameters to the live portfolio (persist as active).
-   * This immediately changes the dashboard/detail scores — they're recomputed on
-   * the fly, no re-track needed.
-   */
-  async function handleApply() {
-    if (!scoreCfg) return
-    setApplying(true)
-    setApplyMsg('')
-    try {
-      await saveScoreConfig(scoreCfg)
-      setApplyMsg('Applied — the portfolio now scores with these parameters.')
-    } catch (e: unknown) {
-      setApplyMsg(e instanceof Error ? e.message : 'Failed to apply parameters')
-    } finally {
-      setApplying(false)
     }
   }
 
@@ -196,18 +168,8 @@ export default function BacktestPage() {
         </ul>
       </div>
 
-      {/* ── Scoring parameters (test in backtest vs. apply to portfolio) ── */}
-      {scoreCfg && scoreDefaults && (
-        <ScoreParamsCard
-          cfg={scoreCfg}
-          defaults={scoreDefaults}
-          onChange={setScoreCfg}
-          onApply={handleApply}
-          applying={applying}
-          applyMsg={applyMsg}
-          running={status.running || starting}
-        />
-      )}
+      {/* ── Rating-migration model: event backtest + read-only scorecard ── */}
+      <MigrationModelCard />
 
       {/* ── Run control card ── */}
       <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm flex items-center gap-4 flex-wrap">
@@ -412,7 +374,7 @@ function CaseLibraryCard({ library, onChange }: { library: CaseLibrary; onChange
 
   // Add-case form state.
   const [identifier, setIdentifier] = useState('')
-  const [label, setLabel] = useState<'distressed' | 'healthy'>('distressed')
+  const [eventType, setEventType] = useState<'downgrade' | 'upgrade' | 'default' | 'control'>('downgrade')
   const [eventDate, setEventDate] = useState('')
   const [notes, setNotes] = useState('')
   const [adding, setAdding] = useState(false)
@@ -429,8 +391,8 @@ function CaseLibraryCard({ library, onChange }: { library: CaseLibrary; onChange
     setAdding(true)
     setFormError('')
     try {
-      const payload: AddCasePayload = { identifier: identifier.trim(), label }
-      // event_date is required for distressed; optional for healthy (backend pins a default).
+      const payload: AddCasePayload = { identifier: identifier.trim(), event_type: eventType }
+      // event_date is required for events; optional for controls (backend pins a default).
       if (eventDate) payload.event_date = eventDate
       if (notes.trim()) payload.notes = notes.trim()
       await addCase(payload)
@@ -490,19 +452,21 @@ function CaseLibraryCard({ library, onChange }: { library: CaseLibrary; onChange
               />
             </div>
             <div className="flex flex-col gap-1">
-              <label className="text-xs font-medium text-slate-500">Label</label>
+              <label className="text-xs font-medium text-slate-500">Event type</label>
               <select
-                value={label}
-                onChange={e => setLabel(e.target.value as 'distressed' | 'healthy')}
+                value={eventType}
+                onChange={e => setEventType(e.target.value as 'downgrade' | 'upgrade' | 'default' | 'control')}
                 className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-slate-300"
               >
-                <option value="distressed">Distressed</option>
-                <option value="healthy">Healthy control</option>
+                <option value="downgrade">Downgrade</option>
+                <option value="upgrade">Upgrade</option>
+                <option value="default">Default</option>
+                <option value="control">Control (no event)</option>
               </select>
             </div>
             <div className="flex flex-col gap-1">
               <label className="text-xs font-medium text-slate-500">
-                {label === 'distressed' ? 'Credit-event date (required)' : 'Anchor date (optional)'}
+                {eventType === 'control' ? 'Anchor date (optional)' : 'Event date (required)'}
               </label>
               <input
                 type="date"
@@ -522,7 +486,7 @@ function CaseLibraryCard({ library, onChange }: { library: CaseLibrary; onChange
             </div>
             <button
               type="submit"
-              disabled={adding || !identifier.trim() || (label === 'distressed' && !eventDate)}
+              disabled={adding || !identifier.trim() || (eventType !== 'control' && !eventDate)}
               className="bg-slate-800 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {adding ? 'Adding…' : 'Add case'}
@@ -631,248 +595,139 @@ function CaseLibraryCard({ library, onChange }: { library: CaseLibrary; onChange
 }
 
 
-// ── ScoreParamsCard component ─────────────────────────────────────────────────
+// ── MigrationModelCard component ──────────────────────────────────────────────
 //
-// The editable scoring-parameter panel. Edits a DRAFT config (lifted to the page
-// via onChange). The page's "Run Backtest" tests the draft transiently; this
-// card's "Apply to portfolio" persists it as the active config the live
-// dashboard scores with. "Reset to defaults" restores the built-in parameters.
+// The rating-migration model surface: a "Run" button that replays the TRAINED
+// model over the case library (catch-rate / lead time per upgrade/downgrade/default
+// event + control false positives), plus a read-only walk-forward scorecard
+// (PR-AUC model vs. logistic baseline) and the active model's provenance.
+// Everything degrades to an empty state until the model is trained — the page
+// never trains; training runs in the background.
 
-// The 9 quantitative rules, in scorecard order, with friendly labels and a
-// one-line description of what each metric measures. Keys match the breakdown
-// keys in src/score.py. Weight = the rule's max points; the ramp awards 0 pts at
-// `healthy`, rising to `weight` at `severe`.
-const RULE_META: { key: string; label: string; desc: string }[] = [
-  { key: 'profitability',         label: 'Profitability (EBITDA margin)', desc: 'EBITDA ÷ revenue. Lower is worse; operating losses score highest.' },
-  { key: 'leverage>5x',           label: 'Leverage (net debt / EBITDA)',  desc: 'Net debt ÷ EBITDA — years of earnings to repay debt. Higher is worse.' },
-  { key: 'coverage<2x',           label: 'Interest coverage',             desc: 'EBITDA ÷ interest expense. Lower is worse; <1× can’t cover interest.' },
-  { key: 'cash_flow_to_debt<30%', label: 'Cash flow / debt (FFO proxy)',  desc: 'Operating cash flow ÷ gross debt. Lower is worse (key distress signal).' },
-  { key: 'fcf_negative',          label: 'FCF margin',                    desc: 'Free cash flow ÷ revenue. Lower is worse; sustained negative burns cash.' },
-  { key: 'liquidity<1x',          label: 'Liquidity (cash / ST debt)',    desc: 'Cash ÷ short-term debt. Lower is worse; <1× can’t cover near-term debt.' },
-  { key: 'current_ratio<1.5x',    label: 'Current ratio',                 desc: 'Current assets ÷ current liabilities — working-capital cushion.' },
-  { key: 'debt_to_assets>40%',    label: 'Debt / assets',                 desc: 'Gross debt ÷ total assets (gearing). Higher is worse.' },
-  { key: 'maturity_wall',         label: 'Maturity wall (≤3y due)',       desc: 'Share of debt maturing within 3 years. Higher is worse (refinancing risk).' },
-]
+function MigrationModelCard() {
+  const [status, setStatus] = useState<MigrationBacktestStatus>({ running: false, result: null, error: null })
+  const [scorecard, setScorecard] = useState<MigrationBacktest | null>(null)
+  const [starting, setStarting] = useState(false)
+  const [error, setError] = useState('')
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-// A fixed-width number input with the built-in default shown directly BELOW it
-// (not beside it) so the input boxes stay vertically aligned across rows.
-function NumInput({ value, onChange, step = 'any', width = 'w-24', def }: {
-  value: number; onChange: (v: number) => void; step?: string; width?: string; def?: number
-}) {
-  return (
-    <span className="inline-flex flex-col items-end">
-      <input
-        type="number"
-        step={step}
-        value={value}
-        onChange={e => { const v = parseFloat(e.target.value); onChange(Number.isNaN(v) ? 0 : v) }}
-        className={`${width} border border-gray-300 rounded px-2 py-1 text-xs font-mono text-right focus:outline-none focus:ring-2 focus:ring-slate-300`}
-      />
-      {def != null && (
-        <span className="text-[10px] text-slate-400 leading-none mt-1" title="Built-in default value">
-          default: {def}
-        </span>
-      )}
-    </span>
-  )
-}
+  useEffect(() => {
+    fetchMigrationBacktestStatus().then(setStatus).catch(() => {})
+    fetchMigrationScorecard().then(setScorecard).catch(() => {})
+    return () => { if (pollRef.current) clearInterval(pollRef.current) }
+  }, [])
 
-// One parameter row: a label + short description on the left, the input(s) on the
-// right. Keeps every control aligned down a single right-hand column.
-function ParamRow({ label, desc, children }: { label: string; desc?: string; children: ReactNode }) {
-  return (
-    <div className="flex items-start justify-between gap-4 py-2 border-t border-slate-100 first:border-t-0">
-      <div className="min-w-0">
-        <div className="text-slate-600">{label}</div>
-        {desc && <div className="text-[11px] text-slate-400">{desc}</div>}
-      </div>
-      <div className="shrink-0">{children}</div>
-    </div>
-  )
-}
+  useEffect(() => {
+    if (status.running) {
+      pollRef.current = setInterval(async () => {
+        const s = await fetchMigrationBacktestStatus().catch(() => null)
+        if (s) {
+          setStatus(s)
+          if (!s.running && pollRef.current) clearInterval(pollRef.current)
+        }
+      }, 3000)
+    }
+    return () => { if (pollRef.current) clearInterval(pollRef.current) }
+  }, [status.running])
 
-function ScoreParamsCard({
-  cfg, defaults, onChange, onApply, applying, applyMsg, running,
-}: {
-  cfg: ScoreConfig
-  defaults: ScoreConfig
-  onChange: (c: ScoreConfig) => void
-  onApply: () => void
-  applying: boolean
-  applyMsg: string
-  running: boolean
-}) {
-  const [open, setOpen] = useState(false)
-  const [advanced, setAdvanced] = useState(false)
+  async function run() {
+    setStarting(true); setError('')
+    try {
+      await startMigrationBacktest()
+      setStatus(await fetchMigrationBacktestStatus())
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Failed to start migration backtest')
+    } finally {
+      setStarting(false)
+    }
+  }
 
-  const setRule = (key: string, field: 'weight' | 'healthy' | 'severe', v: number) =>
-    onChange({ ...cfg, rules: { ...cfg.rules, [key]: { ...cfg.rules[key], [field]: v } } })
-  const setEsc = (field: 'min_severe' | 'severe_frac' | 'floor', v: number) =>
-    onChange({ ...cfg, escalation: { ...cfg.escalation, [field]: v } })
-  const setLlm = (field: keyof ScoreConfig['llm'], v: number) =>
-    onChange({ ...cfg, llm: { ...cfg.llm, [field]: v } })
-  const setOverride = (key: string, v: number) =>
-    onChange({ ...cfg, ebitda_override: { ...cfg.ebitda_override, [key]: v } })
-
-  const totalWeight = RULE_META.reduce((s, r) => s + (cfg.rules[r.key]?.weight ?? 0), 0)
+  const result = status.result
+  const agg = scorecard?.migration?.aggregate
+  const model = scorecard?.model
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-      <button
-        onClick={() => setOpen(o => !o)}
-        className="w-full px-6 py-4 flex items-baseline justify-between gap-3 flex-wrap text-left hover:bg-slate-50 transition-colors"
-      >
-        <span className="font-semibold text-slate-800">
-          <span className="inline-block w-4 text-slate-400 text-xs">{open ? '▾' : '▸'}</span>
-          Scoring parameters
-        </span>
-        <span className="text-sm text-slate-500">
-          Tune the weights & thresholds — total core weight {totalWeight.toFixed(0)} pts
-        </span>
-      </button>
-
-      {open && (
-        <div className="px-6 pb-5 pt-3 border-t border-gray-100 space-y-5">
-          {/* How the parameters work — orient the user before they edit anything. */}
-          <div className="text-xs text-slate-600 bg-slate-50 rounded-lg p-3 border border-slate-200 space-y-1.5">
-            <p>
-              The stress score (0–{cfg.score_cap.toFixed(0)}) is the sum of the rule points below. Each rule scores
-              <strong> 0</strong> while its metric is at or healthier than <strong>Healthy</strong>, then ramps
-              linearly up to its full <strong>Weight</strong> at <strong>Severe</strong> (and beyond). An issuer is
-              flagged <strong>stressed</strong> at or above the <strong>Threshold</strong>; if at least the escalation
-              count of rules are individually severe, the score is floored.
-            </p>
-            <p className="text-slate-500">
-              <strong>Weight</strong> = the most points a rule can add ·
-              <strong> Healthy</strong> = metric value that scores 0 ·
-              <strong> Severe</strong> = metric value that scores the full weight.
-              Raising a weight makes that signal matter more; moving Healthy/Severe changes how early it starts to bite.
-            </p>
-            <p className="text-slate-500">
-              The small grey <span className="text-slate-400">default: N</span> under each field is that
-              parameter&rsquo;s built-in default — what <strong>Reset to defaults</strong> restores.
-            </p>
-          </div>
-
-          {/* Rule weights & ramp endpoints. */}
-          <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Rule weights &amp; ramps</p>
-            <div className="overflow-x-auto">
-              <table className="text-xs">
-                <thead>
-                  <tr className="text-slate-400">
-                    <th className="text-left pr-6 py-1 font-medium">Rule</th>
-                    <th className="text-right px-3 py-1 font-medium" title="Max points this rule contributes">Weight</th>
-                    <th className="text-right px-3 py-1 font-medium" title="Metric value at/above which the rule scores 0">Healthy</th>
-                    <th className="text-right px-3 py-1 font-medium" title="Metric value at/beyond which the rule scores its full weight">Severe</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {RULE_META.map(({ key, label, desc }) => (
-                    <tr key={key} className="border-t border-slate-100 align-top">
-                      <td className="pr-6 py-1.5 text-slate-600">
-                        <div>{label}</div>
-                        <div className="text-[11px] text-slate-400 font-normal">{desc}</div>
-                      </td>
-                      <td className="px-3 py-1.5 text-right"><NumInput value={cfg.rules[key].weight} onChange={v => setRule(key, 'weight', v)} def={defaults.rules[key]?.weight} /></td>
-                      <td className="px-3 py-1.5 text-right"><NumInput value={cfg.rules[key].healthy} onChange={v => setRule(key, 'healthy', v)} def={defaults.rules[key]?.healthy} /></td>
-                      <td className="px-3 py-1.5 text-right"><NumInput value={cfg.rules[key].severe} onChange={v => setRule(key, 'severe', v)} def={defaults.rules[key]?.severe} /></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          {/* Threshold, score cap, and the distress-escalation floor. */}
-          <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Thresholds &amp; escalation</p>
-            <p className="text-xs text-slate-400 mb-1">
-              When a company counts as &ldquo;stressed&rdquo;, the score ceiling, and a safety net that floors the
-              score for issuers failing many rules at once (so an offsetting metric can&rsquo;t mask broad distress).
-            </p>
-            <div className="text-xs max-w-2xl">
-              <ParamRow label="Stress threshold" desc="Score at or above which a company is flagged stressed (and counts as a backtest catch).">
-                <NumInput value={cfg.threshold} onChange={v => onChange({ ...cfg, threshold: v })} step="1" def={defaults.threshold} />
-              </ParamRow>
-              <ParamRow label="Score cap" desc="Highest possible score — the summed rule points are capped here.">
-                <NumInput value={cfg.score_cap} onChange={v => onChange({ ...cfg, score_cap: v })} step="1" def={defaults.score_cap} />
-              </ParamRow>
-              <ParamRow label="Escalation trigger" desc="Number of individually-severe rules needed to trigger the floor.">
-                <NumInput value={cfg.escalation.min_severe} onChange={v => setEsc('min_severe', v)} step="1" def={defaults.escalation.min_severe} />
-              </ParamRow>
-              <ParamRow label="Severe cutoff" desc="Fraction (0–1) of its weight at which a rule counts as “severe”.">
-                <NumInput value={cfg.escalation.severe_frac} onChange={v => setEsc('severe_frac', v)} step="0.05" def={defaults.escalation.severe_frac} />
-              </ParamRow>
-              <ParamRow label="Escalation floor" desc="The score is raised to at least this value when the trigger fires.">
-                <NumInput value={cfg.escalation.floor} onChange={v => setEsc('floor', v)} step="1" def={defaults.escalation.floor} />
-              </ParamRow>
-            </div>
-          </div>
-
-          {/* Advanced: LLM qualitative signals + EBITDA≤0 override. These do NOT
-              affect the backtest (it scores XBRL-only) — only the live dashboard. */}
-          <div>
-            <button
-              onClick={() => setAdvanced(a => !a)}
-              className="inline-flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-700 hover:underline transition-colors"
-            >
-              <span className="text-slate-400">{advanced ? '▾' : '▸'}</span>
-              Advanced parameters
-              <span className="text-slate-400">— qualitative (LLM) signals &amp; negative-EBITDA override</span>
-            </button>
-            {advanced && (
-              <div className="mt-3 text-xs max-w-2xl">
-                <p className="text-slate-400 mb-1">
-                  These come from the LLM review of filing text and affect <strong>only the live portfolio dashboard</strong> —
-                  the backtest is scored from XBRL financials alone. Each signal adds <em>points per item</em> up to its own
-                  <em> cap</em>; all qualitative signals together are also capped (Combined cap) so filing language can never
-                  push a company over the threshold on its own.
-                </p>
-                <ParamRow label="High-severity finding" desc="Points per high-severity qualitative concern, capped per row.">
-                  <span className="inline-flex items-center gap-1 text-slate-500">points <NumInput value={cfg.llm.high_severity_per} onChange={v => setLlm('high_severity_per', v)} width="w-16" def={defaults.llm.high_severity_per} /> cap <NumInput value={cfg.llm.high_severity_cap} onChange={v => setLlm('high_severity_cap', v)} width="w-16" def={defaults.llm.high_severity_cap} /></span>
-                </ParamRow>
-                <ParamRow label="Covenant proximity" desc="Points per covenant the filing flags as near its limit.">
-                  <span className="inline-flex items-center gap-1 text-slate-500">points <NumInput value={cfg.llm.covenant_per} onChange={v => setLlm('covenant_per', v)} width="w-16" def={defaults.llm.covenant_per} /> cap <NumInput value={cfg.llm.covenant_cap} onChange={v => setLlm('covenant_cap', v)} width="w-16" def={defaults.llm.covenant_cap} /></span>
-                </ParamRow>
-                <ParamRow label="Loss provision" desc="Points per material litigation / contingency provision disclosed.">
-                  <span className="inline-flex items-center gap-1 text-slate-500">points <NumInput value={cfg.llm.provision_per} onChange={v => setLlm('provision_per', v)} width="w-16" def={defaults.llm.provision_per} /> cap <NumInput value={cfg.llm.provision_cap} onChange={v => setLlm('provision_cap', v)} width="w-16" def={defaults.llm.provision_cap} /></span>
-                </ParamRow>
-                <ParamRow label="Combined LLM cap" desc="Hard ceiling on all qualitative signals added together.">
-                  <NumInput value={cfg.llm.combined_cap} onChange={v => setLlm('combined_cap', v)} def={defaults.llm.combined_cap} />
-                </ParamRow>
-                <ParamRow label="Negative-EBITDA override" desc="When EBITDA ≤ 0 the leverage & coverage ratios flip sign; instead of the ramp, force these points.">
-                  <span className="inline-flex items-center gap-1 text-slate-500">leverage <NumInput value={cfg.ebitda_override['leverage>5x']} onChange={v => setOverride('leverage>5x', v)} width="w-16" def={defaults.ebitda_override['leverage>5x']} /> coverage <NumInput value={cfg.ebitda_override['coverage<2x']} onChange={v => setOverride('coverage<2x', v)} width="w-16" def={defaults.ebitda_override['coverage<2x']} /></span>
-                </ParamRow>
-              </div>
-            )}
-          </div>
-
-          {/* Actions. Apply changes live scores immediately; Run Backtest (above)
-              only tests. Kept as subtle gray controls. */}
-          <div className="flex items-center gap-3 flex-wrap pt-3 border-t border-slate-100">
-            <button
-              onClick={onApply}
-              disabled={applying || running}
-              className="text-sm font-medium text-white bg-slate-800 px-4 py-1.5 rounded-lg hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              {applying ? 'Applying…' : 'Apply to portfolio'}
-            </button>
-            <button
-              onClick={() => onChange(structuredClone(defaults))}
-              disabled={applying}
-              title="Reset the editor to the built-in default parameters (draft only — click Apply to persist)"
-              className="text-sm text-slate-600 px-4 py-1.5 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              Reset to defaults
-            </button>
-            <span className="text-xs text-slate-400">
-              Applying recomputes the portfolio &amp; detail scores immediately (no re-track).
-            </span>
-            {applyMsg && <span className="basis-full text-xs text-slate-600">{applyMsg}</span>}
-          </div>
+      <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <h2 className="font-semibold text-slate-800">Rating-Migration Model</h2>
+          <p className="text-xs text-slate-400 mt-0.5">
+            Does the trained model flag each issuer&apos;s upgrade / downgrade / default early?
+            {model?.version && <span className="font-mono"> · model {model.version}</span>}
+          </p>
         </div>
-      )}
+        <button
+          onClick={run}
+          disabled={status.running || starting}
+          className="bg-slate-800 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          {status.running ? 'Running…' : 'Run model backtest'}
+        </button>
+      </div>
+
+      <div className="px-6 py-4 space-y-5">
+        {(error || status.error) && <p className="text-sm text-red-600">{error || status.error}</p>}
+
+        {/* Walk-forward scorecard (read-only). */}
+        {agg ? (
+          <div>
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">
+              Walk-forward accuracy (out-of-time)
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {(['downgrade', 'upgrade', 'default'] as const).map(h => (
+                <div key={h} className="rounded-lg border border-gray-200 p-3">
+                  <p className="text-xs text-slate-400 tracking-wide capitalize">{h} PR-AUC</p>
+                  <p className="text-xl font-bold text-slate-800 mt-1">{agg[h]?.mean_pr_auc_model ?? '—'}</p>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    baseline {agg[h]?.mean_pr_auc_baseline ?? '—'} · {agg[h]?.n_splits_scored ?? 0} splits
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <p className="text-sm text-slate-400">
+            No walk-forward scorecard yet — train the model once agency ratings are ingested
+            (<code className="bg-slate-100 px-1 rounded">python -m src.model.evaluate --splits …</code>).
+          </p>
+        )}
+
+        {/* Event backtest results (per event type). */}
+        {result?.by_event_type && Object.keys(result.by_event_type).length > 0 && (
+          <div>
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">
+              Early-catch on the case library
+            </p>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {(['downgrade', 'upgrade', 'default'] as const).map(et => {
+                const s = result.by_event_type[et]
+                if (!s) return null
+                return (
+                  <div key={et} className="rounded-lg border border-gray-200 p-3">
+                    <p className="text-xs text-slate-400 tracking-wide capitalize">{et} caught</p>
+                    <p className="text-xl font-bold text-slate-800 mt-1">{s.catch_rate}%</p>
+                    <p className="text-[11px] text-slate-400 mt-0.5">{s.caught}/{s.total} · {s.median_lead_months}mo lead</p>
+                  </div>
+                )
+              })}
+              {result.by_event_type.control && (
+                <div className="rounded-lg border border-gray-200 p-3">
+                  <p className="text-xs text-slate-400 uppercase tracking-wide">Control FP rate</p>
+                  <p className="text-xl font-bold text-slate-800 mt-1">{result.by_event_type.control.fp_rate}%</p>
+                  <p className="text-[11px] text-slate-400 mt-0.5">{result.by_event_type.control.false_positive}/{result.by_event_type.control.total}</p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+        {result?.note && <p className="text-xs text-amber-600">{result.note}</p>}
+        {!result && !status.running && (
+          <p className="text-sm text-slate-400">
+            Click <strong>Run model backtest</strong> to replay the trained model over the case library.
+          </p>
+        )}
+      </div>
     </div>
   )
 }
@@ -939,7 +794,6 @@ const METRICS: { key: string; label: string; fmt: (v: number | null) => string }
   { key: 'free_cash_flow',         label: 'Free Cash Flow',               fmt: v => fmtFCF(v) },
   { key: 'liquidity',              label: 'Liquidity (cash / ST debt)',   fmt: v => fmtRatio(v) },
   { key: 'cash_flow_to_debt',      label: 'Cash Flow / Debt (FFO proxy)', fmt: v => fmtPct(v) },
-  { key: 'current_ratio',          label: 'Current Ratio',                fmt: v => fmtRatio(v) },
   { key: 'debt_to_assets',         label: 'Debt / Assets',                fmt: v => fmtPct(v) },
   { key: 'maturity_near_term_pct', label: 'Maturity Wall (≤3y due)',      fmt: v => fmtPct(v) },
 ]

@@ -120,3 +120,38 @@ def test_walk_forward_eval_runs():
     assert len(result["per_split"]) == 2
     # Final-split confusion split by IG/HY bucket is present.
     assert "confusion_by_bucket_final" in result
+
+
+def test_derive_score_config_learns_weights():
+    from src.model.train import derive_score_config, RULE_TO_FEATURE
+    from src.score import DEFAULT_CONFIG
+
+    df = _synthetic_matrix()
+    bundle, _ = train_all(df, "2019-12-31", version="test")
+    cfg = derive_score_config(bundle)
+    rules = cfg["rules"]
+    # All 8 rules present; current_ratio is gone.
+    assert set(RULE_TO_FEATURE) <= set(rules)
+    assert "current_ratio<1.5x" not in rules
+    # Weights are renormalised to the DEFAULT total (94), and at least one differs
+    # from DEFAULT (they were learned, not copied).
+    total = sum(rules[r]["weight"] for r in RULE_TO_FEATURE)
+    default_total = sum(DEFAULT_CONFIG["rules"][r]["weight"] for r in RULE_TO_FEATURE)
+    assert abs(total - default_total) <= 1.0
+    assert any(rules[r]["weight"] != DEFAULT_CONFIG["rules"][r]["weight"] for r in RULE_TO_FEATURE)
+    # Ramps are preserved (only weights are learned).
+    assert rules["leverage>5x"]["healthy"] == DEFAULT_CONFIG["rules"]["leverage>5x"]["healthy"]
+
+
+def test_train_vintages_and_select(tmp_path):
+    from pathlib import Path
+    from src.model.train import train_vintages, select_vintage
+
+    df = _synthetic_matrix()
+    vintages = train_vintages(df, ["2018-12-31", "2020-12-31"], out_dir=str(tmp_path / "v"))
+    assert len(vintages) == 2
+    assert all(Path(v["path"]).exists() for v in vintages)
+    # Pick the latest vintage trained strictly before the snapshot date (no leakage).
+    assert select_vintage(vintages, "2021-06-30").endswith("2020-12-31.joblib")
+    assert select_vintage(vintages, "2019-06-30").endswith("2018-12-31.joblib")
+    assert select_vintage(vintages, "2017-01-01") is None

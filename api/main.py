@@ -70,9 +70,11 @@ from src.store import (
     get_loss_provisions_grouped,
     get_migration_predictions_grouped,
     get_maturities_grouped,
+    get_model_registry,
     get_ratios_grouped,
     get_score_config,
     list_cases,
+    save_model_registry,
     save_bond_instruments,
     save_company,
     save_covenants,
@@ -105,28 +107,20 @@ _backtest_status: dict[str, Any] = {
     "error": None,
 }
 
-# Per-process cache of the active (applied) scoring config, so the hot read
-# endpoints (/api/issuers, /api/issuer) don't hit Supabase on every request.
-# Same single-process caveat as _backtest_status; invalidated when the config is
-# applied via PUT /api/score-config.
-_active_config_cache: ScoreConfig | None = None
-
-
 def _active_config() -> ScoreConfig:
-    """Return the active ScoreConfig (the one applied to the live portfolio), cached."""
-    global _active_config_cache
-    if _active_config_cache is None:
-        try:
-            _active_config_cache = ScoreConfig.from_dict(get_score_config())
-        except Exception:
-            # Supabase unavailable → fall back to defaults rather than 500 the dashboard.
-            _active_config_cache = ScoreConfig.from_dict(DEFAULT_CONFIG)
-    return _active_config_cache
+    """
+    Return the active ScoreConfig — the model-LEARNED stress-score weights when a
+    model has been trained (persisted to score_config by the trainer), else the
+    built-in DEFAULT_CONFIG.
 
-
-def _invalidate_config_cache() -> None:
-    global _active_config_cache
-    _active_config_cache = None
+    Read once per request (no process cache): the trainer writes the config offline,
+    so a cached value would hide newly learned weights until a redeploy. Resilient
+    to Supabase being unavailable → DEFAULT_CONFIG.
+    """
+    try:
+        return ScoreConfig.from_dict(get_score_config())
+    except Exception:
+        return ScoreConfig.from_dict(DEFAULT_CONFIG)
 
 
 class TrackRequest(BaseModel):
@@ -169,6 +163,83 @@ def _outlook_payload(res: RatingOutlookResult | None) -> dict | None:
         "reasons": res.reasons,
         "periods_used": res.periods_used,
     }
+
+
+# ── Prediction "why" summary (shared by portfolio + issuer detail) ───────────
+
+# Friendly labels for the model's feature drivers / ratios.
+_RATIO_LABEL = {
+    "leverage": "leverage", "interest_coverage": "interest coverage",
+    "free_cash_flow": "free cash flow", "fcf_margin": "FCF margin",
+    "ebitda_margin": "EBITDA margin", "liquidity": "liquidity",
+    "cash_flow_to_debt": "cash-flow-to-debt", "debt_to_assets": "debt/assets",
+    "maturity_near_term_pct": "near-term maturities",
+    "implied_rating_index": "implied rating", "stress_score": "stress score",
+    "financial_risk_index": "financial-risk profile",
+    "agency_rating_index": "agency rating", "implied_vs_agency_gap": "implied-vs-agency gap",
+    "time_in_rating_months": "time in rating",
+}
+
+
+def _ratio_values(period_ratios: dict | None) -> dict[str, float]:
+    """Flatten a stored {name: {value, …}} period dict to {name: value} (numbers only)."""
+    out: dict[str, float] = {}
+    for name, data in (period_ratios or {}).items():
+        v = data.get("value") if isinstance(data, dict) else None
+        if isinstance(v, (int, float)):
+            out[name] = float(v)
+    return out
+
+
+def _driver_phrase(driver: dict, ratios_now: dict, ratios_prev: dict) -> str:
+    """
+    One human phrase for a model driver, preferring the actual YoY ratio move
+    ("leverage rose 40% YoY") and falling back to the driver's direction.
+    """
+    feat = driver.get("feature", "")
+    base = feat[:-4] if feat.endswith("_yoy") else feat
+    label = _RATIO_LABEL.get(base, base.replace("_", " "))
+    now, prev = ratios_now.get(base), ratios_prev.get(base)
+    if isinstance(now, (int, float)) and isinstance(prev, (int, float)) and prev not in (0, None):
+        pct = (now - prev) / abs(prev) * 100
+        if abs(pct) >= 1:
+            return f"{label} {'rose' if pct > 0 else 'fell'} {abs(pct):.0f}% YoY"
+    return f"{'rising' if driver.get('contribution', 0) > 0 else 'easing'} {label}"
+
+
+def _prediction_summary(pred_row: dict | None, outlook, ratios_now: dict, ratios_prev: dict) -> dict | None:
+    """
+    Unify the directional "rating change" signal + a short "why" for one issuer.
+
+    Prefers the trained model's calibrated prediction (direction from P(down) vs
+    P(up) with a deadband; reason from the top drivers); falls back to the
+    rule-based Rating Outlook (direction + its first reason sentence). None when
+    neither exists.
+    """
+    if pred_row and (pred_row.get("p_downgrade") is not None or pred_row.get("p_upgrade") is not None):
+        pd_ = pred_row.get("p_downgrade") or 0.0
+        pu_ = pred_row.get("p_upgrade") or 0.0
+        direction = "down" if pd_ - pu_ > 0.05 else "up" if pu_ - pd_ > 0.05 else "stable"
+        phrases = [_driver_phrase(d, ratios_now, ratios_prev)
+                   for d in (pred_row.get("drivers_json") or [])[:2]]
+        return {
+            "direction": direction,
+            "p_downgrade": pred_row.get("p_downgrade"),
+            "p_upgrade": pred_row.get("p_upgrade"),
+            "source": "model",
+            "reason": "; ".join(phrases) if phrases else "model prediction",
+        }
+    if outlook is not None:
+        o = outlook.outlook
+        direction = "down" if o == "Negative" else "up" if o == "Positive" else "stable"
+        return {
+            "direction": direction,
+            "p_downgrade": None,
+            "p_upgrade": None,
+            "source": "outlook",
+            "reason": outlook.reasons[0] if outlook.reasons else o,
+        }
+    return None
 
 
 def _resolve_cik_for_read(identifier: str) -> str:
@@ -221,6 +292,8 @@ def list_issuers():
     covenants_by_cik = get_covenants_grouped()         # 1 query for every issuer's covenants
     provisions_by_cik = get_loss_provisions_grouped()  # 1 query for every issuer's provisions
     ratings_by_cik = get_implied_ratings_grouped()     # 1 query for every issuer's implied ratings
+    predictions_by_cik = get_migration_predictions_grouped()  # resilient → {} if untrained/undeployed
+    active = _active_config()                           # model-learned (or default) weights, read once
 
     result = []
     for issuer in issuers:
@@ -244,12 +317,12 @@ def list_issuers():
                 "liquidity": None,
                 "cash_flow_to_debt": None,
                 "debt_to_assets": None,
-                "current_ratio": None,
                 "score": None,
                 "alerts": [],
                 "implied_rating": None,
                 "rating_index": None,
                 "outlook": None,
+                "prediction": None,
             })
             continue
 
@@ -270,7 +343,7 @@ def list_issuers():
         # config = the active (applied) parameters so the dashboard reflects them.
         score_result = compute_score(
             ratio_results, findings, maturity, covenants, provisions,
-            config=_active_config(),
+            config=active,
         )
 
         # Helper to safely pull a ratio value without KeyError on missing data.
@@ -295,7 +368,7 @@ def list_issuers():
                 maturities_by_cik.get(cik, {}).get(per),
                 covenants_by_cik.get(cik, {}).get(per, []),
                 provisions_by_cik.get(cik, {}).get(per, []),
-                config=_active_config(),
+                config=active,
             )
             outlook_series.append({
                 "period_end": per,
@@ -303,6 +376,16 @@ def list_issuers():
                 "score": sc.score,
             })
         outlook = rating_outlook(outlook_series)
+
+        # Directional "rating change" prediction (model if trained, else outlook),
+        # with a short "why" from the latest vs. prior period's ratios.
+        prior_period = periods[-2] if len(periods) >= 2 else None
+        prediction = _prediction_summary(
+            predictions_by_cik.get(cik, {}).get(latest),
+            outlook,
+            _ratio_values(full_ratios),
+            _ratio_values(by_period.get(prior_period) if prior_period else None),
+        )
 
         result.append({
             "cik": cik,
@@ -318,12 +401,12 @@ def list_issuers():
             "liquidity": _v("liquidity"),
             "cash_flow_to_debt": _v("cash_flow_to_debt"),
             "debt_to_assets": _v("debt_to_assets"),
-            "current_ratio": _v("current_ratio"),
             "score": score_result.score,
             "alerts": score_result.alerts,
             "implied_rating": rating["implied_rating"] if rating else None,
             "rating_index": rating["rating_index"] if rating else None,
             "outlook": outlook.outlook if outlook else None,
+            "prediction": prediction,
         })
     return result
 
@@ -539,6 +622,8 @@ def get_issuer(ticker: str):
     except Exception:
         filings = []
 
+    active = _active_config()  # model-learned (or default) weights, read once
+    _periods_asc = sorted(ratios_by_period)  # for prior-period lookup (YoY "why")
     period_data = []
     # Newest period first so the frontend chart/table show recent data at the top.
     for period in sorted(ratios_by_period, reverse=True):
@@ -552,7 +637,7 @@ def get_issuer(ticker: str):
         # config = the active (applied) parameters so detail scores match the dashboard.
         score_result = compute_score(
             ratio_results, findings, maturity, covenants, provisions,
-            config=_active_config(),
+            config=active,
         )
 
         # Match this period to its 10-K and build the EDGAR document URL (None if
@@ -563,6 +648,21 @@ def get_issuer(ticker: str):
             if filing
             else None
         )
+
+        # Migration prediction (if any) enriched with a plain-language "why" derived
+        # from this period's drivers vs. the prior period's ratios.
+        migration = predictions_by_period.get(period)
+        if migration:
+            _i = _periods_asc.index(period)
+            _prior = _periods_asc[_i - 1] if _i > 0 else None
+            summary = _prediction_summary(
+                migration, None,
+                _ratio_values(full_ratios),
+                _ratio_values(ratios_by_period.get(_prior) if _prior else None),
+            )
+            if summary:
+                migration = {**migration, "reason": summary["reason"],
+                             "direction": summary["direction"], "source": summary["source"]}
 
         period_data.append({
             "period_end": period,
@@ -577,7 +677,7 @@ def get_issuer(ticker: str):
             "source_url": source_url,       # public SEC EDGAR URL of the source 10-K
             "implied_rating": ratings_by_period.get(period),  # rating dict or None
             "bond_instruments": instruments_by_period.get(period, []),  # LLM-extracted (may be empty)
-            "migration": predictions_by_period.get(period),  # calibrated P(down)/P(up)/P(default) + drivers, or None
+            "migration": migration,         # calibrated P(down)/P(up)/P(default) + drivers + reason, or None
         })
 
     # Rating Outlook: directional signal from the full (rating_index, score) history.
@@ -744,20 +844,19 @@ def llm_review_status(ticker: str):
 
 # ── Backtest (long-running background task) ──────────────────────────────────
 
-def _run_backtest_task(steps: int, config_dict: dict | None):
+def _run_backtest_task(steps: int):
     """
     Worker function executed in a FastAPI BackgroundTask.
     Runs the full backtest and writes the result (or error) into _backtest_status.
     The import is deferred to avoid loading backtest deps on every server start.
 
-    config_dict is the (transient) scoring parameters to TEST this run with —
-    it is NOT persisted, so a backtest experiment never changes the live
-    portfolio. None → the run uses the default parameters.
+    The run uses the ACTIVE stress-score config (the model-learned weights when a
+    model has been trained, else DEFAULT_CONFIG) — the same config the dashboard
+    scores with. There is no longer a transient/UI-tuned config.
     """
     try:
         from src.backtest import run_backtest
-        config = ScoreConfig.from_dict(config_dict) if config_dict else ScoreConfig.from_dict(DEFAULT_CONFIG)
-        result = run_backtest(steps=steps, config=config)
+        result = run_backtest(steps=steps, config=_active_config())
         _backtest_status["result"] = result
         _backtest_status["error"] = None
     except Exception as e:
@@ -778,23 +877,17 @@ class BacktestRequest(BaseModel):
     # Snapshots per case (~90 days apart). Optional — omitted means the
     # backtest's own DEFAULT_STEPS is used.
     steps: int | None = None
-    # Scoring parameters to TEST this run with (transient — NOT persisted, so a
-    # backtest experiment never changes the live portfolio). Omitted → the active
-    # (applied) config is used, so the backtest matches the dashboard.
-    config: dict | None = None
 
 
 @app.post("/api/backtest")
 def start_backtest(background_tasks: BackgroundTasks, req: BacktestRequest | None = None):
     """
-    Start the backtest as a background task and return immediately.
+    Start the stress-score backtest as a background task and return immediately.
     The frontend polls /api/backtest/status every 3 s to detect completion.
     Returns 409 if a backtest is already running.
 
-    Accepts an optional body:
-      - {"steps": N}   point-in-time history depth, clamped to [_MIN_STEPS, _MAX_STEPS].
-      - {"config": …}  scoring parameters to TEST with (transient — not saved).
-                       Omitted → the active applied config (matches the dashboard).
+    Accepts an optional body: {"steps": N} — point-in-time history depth, clamped to
+    [_MIN_STEPS, _MAX_STEPS]. The run always uses the active stress-score config.
     """
     if _backtest_status["running"]:
         raise HTTPException(409, "Backtest already running")
@@ -803,20 +896,10 @@ def start_backtest(background_tasks: BackgroundTasks, req: BacktestRequest | Non
     steps = req.steps if (req and req.steps is not None) else DEFAULT_STEPS
     steps = max(_MIN_STEPS, min(_MAX_STEPS, steps))
 
-    # A request config is the draft being TESTED; otherwise run with the active
-    # (applied) config so the backtest reflects what the portfolio currently uses.
-    if req and req.config is not None:
-        config_dict = _validate_config(req.config)
-    else:
-        try:
-            config_dict = get_score_config()
-        except Exception:
-            config_dict = DEFAULT_CONFIG
-
     _backtest_status["running"] = True
     _backtest_status["result"] = None
     _backtest_status["error"] = None
-    background_tasks.add_task(_run_backtest_task, steps, config_dict)
+    background_tasks.add_task(_run_backtest_task, steps)
     return {"status": "started"}
 
 
@@ -884,10 +967,18 @@ def _slugify_case_id(name: str, ticker: str, event_date: str, label: str) -> str
     return base
 
 
+_EVENT_TYPES = ("downgrade", "upgrade", "default", "control")
+
+
 class AddCaseRequest(BaseModel):
     identifier: str                  # ticker (e.g. "BTU") or CIK (e.g. "1064728")
-    label: str                       # "distressed" | "healthy"
-    event_date: str | None = None    # "YYYY-MM-DD"; required for distressed
+    # The rating-event type the backtest checks the model catches early. `label`
+    # (distressed|healthy) is still accepted for back-compat and, when event_type is
+    # omitted, mapped: distressed→default, healthy→control.
+    event_type: str | None = None    # downgrade | upgrade | default | control
+    label: str | None = None
+    agency: str | None = None        # MDY|FTC|SPI for a rating-migration event (optional)
+    event_date: str | None = None    # "YYYY-MM-DD"; required for non-control events
     notes: str | None = None
     case_id: str | None = None       # optional explicit slug; auto-generated when omitted
 
@@ -895,30 +986,37 @@ class AddCaseRequest(BaseModel):
 @app.post("/api/cases")
 def create_case(req: AddCaseRequest):
     """
-    Add a case to the backtest library.
+    Add a case to the unified rating-event backtest library.
 
     Resolves the identifier (ticker or CIK) to a canonical CIK + current name via
-    EDGAR, validates the label, requires event_date for distressed cases (defaults
-    healthy controls to a pinned anchor), auto-generates a case_id slug when
-    omitted, and inserts the row. Returns the stored row (shape: BacktestCaseInfo).
+    EDGAR; an `event_type` of downgrade/upgrade/default needs an event_date, while a
+    `control` defaults to a pinned anchor. The legacy `label` is derived from the
+    event_type (control→healthy, else distressed) for back-compat. Returns the row.
     """
-    label = req.label.strip().lower()
-    if label not in ("distressed", "healthy"):
-        raise HTTPException(400, "label must be 'distressed' or 'healthy'")
+    event_type = (req.event_type or "").strip().lower()
+    if not event_type:
+        # Derive from the legacy label when only that was supplied.
+        legacy = (req.label or "").strip().lower()
+        event_type = "control" if legacy == "healthy" else "default" if legacy == "distressed" else ""
+    if event_type not in _EVENT_TYPES:
+        raise HTTPException(400, f"event_type must be one of {_EVENT_TYPES}")
+    # `label` keeps the table's existing CHECK happy and the stress backtest working.
+    label = "healthy" if event_type == "control" else "distressed"
+
+    agency = (req.agency or "").strip().upper() or None
+    if agency and agency not in ("MDY", "FTC", "SPI"):
+        raise HTTPException(400, "agency must be MDY, FTC, or SPI")
 
     event_date = (req.event_date or "").strip()
-    if label == "distressed" and not event_date:
-        raise HTTPException(
-            400, "event_date (the Chapter 11 / credit-event date) is required for distressed cases"
-        )
+    if event_type != "control" and not event_date:
+        raise HTTPException(400, f"event_date (the {event_type} date) is required for a {event_type} case")
     if event_date:
         try:
             datetime.strptime(event_date, "%Y-%m-%d")
         except ValueError:
             raise HTTPException(400, f"Invalid event_date {event_date!r} — expected YYYY-MM-DD")
-    # Healthy default: pin a stable far-future anchor so baselines stay reproducible
-    # (matches the 2025-12-31 anchors already in cases.csv).
-    if label == "healthy" and not event_date:
+    # Control default: a stable far-future anchor so baselines stay reproducible.
+    if event_type == "control" and not event_date:
         event_date = "2025-12-31"
 
     identifier = req.identifier.strip()
@@ -954,6 +1052,8 @@ def create_case(req: AddCaseRequest):
         "ticker": ticker,
         "cik": cik,
         "label": label,
+        "event_type": event_type,
+        "agency": agency,
         "event_date": event_date,
         "notes": (req.notes or "").strip(),
     })
@@ -967,88 +1067,141 @@ def remove_case(case_id: str):
     return {"status": "deleted", "case_id": case_id}
 
 
-# ── Scoring parameters (test in backtest vs. apply to portfolio) ─────────────
+# ── Background model training ("trained in the back") ────────────────────────
 
-def _validate_config(raw: dict) -> dict:
+@app.get("/api/cron/train-model")
+def cron_train_model(authorization: str = Header(default="")):
     """
-    Deep-merge `raw` over DEFAULT_CONFIG, enforce sane ranges, and return the
-    normalized full config dict. Raises HTTPException(400) on bad input.
+    Orchestrate a background (re)train of the rating-migration model: assemble the
+    labeled matrix, train walk-forward vintages + the active model, persist the
+    model-learned stress-score weights, write predictions, and run the walk-forward
+    eval. Auth mirrors cron_refresh_all (Bearer CRON_SECRET when set).
 
-    The most important guard is healthy != severe per rule — _ramp divides by
-    (severe - healthy), so equal values would be a division by zero.
+    NOTE: a full walk-forward train can exceed a serverless function's time/memory
+    budget. This endpoint is the trigger/orchestrator; in production the heavy run
+    is expected to execute as a longer-lived scheduled job (external worker / CI /
+    local cron) calling the same `src.model` pipeline. The app only ever READS the
+    persisted artifacts (migration_predictions, score_config, model_registry,
+    data/migration_eval.json). Inert until agency ratings have been ingested.
     """
-    if not isinstance(raw, dict):
-        raise HTTPException(400, "config must be an object")
-
-    unknown = set((raw.get("rules") or {}).keys()) - set(DEFAULT_CONFIG["rules"].keys())
-    if unknown:
-        raise HTTPException(400, f"unknown rule keys: {', '.join(sorted(unknown))}")
+    secret = os.environ.get("CRON_SECRET")
+    if secret and authorization != f"Bearer {secret}":
+        raise HTTPException(401, "Unauthorized")
 
     try:
-        cfg = ScoreConfig.from_dict(raw)
-    except (TypeError, ValueError, KeyError) as e:
-        raise HTTPException(400, f"invalid config: {e}")
+        from datetime import timezone
+        from src.model.features import load_training_matrix
+        from src.model.train import train_all, save_model, derive_score_config, DEFAULT_ARTIFACT
 
-    for key, r in cfg.rules.items():
-        if not (0 <= r["weight"] <= 100):
-            raise HTTPException(400, f"{key}.weight must be in [0, 100]")
-        if r["healthy"] == r["severe"]:
-            raise HTTPException(400, f"{key}: healthy and severe must differ (the ramp divides by their gap)")
-    for key, v in cfg.ebitda_override.items():
-        if not (0 <= v <= 100):
-            raise HTTPException(400, f"ebitda_override.{key} must be in [0, 100]")
-    for k in ("high_severity_per", "covenant_per", "provision_per"):
-        if not (0 <= cfg.llm[k] <= 50):
-            raise HTTPException(400, f"llm.{k} must be in [0, 50]")
-    for k in ("high_severity_cap", "covenant_cap", "provision_cap", "combined_cap"):
-        if not (0 <= cfg.llm[k] <= 100):
-            raise HTTPException(400, f"llm.{k} must be in [0, 100]")
-    if not (1 <= cfg.score_cap <= 100):
-        raise HTTPException(400, "score_cap must be in [1, 100]")
-    if not (1 <= cfg.escalation["min_severe"] <= 9):
-        raise HTTPException(400, "escalation.min_severe must be an integer in [1, 9]")
-    if not (0 < cfg.escalation["severe_frac"] <= 1):
-        raise HTTPException(400, "escalation.severe_frac must be in (0, 1]")
-    if not (0 <= cfg.escalation["floor"] <= 100):
-        raise HTTPException(400, "escalation.floor must be in [0, 100]")
-    if not (1 <= cfg.threshold <= 100):
-        raise HTTPException(400, "threshold must be an integer in [1, 100]")
+        df = load_training_matrix()
+        if df.empty:
+            return {"status": "skipped", "reason": "no labeled training rows yet (ingest agency ratings first)"}
 
-    return cfg.to_dict()
+        version = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        # Single active model on the full history; vintages/eval are expected to run
+        # in the heavier offline job.
+        split = max(df["period_end"])
+        bundle, metrics = train_all(df, split, version=version)
+        path = save_model(bundle, DEFAULT_ARTIFACT)
+        save_model_registry(
+            version=version, artifact_path=path, feature_list=bundle["feature_columns"],
+            train_window={"split_date": split, "n_train": metrics["n_train"], "n_test": metrics["n_test"]},
+            metrics=metrics,
+        )
+        save_score_config(derive_score_config(bundle))
+        return {"status": "trained", "version": version, "rows": int(len(df))}
+    except Exception as e:
+        logging.warning("cron train-model failed", exc_info=True)
+        raise HTTPException(500, f"train-model failed: {e}")
 
 
-class ScoreConfigRequest(BaseModel):
-    config: dict
+# ── Rating-migration EVENT backtest (run the trained model over the case library) ─
+
+_migration_bt_status: dict[str, Any] = {"running": False, "result": None, "error": None}
 
 
-@app.get("/api/score-config")
-def read_score_config():
-    """
-    Return the active (applied) scoring parameters plus the built-in defaults.
+def _load_vintages() -> list[dict[str, Any]]:
+    """Walk-forward vintages on disk: data/model_vintages/<cutoff>.joblib → [{cutoff, path}]."""
+    d = _ROOT / "data" / "model_vintages"
+    if not d.exists():
+        return []
+    return sorted(
+        ({"cutoff": p.stem, "path": str(p)} for p in d.glob("*.joblib")),
+        key=lambda v: v["cutoff"],
+    )
 
-    `active` drives the live portfolio/detail scores and seeds the editor;
-    `defaults` powers the "Reset to defaults" button.
-    """
+
+def _run_migration_backtest_task(steps: int):
     try:
-        active = get_score_config()
+        from src.backtest import load_cases
+        from src.model.features import build_scoring_matrix
+        from src.migration_backtest import run_migration_backtest
+
+        vintages = _load_vintages()
+        cases = load_cases()
+        scoring_by_cik: dict[str, list[dict]] = {}
+        df = build_scoring_matrix()
+        for rec in df.to_dict("records"):
+            scoring_by_cik.setdefault(str(rec["cik"]).zfill(10), []).append(rec)
+
+        result = run_migration_backtest(cases, scoring_by_cik, vintages, steps=steps)
+        if not vintages:
+            result["note"] = ("No trained model vintages found (data/model_vintages/). "
+                              "Train the model once agency ratings are ingested.")
+        from datetime import timezone
+        result["run_at"] = datetime.now(timezone.utc).isoformat()
+        _migration_bt_status["result"] = result
+        _migration_bt_status["error"] = None
+    except Exception as e:
+        _migration_bt_status["error"] = str(e)
+        _migration_bt_status["result"] = None
+    finally:
+        _migration_bt_status["running"] = False
+
+
+@app.post("/api/migration/backtest")
+def start_migration_backtest(background_tasks: BackgroundTasks, req: BacktestRequest | None = None):
+    """
+    Run the unified rating-EVENT backtest: replay the trained model point-in-time
+    over the case library and report whether it flagged each issuer's upgrade /
+    downgrade / default early. Background task; poll /api/migration/backtest/status.
+    """
+    if _migration_bt_status["running"]:
+        raise HTTPException(409, "Migration backtest already running")
+    from src.migration_backtest import DEFAULT_STEPS
+    steps = req.steps if (req and req.steps is not None) else DEFAULT_STEPS
+    steps = max(_MIN_STEPS, min(_MAX_STEPS, steps))
+    _migration_bt_status["running"] = True
+    _migration_bt_status["result"] = None
+    _migration_bt_status["error"] = None
+    background_tasks.add_task(_run_migration_backtest_task, steps)
+    return {"status": "started"}
+
+
+@app.get("/api/migration/backtest/status")
+def migration_backtest_status():
+    """Current state of the migration event backtest (running flag / result / error)."""
+    return _migration_bt_status
+
+
+@app.get("/api/migration/scorecard")
+def migration_scorecard():
+    """
+    Read-only walk-forward scorecard: the `migration` block written by
+    src.model.evaluate (data/migration_eval.json) plus the active model's
+    provenance/metrics from model_registry. Either may be null until trained.
+    """
+    import json
+    eval_block = None
+    p = _ROOT / "data" / "migration_eval.json"
+    if p.exists():
+        try:
+            eval_block = json.loads(p.read_text()).get("migration")
+        except ValueError:
+            eval_block = None
+    try:
+        model = get_model_registry()
     except Exception:
-        active = DEFAULT_CONFIG
-    return {
-        "active": ScoreConfig.from_dict(active).to_dict(),
-        "defaults": ScoreConfig.from_dict(DEFAULT_CONFIG).to_dict(),
-    }
-
-
-@app.put("/api/score-config")
-def apply_score_config(req: ScoreConfigRequest):
-    """
-    Apply scoring parameters to the live portfolio: validate, persist as the
-    active config, and invalidate the per-process cache. After this, the
-    dashboard and detail pages recompute scores with these parameters (no
-    re-track needed). This is the UI's "Apply to portfolio" action.
-    """
-    cfg = _validate_config(req.config)
-    save_score_config(cfg)
-    _invalidate_config_cache()
-    return {"active": cfg}
+        model = None
+    return {"migration": eval_block, "model": model}
 

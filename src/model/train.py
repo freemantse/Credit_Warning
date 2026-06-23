@@ -29,6 +29,7 @@ from src.model.dataset import (
     monotone_constraints, classification_metrics,
 )
 from src.model.features import FEATURE_COLUMNS
+from src.score import DEFAULT_CONFIG
 
 
 def _build_booster(monotone: list[int], random_state: int):
@@ -152,6 +153,91 @@ def save_model(bundle: dict[str, Any], path: str) -> str:
     return path
 
 
+# ── Model-learned stress-score weights ───────────────────────────────────────
+
+# Each of the 8 deterministic stress-score rules ↔ the model feature it measures.
+# (current_ratio retired in Part 0.)
+RULE_TO_FEATURE: dict[str, str] = {
+    "profitability": "ebitda_margin",
+    "leverage>5x": "leverage",
+    "coverage<2x": "interest_coverage",
+    "cash_flow_to_debt<30%": "cash_flow_to_debt",
+    "fcf_negative": "fcf_margin",
+    "liquidity<1x": "liquidity",
+    "debt_to_assets>40%": "debt_to_assets",
+    "maturity_wall": "maturity_near_term_pct",
+}
+
+
+def derive_score_config(bundle: dict[str, Any], base: dict | None = None) -> dict:
+    """
+    Turn the model's learned importances into the deterministic stress-score WEIGHTS.
+
+    Uses the downgrade head's logistic baseline (standardized coefficients, so they
+    are comparable across features). Each rule's weight = normalized |coefficient|
+    of its mapped feature, scaled so the 8 weights sum to the same total as the
+    DEFAULT config (the ramps/caps/escalation are kept). Falls back to `base`
+    unchanged when the downgrade head or its baseline is unavailable.
+    """
+    import copy
+    base = copy.deepcopy(base if base is not None else DEFAULT_CONFIG)
+
+    head = bundle.get("heads", {}).get("downgrade")
+    if not head or "baseline" not in head:
+        return base
+    try:
+        pipe = head["baseline"]
+        coef = pipe.named_steps["lr"].coef_[0]
+        # The LogisticRegression coefficients align to the imputer's OUTPUT columns,
+        # not the raw FEATURE_COLUMNS — the imputer drops all-NaN features. Map each
+        # coefficient back to its feature name so the rule→feature lookup is correct.
+        kept = list(pipe.named_steps["impute"].get_feature_names_out())
+        coef_by_feature = {name: float(c) for name, c in zip(kept, coef)}
+    except Exception:
+        return base
+
+    raw = {rule: abs(coef_by_feature.get(feat, 0.0)) for rule, feat in RULE_TO_FEATURE.items()}
+    total_raw = sum(raw.values())
+    target_total = sum(base["rules"][r]["weight"] for r in RULE_TO_FEATURE if r in base["rules"])
+    if total_raw <= 0 or target_total <= 0:
+        return base  # degenerate (all-zero coefficients) → keep defaults
+
+    for rule, w in raw.items():
+        if rule in base["rules"]:
+            base["rules"][rule]["weight"] = round(w / total_raw * target_total, 1)
+    return base
+
+
+# ── Walk-forward vintages (background training; no-leakage backtest) ──────────
+
+def train_vintages(
+    df,
+    cutoffs: list[str],
+    *,
+    out_dir: str = "data/model_vintages",
+    random_state: int = 0,
+) -> list[dict[str, Any]]:
+    """
+    Train one model per cutoff date (each on data whose label window closes ≤ cutoff)
+    and persist it to `out_dir/<cutoff>.joblib`. Returns
+    [{cutoff, path, metrics}, …] sorted ascending — the newest is the active model.
+    These vintages let the migration backtest score a snapshot at date T with a model
+    that only saw data before T (no leakage).
+    """
+    out: list[dict[str, Any]] = []
+    for cutoff in sorted(cutoffs):
+        bundle, metrics = train_all(df, cutoff, random_state=random_state, version=cutoff)
+        path = save_model(bundle, f"{out_dir}/{cutoff}.joblib")
+        out.append({"cutoff": cutoff, "path": path, "metrics": metrics})
+    return out
+
+
+def select_vintage(vintages: list[dict[str, Any]], as_of: str) -> str | None:
+    """Path of the latest vintage whose cutoff is strictly before `as_of` (else None)."""
+    eligible = [v for v in vintages if v["cutoff"] < as_of]
+    return max(eligible, key=lambda v: v["cutoff"])["path"] if eligible else None
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 DEFAULT_ARTIFACT = "data/migration_model.joblib"
@@ -175,6 +261,8 @@ if __name__ == "__main__":
     parser.add_argument("--matrix", default=None, help="optional training-matrix CSV (else from Supabase)")
     parser.add_argument("--out", default=DEFAULT_ARTIFACT, help="joblib artifact path")
     parser.add_argument("--no-registry", action="store_true", help="skip writing model_registry")
+    parser.add_argument("--no-score-config", action="store_true",
+                        help="skip persisting the model-learned stress-score weights")
     args = parser.parse_args()
 
     df = _load_matrix(args.matrix)
@@ -197,3 +285,13 @@ if __name__ == "__main__":
             print("Registry updated (model_registry id='active').")
         except Exception as e:
             print(f"[registry update skipped: {e}]")
+
+    if not args.no_score_config:
+        try:
+            from src.store import save_score_config
+            learned = derive_score_config(bundle)
+            save_score_config(learned)
+            weights = {r: learned["rules"][r]["weight"] for r in RULE_TO_FEATURE if r in learned["rules"]}
+            print(f"Learned stress-score weights persisted: {weights}")
+        except Exception as e:
+            print(f"[score-config update skipped: {e}]")

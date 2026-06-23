@@ -86,34 +86,6 @@ def test_empty_facts_raises():
         resolve_tag({}, "revenue", "2023-12-31")
 
 
-# ── New concepts: current assets / current liabilities ──────────────────────
-
-FIXTURE_CURRENT = {
-    "facts": {
-        "us-gaap": {
-            "AssetsCurrent": {
-                "units": {"USD": [{"end": "2023-12-31", "val": 600_000, "filed": "2024-02-15", "form": "10-K"}]}
-            },
-            "LiabilitiesCurrent": {
-                "units": {"USD": [{"end": "2023-12-31", "val": 400_000, "filed": "2024-02-15", "form": "10-K"}]}
-            },
-        }
-    }
-}
-
-
-def test_resolve_current_assets():
-    val, tag = resolve_tag(FIXTURE_CURRENT, "current_assets", "2023-12-31")
-    assert val == 600_000
-    assert tag == "us-gaap/AssetsCurrent"
-
-
-def test_resolve_current_liabilities():
-    val, tag = resolve_tag(FIXTURE_CURRENT, "current_liabilities", "2023-12-31")
-    assert val == 400_000
-    assert tag == "us-gaap/LiabilitiesCurrent"
-
-
 # ── Newly-added fallback tags resolve when primaries are absent ─────────────
 
 def test_revenue_falls_back_to_bank_tag():

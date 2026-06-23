@@ -20,7 +20,6 @@ Ratios computed:
   liquidity             = cash / short_term_debt
   cash_flow_to_debt     = operating_cashflow / gross_debt   (FFO/Debt proxy)
   debt_to_assets        = gross_debt / total_assets         (gearing)
-  current_ratio         = current_assets / current_liabilities
 """
 
 from __future__ import annotations
@@ -478,35 +477,6 @@ def debt_to_assets(facts: dict, period_end: str, filed_before: str | None = None
     )
 
 
-def current_ratio(facts: dict, period_end: str, filed_before: str | None = None) -> RatioResult:
-    """
-    Current ratio = current_assets / current_liabilities.
-
-    The classic working-capital liquidity test: can the company cover obligations
-    due within a year from assets convertible to cash within a year?
-
-    Interpretation:
-      >= 1.5× — comfortable working-capital cushion
-      ~1.0×  — can just cover current liabilities (already meaningful stress)
-      < 0.75× — acute working-capital deficit; <0.6× is used in distress classification
-
-    Lower is worse. Raises MissingDataError if current liabilities is zero.
-    """
-    ca, ca_tag = _resolve(facts, "current_assets", period_end, filed_before)
-    cl, cl_tag = _resolve(facts, "current_liabilities", period_end, filed_before)
-
-    if cl == 0:
-        raise MissingDataError(f"Current liabilities is zero for {period_end}, current ratio undefined")
-
-    return RatioResult(
-        name="current_ratio",
-        value=ca / cl,
-        inputs={"current_assets": ca, "current_liabilities": cl},
-        source_tags={"current_assets": ca_tag, "current_liabilities": cl_tag},
-        period_end=period_end,
-    )
-
-
 def debt_maturity_schedule(
     facts: dict,
     period_end: str,
@@ -582,7 +552,7 @@ def recover_ebitda(ratios: dict[str, "RatioResult | MissingRatio"]) -> float | N
 # that's needed to include it in every batch extraction run.
 _RATIO_FUNCTIONS = [
     leverage, interest_coverage, free_cash_flow, fcf_margin, ebitda_margin, liquidity,
-    cash_flow_to_debt, debt_to_assets, current_ratio,
+    cash_flow_to_debt, debt_to_assets,
 ]
 
 
@@ -599,42 +569,7 @@ RATIO_INPUTS: dict[str, list[str]] = {
     "liquidity":             ["cash", "short_term_debt"],
     "cash_flow_to_debt":     ["operating_cashflow", "total_debt", "short_term_debt"],
     "debt_to_assets":        ["total_debt", "short_term_debt", "total_assets"],
-    "current_ratio":         ["current_assets", "current_liabilities"],
 }
-
-
-def is_unclassified_balance_sheet(
-    facts: dict,
-    period_end: str,
-    filed_before: str | None = None,
-) -> bool:
-    """
-    Detect an UNCLASSIFIED balance sheet for one period.
-
-    Banks, insurers (e.g. AFLAC), broker-dealers, many REITs and some asset-heavy
-    lessors present assets/liabilities ordered by liquidity rather than split into
-    current vs. non-current. They report total assets and total liabilities but
-    NOT current assets/liabilities — so the current ratio is structurally N/A, not
-    a data gap.
-
-    Signal: total_assets AND total_liabilities resolve, but NEITHER current_assets
-    nor current_liabilities resolves. Requiring both totals to be present avoids
-    false positives on genuinely incomplete data (where the whole balance sheet is
-    simply missing for the period).
-    """
-    def _resolves(concept: str) -> bool:
-        try:
-            _resolve(facts, concept, period_end, filed_before)
-            return True
-        except MissingDataError:
-            return False
-
-    return (
-        _resolves("total_assets")
-        and _resolves("total_liabilities")
-        and not _resolves("current_assets")
-        and not _resolves("current_liabilities")
-    )
 
 
 def diagnose_ratio(
@@ -655,27 +590,7 @@ def diagnose_ratio(
 
     `reason` is the original MissingDataError message — important for guard failures
     (e.g. zero EBITDA) where every input resolves but the ratio is still undefined.
-
-    Special case — current ratio on an unclassified balance sheet: the issuer never
-    reports current assets/liabilities, so the ratio is marked NOT APPLICABLE rather
-    than missing. `missing_inputs` is left empty (no red "tried these tags" chips)
-    and `reason` explains it's a reporting convention, not a tagging gap.
     """
-    if name == "current_ratio" and is_unclassified_balance_sheet(facts, period_end, filed_before):
-        return MissingRatio(
-            name=name,
-            period_end=period_end,
-            inputs={},
-            source_tags={},
-            missing_inputs=[],
-            reason=(
-                "Not applicable — issuer files an unclassified balance sheet and does "
-                "not report current assets/liabilities. Common for banks, insurers and "
-                "some lessors; the current ratio does not apply."
-            ),
-            not_applicable=True,
-        )
-
     inputs: dict[str, float] = {}
     source_tags: dict[str, str] = {}
     missing_inputs: list[dict] = []

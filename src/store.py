@@ -209,7 +209,7 @@ def _companies_map(ciks: list[str]) -> dict[str, dict]:
 # backtest and /api/backtest/cases stay unchanged.
 
 # The canonical case columns, in the order the CSV used.
-_CASE_COLUMNS = ("case_id", "company_name", "ticker", "cik", "label", "event_date", "notes")
+_CASE_COLUMNS = ("case_id", "company_name", "ticker", "cik", "label", "event_type", "agency", "event_date", "notes")
 
 
 def _case_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -261,6 +261,12 @@ def add_case(row: dict[str, Any], **_) -> dict[str, Any]:
     """
     record = {col: (row.get(col) or "") for col in _CASE_COLUMNS}
     record["cik"] = record["cik"].zfill(10)
+    # event_type has a CHECK constraint (4 values), so never send "" — derive it
+    # from the label (healthy→control, else default) when the caller omitted it.
+    if not record.get("event_type"):
+        record["event_type"] = "control" if record.get("label") == "healthy" else "default"
+    # agency is nullable; "" → NULL so the column stays clean for non-rating events.
+    record["agency"] = record.get("agency") or None
     _client().table("cases").upsert(record).execute()
     return record
 

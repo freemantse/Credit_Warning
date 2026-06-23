@@ -32,8 +32,8 @@ def test_ratio_features_levels_and_deltas():
     assert f["leverage"] == 4.0
     assert f["leverage_yoy"] == 1.0
     assert f["liquidity_yoy"] == approx(-0.3)
-    # A ratio missing in the prior period → delta None, level still present.
-    assert f["current_ratio"] is None and f["current_ratio_yoy"] is None
+    # A ratio absent from both periods → level and delta both None.
+    assert f["debt_to_assets"] is None and f["debt_to_assets_yoy"] is None
 
 
 # ── build_issuer_features ────────────────────────────────────────────────────

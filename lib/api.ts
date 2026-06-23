@@ -33,12 +33,12 @@ export interface IssuerSummary {
   liquidity: number | null        // cash / short_term_debt
   cash_flow_to_debt: number | null      // operating_cashflow / gross_debt (FFO/Debt proxy), decimal fraction
   debt_to_assets: number | null         // gross_debt / total_assets (gearing), decimal fraction
-  current_ratio: number | null          // current_assets / current_liabilities
   score: number | null             // 0–100 stress score; null when no ratios are stored yet
   alerts: string[]                // human-readable triggered threshold messages
   implied_rating?: string | null  // S&P-style implied rating letter (e.g. "BBB-"); null when uncomputable
   rating_index?: number | null    // its position in RATING_SCALE (0 = AAA) — used for sorting
   outlook?: string | null         // Rating Outlook: "Positive" | "Stable" | "Negative" | null
+  prediction?: RatingChangePrediction | null  // directional rating-change signal + a short "why"
 }
 
 /**
@@ -180,6 +180,21 @@ export interface MigrationPrediction {
   p_default: number | null
   drivers_json: MigrationDriver[]
   model_version: string
+  reason?: string                       // plain-language "why" (server-built); present on issuer detail
+  direction?: 'down' | 'stable' | 'up'
+  source?: 'model' | 'outlook'
+}
+
+/**
+ * Unified directional "rating change" signal for an issuer (GET /api/issuers).
+ * `source` is 'model' once the migration model is trained, else 'outlook'.
+ */
+export interface RatingChangePrediction {
+  direction: 'down' | 'stable' | 'up'
+  p_downgrade: number | null
+  p_upgrade: number | null
+  source: 'model' | 'outlook'
+  reason: string
 }
 
 /**
@@ -304,8 +319,10 @@ export interface BacktestCaseInfo {
   company_name: string
   ticker: string
   cik: string
-  label: string                // "distressed" or "healthy"
-  event_date: string           // Chapter 11 petition date / pinned anchor for controls
+  label: string                // "distressed" or "healthy" (legacy axis)
+  event_type?: string          // downgrade | upgrade | default | control
+  agency?: string              // MDY|FTC|SPI for a rating-migration event, else ""
+  event_date: string           // the rating-event / Ch.11 date (or pinned anchor for controls)
   notes: string
 }
 
@@ -319,8 +336,9 @@ export interface CaseLibrary {
 /** Payload for POST /api/cases — add a case to the backtest library. */
 export interface AddCasePayload {
   identifier: string            // ticker (e.g. "BTU") or CIK
-  label: 'distressed' | 'healthy'
-  event_date?: string           // "YYYY-MM-DD"; required for distressed
+  event_type: 'downgrade' | 'upgrade' | 'default' | 'control'
+  agency?: string               // MDY|FTC|SPI for a rating-migration event (optional)
+  event_date?: string           // "YYYY-MM-DD"; required for non-control events
   notes?: string
   case_id?: string              // optional explicit slug; auto-generated when omitted
 }
@@ -351,12 +369,6 @@ export interface ScoreConfig {
   score_cap: number
   escalation: { min_severe: number; severe_frac: number; floor: number }
   threshold: number
-}
-
-/** Response from GET /api/score-config: the applied config + the built-in defaults. */
-export interface ScoreConfigResponse {
-  active: ScoreConfig
-  defaults: ScoreConfig
 }
 
 // ── API fetch functions ───────────────────────────────────────────────────────
@@ -471,15 +483,11 @@ export async function fetchLlmReviewStatus(ticker: string): Promise<LlmReviewSta
  *
  * `steps` sets the point-in-time history depth (snapshots per case, ~90 days
  * apart). Omitted → the server's default. The server clamps it to a safe range.
- *
- * `config` TESTS the backtest with a draft scoring parameter set WITHOUT applying
- * it to the live portfolio (transient — not persisted). Omitted → the active
- * applied config, so the backtest matches the dashboard.
+ * The run uses the active stress-score config (model-learned weights when trained).
  */
-export async function startBacktest(steps?: number, config?: ScoreConfig): Promise<void> {
-  const body: { steps?: number; config?: ScoreConfig } = {}
+export async function startBacktest(steps?: number): Promise<void> {
+  const body: { steps?: number } = {}
   if (steps != null) body.steps = steps
-  if (config != null) body.config = config
   const res = await fetch('/api/backtest', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -536,29 +544,88 @@ export async function deleteCase(caseId: string): Promise<void> {
   }
 }
 
-/** Fetch the active (applied) scoring parameters plus the built-in defaults. */
-export async function fetchScoreConfig(): Promise<ScoreConfigResponse> {
-  const res = await fetch('/api/score-config')
-  if (!res.ok) throw new Error('Failed to fetch scoring parameters')
-  return res.json()
+// ── Rating-migration model: event backtest + walk-forward scorecard ───────────
+
+/** One case row in the migration event backtest (per-issuer rating-event result). */
+export interface MigrationCaseResult {
+  case_id?: string
+  ticker: string
+  company_name?: string
+  event_type: string                     // downgrade | upgrade | default | control
+  event_date?: string | null
+  status?: string                        // caught | missed | data_gap | clean | false_positive | error
+  caught?: boolean
+  early_warning?: boolean
+  lead_months?: number | null
+  fp_count?: number
+  trajectory?: { eval_date: string; months_before_event: number; prob: number | null; flagged: boolean }[]
+  error?: string | null
 }
 
-/**
- * Apply scoring parameters to the live portfolio (the "Apply to portfolio"
- * action): validates and persists them as the active config. After this, the
- * portfolio dashboard and detail pages recompute scores with these parameters.
- * Throws with the validation message on a bad config (400).
- */
-export async function saveScoreConfig(config: ScoreConfig): Promise<{ active: ScoreConfig }> {
-  const res = await fetch('/api/score-config', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ config }),
+/** Per-event-type summary of the migration event backtest. */
+export interface MigrationEventSummary {
+  catch_rate?: number
+  caught?: number
+  total: number
+  median_lead_months?: number
+  early_warning_rate?: number
+  false_positive?: number       // control rows: count of false positives
+  fp_rate?: number
+}
+
+export interface MigrationBacktestStatus {
+  running: boolean
+  result: {
+    run_at?: string
+    threshold?: number
+    by_event_type: Record<string, MigrationEventSummary>
+    cases: MigrationCaseResult[]
+    note?: string
+  } | null
+  error: string | null
+  saved?: boolean
+}
+
+/** Aggregate walk-forward metrics per head (read-only scorecard). */
+export interface MigrationHeadAgg {
+  mean_pr_auc_model: number | null
+  mean_pr_auc_baseline: number | null
+  n_splits_scored: number
+}
+
+export interface MigrationBacktest {
+  migration: {
+    split_dates: string[]
+    aggregate: Record<string, MigrationHeadAgg>
+    confusion_by_bucket_final: Record<string, { n: number; tp?: number; fp?: number; tn?: number; fn?: number; actual_downgrade_rate?: number }>
+  } | null
+  model: { version: string; train_window?: Record<string, unknown>; metrics_json?: Record<string, unknown> } | null
+}
+
+/** Start the migration EVENT backtest (runs the trained model over the case library). */
+export async function startMigrationBacktest(steps?: number): Promise<void> {
+  const body: { steps?: number } = {}
+  if (steps != null) body.steps = steps
+  const res = await fetch('/api/migration/backtest', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: 'Unknown error' }))
-    throw new Error(err.detail || 'Failed to apply scoring parameters')
+    throw new Error(err.detail || 'Failed to start migration backtest')
   }
+}
+
+/** Poll the migration event-backtest status. */
+export async function fetchMigrationBacktestStatus(): Promise<MigrationBacktestStatus> {
+  const res = await fetch('/api/migration/backtest/status')
+  if (!res.ok) throw new Error('Failed to fetch migration backtest status')
+  return res.json()
+}
+
+/** Fetch the read-only walk-forward scorecard + active-model provenance. */
+export async function fetchMigrationScorecard(): Promise<MigrationBacktest> {
+  const res = await fetch('/api/migration/scorecard')
+  if (!res.ok) throw new Error('Failed to fetch migration scorecard')
   return res.json()
 }
 
