@@ -1,0 +1,123 @@
+{
+  "_meta": {
+    "tier": 1,
+    "kind": "flat_non_sector_adjusted",
+    "supersede_with": "score_to_rating_sector_adjusted (Tier 2, needs benchmark layer)",
+    "pairs_used": 92,
+    "skipped": [
+      {
+        "name": "Emmis Communications",
+        "reason": "no scored snapshot (data-gap)"
+      },
+      {
+        "name": "Avaya",
+        "reason": "no scored snapshot (data-gap)"
+      },
+      {
+        "name": "Fastenal",
+        "reason": "blank/unrated sp_rating"
+      }
+    ],
+    "min_anchors_for_high_confidence": 3,
+    "note": "Score\u2192rating cutoffs anchored on real S&P ratings. BB/B/CCC have no anchors \u2192 those boundaries are interpolated and flagged low confidence."
+  },
+  "buckets": [
+    "AA",
+    "A",
+    "BBB",
+    "BB",
+    "B",
+    "CCC",
+    "D"
+  ],
+  "bucket_anchor_counts": {
+    "AA": 3,
+    "A": 11,
+    "BBB": 4,
+    "BB": 0,
+    "B": 0,
+    "CCC": 0,
+    "D": 74
+  },
+  "ig_vs_d_split": 55.8,
+  "boundaries": [
+    {
+      "between": [
+        "AA",
+        "A"
+      ],
+      "threshold": 14.6,
+      "confidence": "high",
+      "anchor_count": 14,
+      "anchors_lo": 3,
+      "anchors_hi": 11,
+      "note": "anchored (Youden); n_AA=3, n_A=11"
+    },
+    {
+      "between": [
+        "A",
+        "BBB"
+      ],
+      "threshold": 48.6,
+      "confidence": "high",
+      "anchor_count": 15,
+      "anchors_lo": 11,
+      "anchors_hi": 4,
+      "note": "anchored (Youden); n_A=11, n_BBB=4"
+    },
+    {
+      "between": [
+        "BBB",
+        "BB"
+      ],
+      "threshold": 50.4,
+      "confidence": "low",
+      "anchor_count": 4,
+      "anchors_lo": 4,
+      "anchors_hi": 0,
+      "note": "interpolated \u2014 no anchors for BBB/BB"
+    },
+    {
+      "between": [
+        "BB",
+        "B"
+      ],
+      "threshold": 52.2,
+      "confidence": "low",
+      "anchor_count": 0,
+      "anchors_lo": 0,
+      "anchors_hi": 0,
+      "note": "interpolated \u2014 no anchors for BB/B"
+    },
+    {
+      "between": [
+        "B",
+        "CCC"
+      ],
+      "threshold": 54.0,
+      "confidence": "low",
+      "anchor_count": 0,
+      "anchors_lo": 0,
+      "anchors_hi": 0,
+      "note": "interpolated \u2014 no anchors for B/CCC"
+    },
+    {
+      "between": [
+        "CCC",
+        "D"
+      ],
+      "threshold": 55.8,
+      "confidence": "low",
+      "anchor_count": 74,
+      "anchors_lo": 0,
+      "anchors_hi": 74,
+      "note": "interpolated \u2014 no CCC anchors; D-entry pinned to IG-vs-D split (n_D=74)"
+    }
+  ],
+  "validation": {
+    "holdout_n": 19,
+    "train_n": 73,
+    "exact_pct": 78.9,
+    "within_one_pct": 94.7
+  }
+}
