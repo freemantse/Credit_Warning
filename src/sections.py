@@ -28,6 +28,14 @@ _SECTION_MAX_CHARS: dict[str, int] = {
     "mdna": 100_000,
     "debt": 40_000,
     "contingencies": 40_000,
+    # ── Stage 2a additions (LLM_EXTRACTOR_PORT §5) ─────────────────────────────
+    # risk_factors can be very large (Item 1A often runs 50k–150k chars); window
+    # it generously but bounded so token spend stays predictable. The auditor's
+    # report and the going-concern footnote are short — the 40k convention covers
+    # them (the substantial-doubt / explanatory paragraph sits near their start).
+    "risk_factors": 80_000,
+    "auditor_report": 40_000,
+    "going_concern_footnote": 40_000,
 }
 
 # Fallback chunking parameters (used only when heading anchoring fails).
@@ -90,6 +98,28 @@ _SECTION_HEADING_PATTERNS: dict[str, list[re.Pattern]] = {
         re.compile(r"legal and regulatory (matters|proceedings)", re.IGNORECASE),
         re.compile(r"\blitigation\b", re.IGNORECASE),
     ],
+    # ── Stage 2a additions (LLM_EXTRACTOR_PORT §5) — purely additive ───────────
+    # risk_factors: Item 1A. Source for Stage-B covenant recall and Tier-2
+    # going-concern precursors.
+    "risk_factors": [
+        re.compile(r"^\s*item\s*1a[\s.:–—-]", re.IGNORECASE),
+        re.compile(r"^\s*risk factors\s*$", re.IGNORECASE),
+    ],
+    # auditor_report: report of independent registered public accounting firm —
+    # the Tier-1 going-concern explanatory / emphasis-of-matter paragraph lives here.
+    "auditor_report": [
+        re.compile(r"report of independent registered public accounting firm", re.IGNORECASE),
+        re.compile(r"^\s*report of independent (auditors?|registered)", re.IGNORECASE),
+        re.compile(r"opinion on the financial statements", re.IGNORECASE),
+    ],
+    # going_concern_footnote: management's ASC 205-40 evaluation / basis-of-
+    # presentation note carrying the formal substantial-doubt language (Tier-1).
+    "going_concern_footnote": [
+        re.compile(r"^\s*(note\s+\d+[\s.–—:-]*)?(liquidity and )?going concern\s*$", re.IGNORECASE),
+        re.compile(r"\bgoing concern\b", re.IGNORECASE),
+        re.compile(r"^\s*(note\s+\d+[\s.–—:-]*)?basis of presentation\s*$", re.IGNORECASE),
+        re.compile(r"substantial doubt", re.IGNORECASE),
+    ],
 }
 
 # Density-scoring pattern for the chunk fallback (no headings found): combines all
@@ -109,6 +139,22 @@ _SECTION_DENSITY_PATTERNS: dict[str, re.Pattern] = {
     "contingencies": re.compile(
         r"commitments?,?\s+(and\s+)?contingenc|legal (proceedings|matters)|"
         r"\blitigation\b|loss conting",
+        re.IGNORECASE,
+    ),
+    # ── Stage 2a additions ─────────────────────────────────────────────────────
+    "risk_factors": re.compile(
+        r"risk factors|adversely affect|could (harm|materially)|substantial doubt|"
+        r"our indebtedness|covenant",
+        re.IGNORECASE,
+    ),
+    "auditor_report": re.compile(
+        r"report of independent|we have audited|critical audit matter|"
+        r"substantial doubt|going concern|basis for opinion",
+        re.IGNORECASE,
+    ),
+    "going_concern_footnote": re.compile(
+        r"going concern|substantial doubt|ability to continue|recurring losses|"
+        r"basis of presentation",
         re.IGNORECASE,
     ),
 }
@@ -139,6 +185,25 @@ _SECTION_CONTENT_PATTERNS: dict[str, re.Pattern] = {
         r"damages|settlement|alleg|class action|regulatory",
         re.IGNORECASE,
     ),
+    # ── Stage 2a additions ─────────────────────────────────────────────────────
+    # Content keywords that distinguish the real prose section from a same-named
+    # table-of-contents stub (the slice with the most hits wins among candidates).
+    "risk_factors": re.compile(
+        r"adversely|could (harm|affect|result)|may (not|be unable)|"
+        r"our (business|ability|indebtedness)|covenant|substantial doubt|liquidity",
+        re.IGNORECASE,
+    ),
+    "auditor_report": re.compile(
+        r"we have audited|basis for opinion|critical audit matter|"
+        r"substantial doubt|going concern|opinion on the financial",
+        re.IGNORECASE,
+    ),
+    "going_concern_footnote": re.compile(
+        r"substantial doubt|ability to continue|recurring losses|"
+        r"negative (working capital|cash flows)|sufficient liquidity|"
+        r"obtain additional financing",
+        re.IGNORECASE,
+    ),
 }
 
 # A heading line either starts with a "NOTE n" / "n." / "Item n" prefix
@@ -164,6 +229,22 @@ _HEADING_RE = re.compile(
 _NOTE_OR_ITEM_BOUNDARY_RE = re.compile(
     r"^\s*(note\s+\d+\b|item\s+\d{1,2}[ab]?\b|\d{1,2}\.\s)", re.IGNORECASE
 )
+# Risk factors (Item 1A) ends at the next Item — 1B (unresolved staff comments),
+# 1C (cybersecurity, post-2023), or 2 (properties). Dedicated so a "1." numbered
+# bullet inside the risk prose can't prematurely close the slice.
+_RISK_FACTORS_END_RE = re.compile(
+    r"^\s*item\s*1[bc][\s.:–—-]|^\s*item\s*2[\s.:–—-]|unresolved staff comments",
+    re.IGNORECASE,
+)
+# Auditor's report ends where the financial statements begin (the report precedes
+# them). The going-concern explanatory paragraph sits near the report's start, so
+# the 40k cap also bounds it safely if no boundary heading is found.
+_AUDITOR_END_RE = re.compile(
+    r"consolidated balance sheets?|consolidated statements of "
+    r"(operations|income|comprehensive|cash flows|stockholders|changes)|"
+    r"notes to (the )?(consolidated )?financial statements",
+    re.IGNORECASE,
+)
 _SECTION_END_PATTERNS: dict[str, re.Pattern] = {
     "mdna": re.compile(
         r"item\s*7a[\s.:–—-]|quantitative and qualitative disclosures|"
@@ -172,6 +253,10 @@ _SECTION_END_PATTERNS: dict[str, re.Pattern] = {
     ),
     "debt": _NOTE_OR_ITEM_BOUNDARY_RE,
     "contingencies": _NOTE_OR_ITEM_BOUNDARY_RE,
+    # ── Stage 2a additions ─────────────────────────────────────────────────────
+    "risk_factors": _RISK_FACTORS_END_RE,
+    "auditor_report": _AUDITOR_END_RE,
+    "going_concern_footnote": _NOTE_OR_ITEM_BOUNDARY_RE,
 }
 
 # Inline-XBRL wrapper tags (<ix:...>) carry no display text — strip the tags but
@@ -330,15 +415,26 @@ def _chunk_fallback(text: str, pattern: re.Pattern) -> Section | None:
 
 def locate_sections(filing_html: str) -> dict[str, Section | None]:
     """
-    Locate the MD&A, debt, and contingencies sections in a raw filing document.
+    Locate the credit-relevant sections in a raw filing document.
 
     Args:
         filing_html: The raw filing text/HTML from ingest.get_filing_text().
 
-    Returns:
-        {"mdna": Section|None, "debt": Section|None, "contingencies": Section|None}.
-        A value is None when neither heading anchoring nor the chunk fallback
-        found the section.
+    Returns (each value is None when neither heading anchoring nor the chunk
+    fallback found the section):
+        {
+          "mdna":                   Section|None,  # MD&A (Item 7)
+          "debt":                   Section|None,  # debt / long-term-obligations footnote
+          "contingencies":          Section|None,  # commitments & contingencies footnote
+          # ── Stage 2a additions (LLM_EXTRACTOR_PORT §5) ──
+          "risk_factors":           Section|None,  # Item 1A
+          "auditor_report":         Section|None,  # report of independent registered public accounting firm
+          "going_concern_footnote": Section|None,  # ASC 205-40 / basis-of-presentation going-concern note
+        }
+
+    The three original sections (mdna/debt/contingencies) resolve EXACTLY as
+    before — the new keys are computed by the same heading-anchor → chunk-fallback
+    machinery, independently, so they are purely additive.
 
     Table-of-contents safety: a TOC "Item 7 ..." link line also matches the MD&A
     heading patterns, but its slice ends at the TOC's own next "Item 7A" line —
@@ -364,3 +460,19 @@ def locate_sections(filing_html: str) -> dict[str, Section | None]:
             section.name = name
         out[name] = section
     return out
+
+
+def section_confidence(section: "Section | None") -> str:
+    """
+    Map a located Section to its finding-level confidence (LLM_EXTRACTOR_PORT §3).
+
+    "high" when the slice was heading-anchored (`heading_matched` is set);
+    "low" when it came from the keyword-density chunk fallback (`heading_matched`
+    is None), or when the section was not found at all. The downstream covenant
+    (Stage 2c) and going-concern (Stage 2b) passes stamp this onto every finding
+    so an extraction pulled from an unanchored slice is flagged less reliable.
+
+    Stage 2a adds only this mechanism; the passes that consume it are built later,
+    so no existing finding's behavior changes here.
+    """
+    return "high" if (section is not None and section.heading_matched is not None) else "low"
