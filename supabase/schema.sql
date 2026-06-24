@@ -96,6 +96,26 @@ CREATE TABLE IF NOT EXISTS covenants (
   UNIQUE (cik, period_end, covenant_type, evidence_quote)
 );
 
+-- ── covenants: Stage 2c additive extension (SUPABASE_LLM_SCHEMA.md §3) ──────────
+-- Additive, all nullable/defaulted, so the existing 7-field inserts keep working.
+-- The ported richer extractor populates the full set; near_limit/cushion/cushion_pct
+-- are DERIVED IN CODE (not emitted by the LLM). covenant_type stays free TEXT
+-- (no CHECK), so the 4->8 vocabulary widening needs no DDL.
+-- NOTE: run this ALTER in the Supabase SQL Editor BEFORE the ported pass writes;
+-- 2c-i golden-set validation is extraction-only and does NOT require it.
+ALTER TABLE covenants ADD COLUMN IF NOT EXISTS covenant_subtype   TEXT;     -- maintenance | incurrence | springing | negative | cross_default | min_liquidity
+ALTER TABLE covenants ADD COLUMN IF NOT EXISTS ratio_name         TEXT;     -- verbatim name, e.g. "Consolidated Net Leverage Ratio"
+ALTER TABLE covenants ADD COLUMN IF NOT EXISTS unit               TEXT;     -- ratio | usd | percent
+ALTER TABLE covenants ADD COLUMN IF NOT EXISTS testing_frequency  TEXT;     -- e.g. "quarterly", "at all times", "when availability < $X"
+ALTER TABLE covenants ADD COLUMN IF NOT EXISTS is_springing       BOOLEAN;  -- tested only when a trigger is hit
+ALTER TABLE covenants ADD COLUMN IF NOT EXISTS springing_trigger  TEXT;     -- the activating condition, if springing
+ALTER TABLE covenants ADD COLUMN IF NOT EXISTS step_down          TEXT;     -- step-down/step-up schedule if disclosed
+ALTER TABLE covenants ADD COLUMN IF NOT EXISTS is_maintenance     BOOLEAN;  -- TRUE = breach can trigger default; FALSE = incurrence-only
+ALTER TABLE covenants ADD COLUMN IF NOT EXISTS cushion            DOUBLE PRECISION;  -- DERIVED IN CODE
+ALTER TABLE covenants ADD COLUMN IF NOT EXISTS cushion_pct        DOUBLE PRECISION;  -- DERIVED IN CODE
+ALTER TABLE covenants ADD COLUMN IF NOT EXISTS section_confidence TEXT;     -- high (heading-anchored) | low (chunk fallback)
+ALTER TABLE covenants ADD COLUMN IF NOT EXISTS null_reason        TEXT;     -- why a nullable field is null (never guessed)
+
 
 -- ── loss_provisions ────────────────────────────────────────────────────────────
 -- LLM-extracted litigation/contingency provisions from the commitments &

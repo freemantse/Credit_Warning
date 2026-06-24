@@ -494,6 +494,20 @@ def save_covenants(
             "near_limit": c.near_limit,
             "evidence_quote": c.evidence_quote,
             "source": c.source,
+            # ── Stage 2c-i additive columns (default-tolerant via getattr so
+            # older Covenant objects without these fields still persist) ──
+            "covenant_subtype": getattr(c, "covenant_subtype", None),
+            "ratio_name": getattr(c, "ratio_name", None),
+            "unit": getattr(c, "unit", None),
+            "testing_frequency": getattr(c, "testing_frequency", None),
+            "is_springing": getattr(c, "is_springing", None),
+            "springing_trigger": getattr(c, "springing_trigger", None),
+            "step_down": getattr(c, "step_down", None),
+            "is_maintenance": getattr(c, "is_maintenance", None),
+            "cushion": getattr(c, "cushion", None),
+            "cushion_pct": getattr(c, "cushion_pct", None),
+            "section_confidence": getattr(c, "section_confidence", None),
+            "null_reason": getattr(c, "null_reason", None),
         }
         for c in covenants
     ]

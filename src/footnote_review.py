@@ -33,37 +33,197 @@ from src.llm_review import (
 # from a focused excerpt is well within Haiku's capability.
 MODEL = "claude-haiku-4-5-20251001"
 
-_COVENANT_TYPES = ("max_leverage", "min_coverage", "min_net_worth", "other")
+# ── Covenant vocabulary (Stage 2c-i) ──────────────────────────────────────────
+# Widened 4 -> 8 superset (LLM_COVENANT §5.1). The prompt emits these target
+# tokens directly; the map normalizes any source-style / synonym token and falls
+# back to "other" — a covenant is NEVER dropped on covenant_type alone.
+_COVENANT_TYPES = (
+    "max_leverage", "min_coverage", "min_net_worth", "min_liquidity",
+    "max_capex", "min_fixed_charge_coverage", "cross_default", "other",
+)
+_COVENANT_VOCAB = {
+    # target tokens pass through
+    **{t: t for t in _COVENANT_TYPES},
+    # source bare types -> target (Stage-1 approved map)
+    "leverage": "max_leverage",
+    "interest_coverage": "min_coverage",
+    "fixed_charge_coverage": "min_fixed_charge_coverage",
+    "minimum_liquidity": "min_liquidity",
+    "minimum_cash": "min_liquidity",          # collapse (approved)
+    "capex": "max_capex",
+    "incurrence": "other",                     # subtype, not a type -> other + subtype=incurrence
+}
 _DIRECTIONS = ("max", "min")
 
 # Matches numeric tokens like "4.0", "58,744", "500", "0.5" in an evidence quote.
 _NUM_RE = re.compile(r"\d[\d,]*\.?\d*")
 
+# near_limit condition 3 (LLM_COVENANT §7.2): ACTUAL current breach / waiver /
+# proximity language.
+#
+# DEFERRED — NOT USED in 2c-i. near_limit is numeric-only here (see
+# _derive_near_limit). Regex proved unable to separate a present breach from
+# covenant TERMS: term-lists ("events of default including breach of covenants"),
+# negations ("are not in default"), and conditionals ("if we have failed to
+# maintain ..."). Language-based detection moves to step 2c-iii as a footnote-
+# level grounded LLM judgment (term-vs-present-state, like going-concern Tier-2).
+# This pattern is kept (defined-but-unused) as the starting point for that step;
+# it matches affirmative current-state phrases but still over-fires on conditionals.
+_WAIVER_RE = re.compile(
+    r"(?:obtained|received|granted|sought|seeking|negotiated|entered\s+into)\s+(?:a\s+|an\s+)?(?:waiver|forbearance)"
+    r"|waiver\s+(?:from|under)\s+(?:its|our|the|certain)\s+lend"
+    r"|forbearance\s+agreement"
+    r"|(?:was|were|are|is|been|remained?)\s+not\s+in\s+compliance"
+    r"|not\s+in\s+compliance\s+with\s+(?:the|a|its|our|certain|one|a\s+financial|the\s+financial)"
+    r"|non-?compliance\s+with\s+(?:the|a|its|our|certain|one|a\s+financial|the\s+financial)"
+    r"|failed\s+to\s+(?:comply|maintain|satisfy|meet)"
+    r"|(?:are|were|is|was|currently|now)\s+in\s+breach"
+    r"|in\s+breach\s+of\s+(?:the|a|its|our|certain|one|a\s+financial)"
+    r"|breached\s+(?:the|a|our|its|certain|one)\b"
+    r"|covenant\s+violation"
+    r"|(?:violated|violating)\s+(?:the|a|our|its|certain)\s+(?:financial\s+)?covenant"
+    r"|(?:are|were|is|was|currently|now)\s+in\s+default"
+    r"|may\s+not\s+(?:be|remain)\s+in\s+compliance"
+    r"|expect\w*\s+to\s+(?:seek|need|be\s+unable|breach|violate)"
+    r"|anticipat\w*\s+(?:a\s+)?(?:breach|default|non-?compliance|covenant\s+violation)",
+    re.IGNORECASE,
+)
 
-COVENANT_PROMPT = """You are a credit analyst reading the DEBT footnote of a SEC 10-K filing.
-Identify any MAINTENANCE COVENANTS the company must comply with — financial tests
-in its debt or credit agreements. Common types:
-- maximum leverage ratio (debt / EBITDA must stay BELOW a limit)
-- minimum interest-coverage ratio (EBITDA / interest must stay ABOVE a limit)
-- minimum net worth / tangible net worth (must stay ABOVE a limit)
+# Stage-A (precise) covenant prompt — COVENANT_PROMPT.md adapted to the richer
+# Covenant fields. Built with str.replace (NOT .format) because the few-shots
+# contain literal JSON braces. cushion / cushion_pct / near_limit /
+# section_confidence are DELIBERATELY NOT emitted — code derives them.
+COVENANT_SYSTEM = """You are a credit analyst extracting financial covenants from SEC filing text. A
+financial covenant is any contractual financial requirement, limit, or test a
+company must satisfy under a debt agreement (credit agreement, indenture, notes)
+to avoid default, acceleration, or a restriction on its actions.
 
-Return a JSON array. Each covenant must be:
+Your output feeds a credit early-warning system. A fabricated covenant is worse
+than a missed one, because it manufactures a false signal. You must therefore
+ground every finding in verbatim text and never guess.
+
+You do not compute arithmetic. You do not calculate cushions or proximity. You
+extract what the text states, verbatim, and classify it. Nothing more."""
+
+# {PASS_MODE} block — Stage A only in 2c-i (Stage B / recall sweep is 2c-ii).
+COVENANT_PASS_PRECISE = (
+    "PASS: PRECISE. This is the debt / long-term-obligations footnote, where "
+    "covenants are usually stated clearly. Extract the covenants that are actually "
+    "present. Do not over-reach into general debt description."
+)
+
+COVENANT_USER = """COMPANY: {COMPANY_NAME}
+FILING: {FILING_TYPE}, period ending {PERIOD_END}
+SECTION: {SECTION_LABEL}  (locator confidence: {SECTION_CONFIDENCE})
+
+{PASS_MODE}
+
+============================================================================
+WHAT TO EXTRACT
+============================================================================
+Extract every financial covenant in the text below. Look specifically for each
+covenant type - do not stop at the obvious ones:
+  - MAINTENANCE covenants - ratios/levels the company must maintain at all times
+    or test each period (e.g. "maintain a leverage ratio not to exceed 4.00 to 1.00").
+  - INCURRENCE covenants - tests that apply only when the company takes an action
+    (e.g. "may not incur additional debt unless fixed charge coverage is at least 2.00 to 1.00").
+  - SPRINGING covenants - activate only on a condition (e.g. "a minimum coverage
+    ratio applies if availability falls below $X"). Capture the trigger condition.
+  - NEGATIVE covenants with a financial test - restrictions on dividends, buybacks,
+    investments, or asset sales conditioned on a financial ratio.
+  - CROSS-DEFAULT / CROSS-ACCELERATION clauses - a default under one instrument
+    triggering default under another.
+  - MINIMUM LIQUIDITY / MINIMUM AVAILABILITY requirements.
+
+============================================================================
+THE WORD "COVENANT" MAY NOT APPEAR
+============================================================================
+Covenant language is frequently NOT labeled "covenant." Treat any sentence that
+imposes a measurable financial condition under a debt agreement as a covenant,
+even if the word "covenant" is absent ("required to maintain ...", "may not exceed
+...", "shall not be greater/less than ...", "financial maintenance test", "ratio of
+... to ..." tied to a credit agreement/indenture, "failure to comply ... could
+result in default/acceleration").
+
+============================================================================
+WHAT IS NOT A COVENANT  (do not extract)
+============================================================================
+  - Plain debt terms with no required threshold (coupon, maturity, principal).
+  - Aspirational / forward-looking management TARGETS not tied to a contract
+    ("we aim to reduce leverage to 3x by 2026"). A goal is not a covenant.
+  - Covenants of unconsolidated affiliates / third parties that do not bind this company.
+
+============================================================================
+HOW TO EXTRACT - QUOTE FIRST, CLASSIFY SECOND
+============================================================================
+For each covenant, in this order:
+  1. First copy the exact VERBATIM, CONTIGUOUS sentence(s) into evidence_quote. Do
+     not stitch distant fragments. If the limit and the company's actual level are
+     in adjacent sentences, include both contiguously.
+  2. Only then assign the fields, reading them off that quote.
+
+GROUNDING RULES (a finding breaking any of these is INVALID - omit it):
+  - Every number in `threshold` or `reported_actual` MUST appear verbatim in
+    `evidence_quote`. If "4.00 to 1.00" is the limit, that string must be in the quote.
+  - If a field is not stated, set it null and give a null_reason. NEVER guess/infer/calculate.
+  - Do NOT compute cushion, headroom, proximity, or whether the company is "near" the
+    limit - extract `threshold` and `reported_actual` exactly as written; code does the math.
+  - If the actual level is from a DIFFERENT period than this filing, set reported_actual
+    = null, null_reason = "actual is from a prior/other period".
+  - If there are NO covenants, return an empty list []. That is a correct answer.
+
+============================================================================
+OUTPUT FORMAT
+============================================================================
+Return ONLY a JSON array (no prose, no markdown fences). Each element:
+
 {
-  "covenant_type": "max_leverage" | "min_coverage" | "min_net_worth" | "other",
-  "threshold": <the numeric limit if stated, else null>,
-  "direction": "max" | "min",
-  "reported_actual": <the company's current level if disclosed, else null>,
-  "near_limit": <true if the company is described as close to, or at risk of breaching, the limit>,
-  "evidence_quote": "<verbatim excerpt, max 240 chars, containing any number you report>",
-  "source": "<the filing label provided>"
+  "evidence_quote":    "<verbatim contiguous span - write this FIRST>",
+  "covenant_type":     "<max_leverage | min_coverage | min_net_worth | min_liquidity | max_capex | min_fixed_charge_coverage | cross_default | other>",
+  "direction":         "<max = must not exceed | min = must maintain at least>",
+  "ratio_name":        "<exact name as written, e.g. Consolidated Net Leverage Ratio; else null>",
+  "threshold":         <number ONLY if stated verbatim, else null>,
+  "unit":              "<ratio | usd | percent | null>",
+  "reported_actual":   <number ONLY if disclosed in this filing, else null>,
+  "testing_frequency": "<e.g. quarterly | at all times | when availability < $X; else null>",
+  "is_springing":      <true | false | null>,
+  "springing_trigger": "<the activating condition if springing, else null>",
+  "step_down":         "<step-down/step-up schedule if disclosed, else null>",
+  "is_maintenance":    <true (breach can trigger default) | false (incurrence-only) | null>,
+  "null_reason":       "<required whenever any nullable field above is null; else null>"
 }
 
-Rules:
-- Every number you put in threshold or reported_actual MUST appear verbatim in evidence_quote.
-- If a number is not explicitly stated, use null — never estimate or infer a figure.
-- evidence_quote must be a direct quote, not a paraphrase.
-- Omit covenants you cannot quote. Return [] if no maintenance covenants are described.
-"""
+(Do NOT output cushion, cushion_pct, near_limit, or section_confidence - those are
+computed downstream in code, not by you. If covenant_type is "other", ratio_name
+must describe what is tested.)
+
+============================================================================
+EXAMPLES
+============================================================================
+Example 1 - labeled maintenance covenant (limit + actual in adjacent sentences):
+TEXT: "The Credit Agreement requires the Company to maintain a consolidated total leverage ratio not to exceed 4.50 to 1.00, tested quarterly. As of December 31, the ratio was 4.20 to 1.00."
+OUTPUT:
+[{"evidence_quote":"The Credit Agreement requires the Company to maintain a consolidated total leverage ratio not to exceed 4.50 to 1.00, tested quarterly. As of December 31, the ratio was 4.20 to 1.00.","covenant_type":"max_leverage","direction":"max","ratio_name":"consolidated total leverage ratio","threshold":4.5,"unit":"ratio","reported_actual":4.2,"testing_frequency":"quarterly","is_springing":false,"springing_trigger":null,"step_down":null,"is_maintenance":true,"null_reason":null}]
+
+Example 2 - UNLABELED incurrence covenant, actual not disclosed:
+TEXT: "Under our senior notes indenture, we are restricted from incurring additional indebtedness unless our fixed charge coverage ratio is at least 2.00 to 1.00 on a pro forma basis."
+OUTPUT:
+[{"evidence_quote":"Under our senior notes indenture, we are restricted from incurring additional indebtedness unless our fixed charge coverage ratio is at least 2.00 to 1.00 on a pro forma basis.","covenant_type":"min_fixed_charge_coverage","direction":"min","ratio_name":"fixed charge coverage ratio","threshold":2.0,"unit":"ratio","reported_actual":null,"testing_frequency":null,"is_springing":false,"springing_trigger":null,"step_down":null,"is_maintenance":false,"null_reason":"pro forma actual not disclosed"}]
+
+Example 3 - near-limit / waiver language:
+TEXT: "As of the period end, the Company was not in compliance with the minimum fixed charge coverage ratio of 1.10 to 1.00 required under its credit facility, and obtained a waiver from its lenders."
+OUTPUT:
+[{"evidence_quote":"As of the period end, the Company was not in compliance with the minimum fixed charge coverage ratio of 1.10 to 1.00 required under its credit facility, and obtained a waiver from its lenders.","covenant_type":"min_fixed_charge_coverage","direction":"min","ratio_name":"minimum fixed charge coverage ratio","threshold":1.1,"unit":"ratio","reported_actual":null,"testing_frequency":null,"is_springing":false,"springing_trigger":null,"step_down":null,"is_maintenance":true,"null_reason":"actual not stated numerically; filing states non-compliance and waiver"}]
+
+Example 4 - NOT a covenant (aspirational target - extract nothing):
+TEXT: "Management aims to reduce net leverage to approximately 3.0x over the next two fiscal years."
+OUTPUT:
+[]
+
+============================================================================
+TEXT TO ANALYZE
+============================================================================
+{SECTION_TEXT}"""
 
 PROVISION_PROMPT = """You are a credit analyst reading the COMMITMENTS AND CONTINGENCIES
 footnote of a SEC 10-K filing. Identify LOSS PROVISIONS and CONTINGENCIES — accrued
@@ -91,19 +251,34 @@ Rules:
 @dataclass
 class Covenant:
     """
-    One maintenance covenant extracted from the debt footnote.
+    One financial covenant extracted from the debt footnote (Stage 2c-i: richer
+    fields ported from the source extractor + cushion/near_limit derived in code).
 
     Numeric fields are nullable: kept only when the figure appears verbatim in
-    evidence_quote (see _number_in_text). A covenant may therefore carry just a
-    qualitative near_limit flag plus its quote.
+    evidence_quote (see _number_in_text). near_limit / cushion / cushion_pct are
+    DERIVED IN CODE (not emitted by the LLM). The original 7 fields are unchanged
+    (so save_covenants / score.py keep working); the rest default for back-compat.
     """
-    covenant_type: str          # max_leverage | min_coverage | min_net_worth | other
+    covenant_type: str          # 8-vocab: max_leverage | min_coverage | min_net_worth | min_liquidity | max_capex | min_fixed_charge_coverage | cross_default | other
     threshold: float | None     # the limit, if reliably parsed
     direction: str              # "max" | "min"
     reported_actual: float | None  # current level, if disclosed
-    near_limit: bool            # sits close to / at risk of breaching the limit
+    near_limit: bool            # DERIVED in code (cushion_pct<=10% OR breach OR waiver/amendment language)
     evidence_quote: str         # verbatim quote (required)
     source: str
+    # ── Stage 2c-i richer fields (all default for back-compat) ──
+    covenant_subtype: str | None = None      # maintenance | incurrence | springing | negative | cross_default | min_liquidity
+    ratio_name: str | None = None            # verbatim name, e.g. "Consolidated Net Leverage Ratio"
+    unit: str | None = None                  # ratio | usd | percent
+    testing_frequency: str | None = None     # e.g. "quarterly", "at all times"
+    is_springing: bool | None = None
+    springing_trigger: str | None = None
+    step_down: str | None = None
+    is_maintenance: bool | None = None       # True = breach can trigger default; False = incurrence-only
+    cushion: float | None = None             # DERIVED in code
+    cushion_pct: float | None = None         # DERIVED in code
+    section_confidence: str = "low"          # high (heading-anchored) | low (chunk fallback)
+    null_reason: str | None = None
 
 
 @dataclass
@@ -173,36 +348,140 @@ def _number_in_text(value: float | None, text: str) -> bool:
     return False
 
 
-def _validate_covenant(raw: dict, fallback_source: str) -> Covenant | None:
-    """Validate one raw covenant dict; drop hallucinated numbers to None."""
+def _opt_bool(val) -> bool | None:
+    """Like _to_bool, but absent/None stays None (vs defaulting to False)."""
+    return None if val is None else _to_bool(val)
+
+
+def _norm_unit(val) -> str | None:
+    """Normalize a unit string to ratio | usd | percent | None."""
+    s = str(val or "").strip().lower()
+    if not s:
+        return None
+    if "ratio" in s or s in ("x", "to 1.00", "to 1") or s.endswith("x"):
+        return "ratio"
+    if "%" in s or "percent" in s:
+        return "percent"
+    if "usd" in s or "$" in s or "dollar" in s or "million" in s or "billion" in s:
+        return "usd"
+    return None
+
+
+def _derive_subtype(covenant_type: str, is_springing: bool | None, is_maintenance: bool | None) -> str:
+    """Derive covenant_subtype in code (precedence: springing > cross_default > min_liquidity > incurrence > maintenance)."""
+    if is_springing:
+        return "springing"
+    if covenant_type == "cross_default":
+        return "cross_default"
+    if covenant_type == "min_liquidity":
+        return "min_liquidity"
+    if is_maintenance is False:
+        return "incurrence"
+    return "maintenance"
+
+
+def _derive_cushion(threshold: float | None, reported_actual: float | None,
+                    direction: str) -> tuple[float | None, float | None]:
+    """
+    Cushion / cushion_pct IN CODE (LLM_COVENANT §7.1), sign-explicit:
+      max (ceiling, breach when actual>threshold): cushion = threshold - actual
+      min (floor,   breach when actual<threshold): cushion = actual - threshold
+    Positive = headroom, negative = in breach. None when either input is null.
+    """
+    if threshold is None or reported_actual is None:
+        return None, None
+    cushion = (threshold - reported_actual) if direction == "max" else (reported_actual - threshold)
+    cushion_pct = (cushion / abs(threshold) * 100.0) if threshold != 0 else None
+    return round(cushion, 6), (round(cushion_pct, 4) if cushion_pct is not None else None)
+
+
+def _derive_near_limit(cushion: float | None, cushion_pct: float | None,
+                       evidence_quote: str = "") -> bool:
+    """
+    near_limit IN CODE — NUMERIC ONLY (Stage 2c-i). TRUE when EITHER:
+      1. cushion_pct <= 10 (thin headroom; the range includes breach), OR
+      2. cushion < 0 (in breach).
+    When cushion is uncomputable (threshold or reported_actual is null),
+    near_limit = False.
+
+    Language-based breach/waiver detection (LLM_COVENANT §7.2 condition 3) is
+    DEFERRED to step 2c-iii: a footnote-level GROUNDED LLM judgment (the same
+    term-vs-present-state architecture proven on going-concern Tier-2), NOT regex.
+    Two regex attempts each traded one false-positive class for another
+    (term-list "events of default including breach" -> negation "are not in
+    default" -> conditional "if we have failed to maintain ..."), and genuine
+    waivers frequently are not inside the covenant's own quote anyway. So this
+    pass derives near_limit purely from disclosed numbers; _WAIVER_RE is kept
+    below (defined-but-unused) as the starting point for 2c-iii.
+    """
+    if cushion_pct is not None and cushion_pct <= 10.0:
+        return True
+    if cushion is not None and cushion < 0:
+        return True
+    return False
+
+
+def _validate_covenant(raw: dict, fallback_source: str, section_conf: str = "low") -> Covenant | None:
+    """
+    Validate one raw covenant dict (Stage 2c-i).
+
+    - covenant_type: map-or-"other" via _COVENANT_VOCAB (NEVER dropped on type);
+      whitelist widened 4 -> 8.
+    - direction: normalize maximum/minimum -> max/min; infer from type if missing.
+    - threshold / reported_actual: grounded by _number_in_text (drop to None if not
+      in the quote) — never guessed.
+    - cushion / cushion_pct / near_limit: DERIVED IN CODE (the LLM is forbidden to
+      emit them; any model-supplied near_limit is ignored).
+    - covenant_subtype: derived in code.
+    Dropped only when evidence_quote is empty.
+    """
     if not isinstance(raw, dict):
         return None
-    covenant_type = str(raw.get("covenant_type", "")).strip().lower()
-    direction = str(raw.get("direction", "")).strip().lower()
-    evidence_quote = str(raw.get("evidence_quote", "")).strip()
-
-    if covenant_type not in _COVENANT_TYPES or not evidence_quote:
+    evidence_quote = str(raw.get("evidence_quote", "") or "").strip()
+    if not evidence_quote:
         return None
+
+    ct_raw = str(raw.get("covenant_type", "") or "").strip().lower()
+    covenant_type = _COVENANT_VOCAB.get(ct_raw, ct_raw if ct_raw in _COVENANT_TYPES else "other")
+
+    direction = str(raw.get("direction", "") or "").strip().lower()
+    direction = {"maximum": "max", "minimum": "min"}.get(direction, direction)
     if direction not in _DIRECTIONS:
-        # Infer a sensible default from the covenant type rather than dropping it.
-        direction = "max" if covenant_type == "max_leverage" else "min"
+        direction = "max" if covenant_type in ("max_leverage", "max_capex") else "min"
 
     threshold = _to_float(raw.get("threshold"))
     reported_actual = _to_float(raw.get("reported_actual"))
-    # Drop any number not backed verbatim by the quote.
     if not _number_in_text(threshold, evidence_quote):
         threshold = None
     if not _number_in_text(reported_actual, evidence_quote):
         reported_actual = None
+
+    is_springing = _opt_bool(raw.get("is_springing"))
+    is_maintenance = _opt_bool(raw.get("is_maintenance"))
+    subtype = _derive_subtype(covenant_type, is_springing, is_maintenance)
+    cushion, cushion_pct = _derive_cushion(threshold, reported_actual, direction)
+    near_limit = _derive_near_limit(cushion, cushion_pct, evidence_quote)
 
     return Covenant(
         covenant_type=covenant_type,
         threshold=threshold,
         direction=direction,
         reported_actual=reported_actual,
-        near_limit=_to_bool(raw.get("near_limit", False)),
-        evidence_quote=evidence_quote[:240],
+        near_limit=near_limit,                       # DERIVED, not from the LLM
+        evidence_quote=evidence_quote[:600],
         source=str(raw.get("source", "") or fallback_source).strip(),
+        covenant_subtype=subtype,
+        ratio_name=(str(raw.get("ratio_name", "") or "").strip() or None),
+        unit=_norm_unit(raw.get("unit")),
+        testing_frequency=(str(raw.get("testing_frequency", "") or "").strip() or None),
+        is_springing=is_springing,
+        springing_trigger=(str(raw.get("springing_trigger", "") or "").strip() or None),
+        step_down=(str(raw.get("step_down", "") or "").strip() or None),
+        is_maintenance=is_maintenance,
+        cushion=cushion,
+        cushion_pct=cushion_pct,
+        section_confidence=section_conf,
+        null_reason=(str(raw.get("null_reason", "") or "").strip() or None),
     )
 
 
@@ -280,21 +559,53 @@ def extract_debt_footnote(
     section_text: str,
     filing_label: str,
     client: anthropic.Anthropic | None = None,
+    *,
+    section_conf: str = "low",
+    company_name: str = "",
+    period_end: str = "",
+    filing_type: str = "10-K",
+    max_chars: int = MAX_SECTION_CHARS,
+    model: str = MODEL,
 ) -> list[Covenant]:
     """
-    Extract maintenance covenants from a located debt-footnote slice.
+    Stage A covenant extraction from a located debt-footnote slice (Stage 2c-i:
+    richer Covenant model, cushion/near_limit derived in code).
 
-    Args:
-        section_text:  The debt-footnote text from sections.locate_sections.
-        filing_label:  e.g. "10-K 2023-09-30, Debt" — used as the finding source.
-        client:        Optional pre-created Anthropic client (else built from env).
+    Self-contained call (does NOT reuse _extract, so the loss-provision pass is
+    untouched): Haiku, temperature=0, the COVENANT_PROMPT.md PRECISE template.
+    Grounding reuses _number_in_text (numbers in quote) + quote_in_text (quote in
+    source). `section_conf` is stamped onto every covenant (from the locator).
 
-    Returns validated Covenant objects (may be empty). Hallucinated numbers are
-    nulled out; covenants without a quotable basis — or whose quote does not
-    actually appear in the section text — are dropped entirely.
+    Returns validated Covenant objects (may be empty). Ungrounded numbers are
+    nulled; covenants without a verifiable quote are dropped.
     """
-    raw, excerpt = _extract(section_text, filing_label, COVENANT_PROMPT, client)
-    out = [_validate_covenant(r, filing_label) for r in raw]
+    excerpt = (section_text or "")[:max_chars]
+    if not excerpt.strip():
+        return []
+    if client is None:
+        client = anthropic.Anthropic()  # honours ANTHROPIC_BASE_URL (relay) from env
+
+    # str.replace (not .format) — the few-shots contain literal JSON braces.
+    user_prompt = (
+        COVENANT_USER
+        .replace("{COMPANY_NAME}", company_name or "(issuer)")
+        .replace("{FILING_TYPE}", filing_type)
+        .replace("{PERIOD_END}", period_end or "")
+        .replace("{SECTION_LABEL}", "Debt footnote")
+        .replace("{SECTION_CONFIDENCE}", section_conf)
+        .replace("{PASS_MODE}", COVENANT_PASS_PRECISE)
+        .replace("{SECTION_TEXT}", excerpt)
+    )
+    message = client.messages.create(
+        model=model,
+        max_tokens=16000,
+        temperature=0,
+        system=COVENANT_SYSTEM,
+        messages=[{"role": "user", "content": user_prompt}],
+    )
+    warn_if_truncated(message, filing_label)
+    raw = parse_json_array(message.content[0].text)
+    out = [_validate_covenant(r, filing_label, section_conf) for r in raw]
     return [c for c in out if c is not None and quote_in_text(c.evidence_quote, excerpt)]
 
 
@@ -697,7 +1008,8 @@ def review_filing(
         )
     if sections["debt"] is not None:
         covenants = extract_debt_footnote(
-            sections["debt"].text, f"10-K {period}, Debt", client
+            sections["debt"].text, f"10-K {period}, Debt", client,
+            section_conf=section_confidence(sections["debt"]), period_end=period,
         )
     if sections["contingencies"] is not None:
         provisions = extract_loss_provisions(
