@@ -198,3 +198,37 @@ CREATE POLICY "Public read cases" ON cases FOR SELECT USING (true);
 
 DROP POLICY IF EXISTS "Public read score_config" ON score_config;
 CREATE POLICY "Public read score_config" ON score_config FOR SELECT USING (true);
+
+
+-- ── going_concern ──────────────────────────────────────────────────────────────
+-- LLM-extracted going-concern findings (LLM_EXTRACTOR_PORT Stage 2b;
+-- SUPABASE_LLM_SCHEMA.md §4, §6). One row per finding. Tier 1 = formal
+-- substantial-doubt language (high confidence); Tier 2 = soft survival-linked
+-- precursor (low confidence, requires non-empty adverse_conditions).
+-- NOTE: run this in the Supabase SQL Editor BEFORE the live pipeline writes here.
+-- Golden-set validation is extraction-only and does NOT require this table.
+CREATE TABLE IF NOT EXISTS going_concern (
+  id                 BIGSERIAL PRIMARY KEY,
+  cik                TEXT NOT NULL,
+  period_end         TEXT NOT NULL,
+  tier               INTEGER NOT NULL CHECK (tier IN (1, 2)),                  -- 1 = formal substantial-doubt | 2 = soft precursor
+  confidence         TEXT NOT NULL CHECK (confidence IN ('high','low')),        -- high for tier 1, low for tier 2
+  status             TEXT,                                                      -- in_compliance | breach | waiver_obtained | going_concern_doubt | not_disclosed
+  going_concern_flag BOOLEAN NOT NULL DEFAULT FALSE,                            -- formal substantial-doubt present
+  source_party       TEXT CHECK (source_party IN ('auditor','management')),     -- who expressed it
+  doubt_alleviated   BOOLEAN,                                                   -- tier 1 only: doubt stated as alleviated by management's plans; NULL for tier 2
+  adverse_conditions JSONB NOT NULL DEFAULT '[]',                              -- REQUIRED non-empty for tier 2; [] for tier 1
+  description        TEXT,                                                      -- one-sentence summary
+  evidence_quote     TEXT NOT NULL,                                             -- verbatim, contiguous span
+  section            TEXT,                                                      -- auditor report / GC footnote / MD&A / risk factors
+  section_confidence TEXT,                                                      -- high | low
+  source             TEXT NOT NULL,                                             -- e.g. "10-K 2023-09-30, Auditor's Report"
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (cik, period_end, tier, evidence_quote)
+);
+
+CREATE INDEX IF NOT EXISTS idx_going_concern_cik ON going_concern (cik, period_end);
+
+ALTER TABLE going_concern ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Public read going_concern" ON going_concern;
+CREATE POLICY "Public read going_concern" ON going_concern FOR SELECT USING (true);

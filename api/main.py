@@ -71,6 +71,7 @@ from src.store import (
     save_company,
     save_covenants,
     save_findings,
+    save_going_concern,
     save_loss_provisions,
     save_maturities_bulk,
     save_ratios_bulk,
@@ -328,19 +329,20 @@ def track_issuer(req: TrackRequest):
 
     # Step 6: Optional LLM review per period (slow; disabled by default).
     # review_filing fetches the 10-K once, locates the MD&A / debt /
-    # contingencies sections, and runs the three LLM passes on the located
-    # slices only.
+    # contingencies / auditor / risk-factors / going-concern sections, and runs
+    # the four LLM passes on the located slices only.
     if not req.no_llm:
         filings = get_filings(cik, ["10-K"])
         for period in periods:
             try:
                 from src.footnote_review import review_filing
-                findings_list, covenants, provisions = review_filing(
+                findings_list, covenants, provisions, going_concern = review_filing(
                     cik, period, filings
                 )
                 save_findings(cik, period, findings_list)
                 save_covenants(cik, period, covenants)
                 save_loss_provisions(cik, period, provisions)
+                save_going_concern(cik, period, going_concern)
             except Exception:
                 # LLM review is best-effort; ratio/maturity data has already been
                 # saved. Log it — silent swallowing previously hid pipeline bugs.
@@ -480,10 +482,11 @@ def _run_llm_review_task(cik: str, periods: list[str]) -> None:
         filings = get_filings(cik, ["10-K"])
         for period in periods:
             try:
-                findings_list, covenants, provisions = review_filing(cik, period, filings)
+                findings_list, covenants, provisions, going_concern = review_filing(cik, period, filings)
                 save_findings(cik, period, findings_list)
                 save_covenants(cik, period, covenants)
                 save_loss_provisions(cik, period, provisions)
+                save_going_concern(cik, period, going_concern)
             except Exception:
                 # Best-effort per period: one bad filing must not abort the rest.
                 logging.warning(

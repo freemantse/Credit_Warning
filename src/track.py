@@ -47,6 +47,7 @@ from src.store import (
     save_maturities_bulk,
     save_covenants,
     save_loss_provisions,
+    save_going_concern,
     get_periods,
 )
 from src.score import compute_score, STRESS_THRESHOLD
@@ -190,18 +191,21 @@ def track(ticker: str, n_periods: int | None = None, include_llm: bool = True) -
         findings = []
         covenants = []
         provisions = []
+        going_concern = []
         if include_llm:
             try:
                 # Step 4c: Review the period's 10-K. review_filing fetches the
-                # filing once, locates the MD&A / debt / contingencies sections,
-                # and runs the three LLM passes on the located slices only.
+                # filing once, locates the MD&A / debt / contingencies / auditor /
+                # risk-factors / going-concern sections, and runs the four LLM
+                # passes on the located slices only.
                 filings = get_filings(cik, ["10-K"])
 
                 from src.footnote_review import review_filing
-                findings, covenants, provisions = review_filing(cik, period, filings)
+                findings, covenants, provisions, going_concern = review_filing(cik, period, filings)
                 save_findings(cik, period, findings)
                 save_covenants(cik, period, covenants)
                 save_loss_provisions(cik, period, provisions)
+                save_going_concern(cik, period, going_concern)
 
             except Exception as e:
                 # LLM review is best-effort — ratio data is already saved.
@@ -209,7 +213,7 @@ def track(ticker: str, n_periods: int | None = None, include_llm: bool = True) -
                 print(f"  [LLM review skipped for {period}: {e}]")
 
         # Step 4d: Compute the stress score from ratios, findings, and footnotes.
-        score_result = compute_score(results, findings, maturity, covenants, provisions)
+        score_result = compute_score(results, findings, maturity, covenants, provisions, going_concern)
         all_results.append(results)
         all_scores.append(score_result)
 

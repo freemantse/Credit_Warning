@@ -531,6 +531,44 @@ def save_loss_provisions(
         _client().table("loss_provisions").upsert(rows, ignore_duplicates=True).execute()
 
 
+def save_going_concern(
+    cik: str,
+    period_end: str,
+    findings: list[Any],
+    **_,
+) -> None:
+    """
+    Persist LLM-extracted going-concern findings for one (cik, period_end).
+
+    Same ignore_duplicates semantics as save_covenants; the UNIQUE constraint
+    covers (cik, period_end, tier, evidence_quote). adverse_conditions is written
+    as a list → JSONB. `null_reason` is intentionally NOT persisted (no column in
+    the going_concern schema — it is carried on the dataclass for audit only).
+    """
+    cik = cik.zfill(10)
+    rows = [
+        {
+            "cik": cik,
+            "period_end": period_end,
+            "tier": g.tier,
+            "confidence": g.confidence,
+            "status": g.status,
+            "going_concern_flag": g.going_concern_flag,
+            "source_party": g.source_party,
+            "doubt_alleviated": g.doubt_alleviated,
+            "adverse_conditions": g.adverse_conditions,
+            "description": g.description,
+            "evidence_quote": g.evidence_quote,
+            "section": g.section,
+            "section_confidence": g.section_confidence,
+            "source": g.source,
+        }
+        for g in findings
+    ]
+    if rows:
+        _client().table("going_concern").upsert(rows, ignore_duplicates=True).execute()
+
+
 # ── Read operations ──────────────────────────────────────────────────────────
 
 def get_issuers(**_) -> list[dict[str, Any]]:

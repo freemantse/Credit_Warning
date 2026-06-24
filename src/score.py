@@ -108,6 +108,12 @@ DEFAULT_CONFIG: dict = {
         "high_severity_per": 2.0, "high_severity_cap": 10.0,
         "covenant_per": 3.0,      "covenant_cap": 6.0,
         "provision_per": 2.0,     "provision_cap": 6.0,
+        # Going-concern (Stage 2b): Tier-1 is the strongest qualitative signal but
+        # still LLM-derived, so it stays inside the combined_cap (15) and cannot
+        # cross the 50 threshold alone. Tier-2 is moderate/low-confidence and
+        # strictly less than Tier-1 (3 < 8), per LLM_GOING_CONCERN §12.
+        "going_concern_tier1_per": 8.0, "going_concern_tier1_cap": 8.0,
+        "going_concern_tier2_per": 3.0, "going_concern_tier2_cap": 3.0,
         "combined_cap": 15.0,
     },
     "score_cap": 100.0,
@@ -305,6 +311,7 @@ def compute_score(
     maturity: Any | None = None,
     covenants: list[Any] | None = None,
     loss_provisions: list[Any] | None = None,
+    going_concern: list[Any] | None = None,
     *,
     config: ScoreConfig = DEFAULT,
 ) -> ScoreResult:
@@ -343,6 +350,8 @@ def compute_score(
         covenants = []
     if loss_provisions is None:
         loss_provisions = []
+    if going_concern is None:
+        going_concern = []
 
     # Accumulate rule → points mappings. All rules are added (even with 0 pts)
     # so the breakdown always shows the full picture, not just the triggered rules.
@@ -530,6 +539,25 @@ def compute_score(
     if material:
         alerts.append(f"{len(material)} material loss provision(s) disclosed")
 
+    # ── Rule 8: Going-concern (LLM-DERIVED, capped; Stage 2b) ────────────────
+    # Tier-1 (formal substantial-doubt) is the strongest qualitative signal;
+    # Tier-2 (soft precursor) is moderate and strictly lower (3 < 8), never equal.
+    # Both stay inside the combined LLM cap so they can't cross the threshold
+    # alone. GoingConcern items may be dataclasses or dicts (Supabase) — _attr.
+    gc_t1 = [g for g in going_concern if _attr(g, "tier") == 1]
+    gc_t2 = [g for g in going_concern if _attr(g, "tier") == 2]
+    gc_pts = (
+        min(len(gc_t1) * config.llm["going_concern_tier1_per"], config.llm["going_concern_tier1_cap"])
+        + min(len(gc_t2) * config.llm["going_concern_tier2_per"], config.llm["going_concern_tier2_cap"])
+    )
+    breakdown["going_concern"] = gc_pts
+    if gc_t1:
+        alerts.append(f"Going-concern: formal substantial-doubt (Tier 1) flagged "
+                      f"({gc_pts:.0f} pts)")
+    elif gc_t2:
+        alerts.append(f"Going-concern: {len(gc_t2)} soft precursor(s) (Tier 2) "
+                      f"({gc_pts:.0f} pts)")
+
     # ── Combine: core + LLM (combined cap), then escalate ────────────────────
     # The deterministic core rules and their maxima (weights). Used both for the
     # severe-signal count (escalation floor) and to separate core from LLM.
@@ -544,7 +572,7 @@ def compute_score(
     # LLM signals: each rule keeps its own cap, but the COMBINED contribution is
     # clamped (combined_cap) so qualitative-only signals can never cross the
     # threshold alone.
-    llm_keys = ("llm_high_severity", "covenant_proximity", "litigation_provision")
+    llm_keys = ("llm_high_severity", "covenant_proximity", "litigation_provision", "going_concern")
     llm_total = min(sum(breakdown[k] for k in llm_keys), config.llm["combined_cap"])
 
     score = min(core_total + additional_total + llm_total, config.score_cap)
