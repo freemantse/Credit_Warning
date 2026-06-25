@@ -563,8 +563,8 @@ export default function Dashboard() {
                 <col className="w-[5%]" />   {/* Score */}
                 <col className="w-[8%]" />   {/* Status */}
                 <col className="w-[6%]" />   {/* Implied Rating */}
-                <col className="w-[10%]" />  {/* Rating Change (12m) */}
-                <col className="w-[5%]" />   {/* Remove */}
+                <col className="w-[7%]" />   {/* Rating Change (12m) */}
+                <col className="w-[8%]" />   {/* Remove */}
               </colgroup>
               <thead>
                 {/* Bottom-align headers so single-line and wrapped (two-line) headings
@@ -584,7 +584,7 @@ export default function Dashboard() {
                   <th className="px-2 py-3 text-center">Implied Rating</th>
                   <th className="px-2 py-3 text-center">Rating Change (12m)</th>
                   {/* Remove button column, no header */}
-                  <th className="px-4 py-3"></th>
+                  <th className="px-6 py-3"></th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
@@ -677,12 +677,14 @@ export default function Dashboard() {
                       <RatingChangeCell prediction={iss.prediction} />
                     </td>
 
-                    {/* Remove button. Shows "…" while the delete for THIS row is in-flight. */}
-                    <td className="px-4 py-4 text-right">
+                    {/* Remove button. Shows "…" while the delete for THIS row is in-flight.
+                        px-6 + ml-auto right-aligns it flush with the Refresh / Filters
+                        buttons above, which sit in px-6 bars. */}
+                    <td className="px-6 py-4 text-right">
                       <button
                         onClick={() => { setError(''); setPendingDelete(iss) }}
                         disabled={deletingCik === iss.cik}
-                        className="inline-flex items-center gap-1 text-xs text-slate-300 hover:text-red-400 transition-colors disabled:opacity-50 whitespace-nowrap"
+                        className="inline-flex items-center gap-1 text-xs text-slate-400 hover:text-red-500 transition-colors disabled:opacity-50 whitespace-nowrap"
                       >
                         <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                           <path d="M3 6h18" />
