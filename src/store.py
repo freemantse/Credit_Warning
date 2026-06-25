@@ -508,6 +508,12 @@ def save_covenants(
             "cushion_pct": getattr(c, "cushion_pct", None),
             "section_confidence": getattr(c, "section_confidence", None),
             "null_reason": getattr(c, "null_reason", None),
+            # ── Stage 2c-iii: why near_limit is set + the breach/waiver evidence
+            # (verbatim quote + section). Data foundation for the on-demand
+            # evidence button. getattr-tolerant for older Covenant objects. ──
+            "near_limit_reason": getattr(c, "near_limit_reason", None),
+            "near_limit_evidence_quote": getattr(c, "near_limit_evidence_quote", None),
+            "near_limit_section": getattr(c, "near_limit_section", None),
         }
         for c in covenants
     ]
