@@ -336,7 +336,10 @@ def track_issuer(req: TrackRequest):
         for period in periods:
             try:
                 from src.footnote_review import review_filing
-                findings_list, covenants, provisions, going_concern = review_filing(
+                # 5th element = orphan breach/waiver findings (breach disclosed,
+                # no matching covenant). Logged in review_filing; REVIEW_FLAGS
+                # persistence deferred (Stage 2c-iii) — not dropped, not stored yet.
+                findings_list, covenants, provisions, going_concern, _orphan_breaches = review_filing(
                     cik, period, filings
                 )
                 save_findings(cik, period, findings_list)
@@ -482,7 +485,11 @@ def _run_llm_review_task(cik: str, periods: list[str]) -> None:
         filings = get_filings(cik, ["10-K"])
         for period in periods:
             try:
-                findings_list, covenants, provisions, going_concern = review_filing(cik, period, filings)
+                # 5th element = orphan breach/waiver findings (breach disclosed,
+                # no matching covenant). Logged in review_filing; not stored yet.
+                findings_list, covenants, provisions, going_concern, _orphan_breaches = review_filing(
+                    cik, period, filings
+                )
                 save_findings(cik, period, findings_list)
                 save_covenants(cik, period, covenants)
                 save_loss_provisions(cik, period, provisions)

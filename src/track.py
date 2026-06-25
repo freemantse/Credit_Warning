@@ -196,12 +196,18 @@ def track(ticker: str, n_periods: int | None = None, include_llm: bool = True) -
             try:
                 # Step 4c: Review the period's 10-K. review_filing fetches the
                 # filing once, locates the MD&A / debt / contingencies / auditor /
-                # risk-factors / going-concern sections, and runs the four LLM
-                # passes on the located slices only.
+                # risk-factors / going-concern sections, and runs the LLM passes
+                # on the located slices only.
                 filings = get_filings(cik, ["10-K"])
 
                 from src.footnote_review import review_filing
-                findings, covenants, provisions, going_concern = review_filing(cik, period, filings)
+                # 5th element = orphan breach/waiver findings (a breach disclosed
+                # but mapped to no extracted covenant). review_filing logs them;
+                # REVIEW_FLAGS persistence is deferred, so we don't store them yet —
+                # but they are never silently dropped (Stage 2c-iii).
+                findings, covenants, provisions, going_concern, _orphan_breaches = review_filing(
+                    cik, period, filings
+                )
                 save_findings(cik, period, findings)
                 save_covenants(cik, period, covenants)
                 save_loss_provisions(cik, period, provisions)

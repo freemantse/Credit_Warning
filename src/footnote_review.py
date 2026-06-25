@@ -16,6 +16,7 @@ Input:
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 
@@ -28,6 +29,8 @@ from src.llm_review import (
     review_text,
     warn_if_truncated,
 )
+
+logger = logging.getLogger(__name__)
 
 # Same fast/cheap model used for the qualitative review — structured extraction
 # from a focused excerpt is well within Haiku's capability.
@@ -58,36 +61,15 @@ _DIRECTIONS = ("max", "min")
 # Matches numeric tokens like "4.0", "58,744", "500", "0.5" in an evidence quote.
 _NUM_RE = re.compile(r"\d[\d,]*\.?\d*")
 
-# near_limit condition 3 (LLM_COVENANT §7.2): ACTUAL current breach / waiver /
-# proximity language.
-#
-# DEFERRED — NOT USED in 2c-i. near_limit is numeric-only here (see
-# _derive_near_limit). Regex proved unable to separate a present breach from
-# covenant TERMS: term-lists ("events of default including breach of covenants"),
-# negations ("are not in default"), and conditionals ("if we have failed to
-# maintain ..."). Language-based detection moves to step 2c-iii as a footnote-
-# level grounded LLM judgment (term-vs-present-state, like going-concern Tier-2).
-# This pattern is kept (defined-but-unused) as the starting point for that step;
-# it matches affirmative current-state phrases but still over-fires on conditionals.
-_WAIVER_RE = re.compile(
-    r"(?:obtained|received|granted|sought|seeking|negotiated|entered\s+into)\s+(?:a\s+|an\s+)?(?:waiver|forbearance)"
-    r"|waiver\s+(?:from|under)\s+(?:its|our|the|certain)\s+lend"
-    r"|forbearance\s+agreement"
-    r"|(?:was|were|are|is|been|remained?)\s+not\s+in\s+compliance"
-    r"|not\s+in\s+compliance\s+with\s+(?:the|a|its|our|certain|one|a\s+financial|the\s+financial)"
-    r"|non-?compliance\s+with\s+(?:the|a|its|our|certain|one|a\s+financial|the\s+financial)"
-    r"|failed\s+to\s+(?:comply|maintain|satisfy|meet)"
-    r"|(?:are|were|is|was|currently|now)\s+in\s+breach"
-    r"|in\s+breach\s+of\s+(?:the|a|its|our|certain|one|a\s+financial)"
-    r"|breached\s+(?:the|a|our|its|certain|one)\b"
-    r"|covenant\s+violation"
-    r"|(?:violated|violating)\s+(?:the|a|our|its|certain)\s+(?:financial\s+)?covenant"
-    r"|(?:are|were|is|was|currently|now)\s+in\s+default"
-    r"|may\s+not\s+(?:be|remain)\s+in\s+compliance"
-    r"|expect\w*\s+to\s+(?:seek|need|be\s+unable|breach|violate)"
-    r"|anticipat\w*\s+(?:a\s+)?(?:breach|default|non-?compliance|covenant\s+violation)",
-    re.IGNORECASE,
-)
+# near_limit condition 3 (LLM_COVENANT §7.2 — ACTUAL current breach / waiver /
+# proximity language) is implemented in Stage 2c-iii as a footnote-level grounded
+# LLM judgment: see COVENANT_BREACH_SYSTEM / extract_covenant_breach below. The
+# earlier regex approach (a _WAIVER_RE pattern) was removed: it could not separate
+# a present breach from covenant TERMS ("events of default including breach"),
+# negations ("are not in default"), or conditionals ("if we have failed to
+# maintain ..."). That semantic distinction is what the grounded pass makes;
+# _BREACH_PRESENT_RE (defined with that pass) survives only as a necessary-but-
+# not-sufficient confirmatory gate, never as the decider.
 
 # Stage-A (precise) covenant prompt — COVENANT_PROMPT.md adapted to the richer
 # Covenant fields. Built with str.replace (NOT .format) because the few-shots
@@ -302,6 +284,10 @@ class Covenant:
     cushion_pct: float | None = None         # DERIVED in code
     section_confidence: str = "low"          # high (heading-anchored) | low (chunk fallback)
     null_reason: str | None = None
+    # ── Stage 2c-iii: why near_limit is True + the breach/waiver evidence ──
+    near_limit_reason: str | None = None          # "cushion" | "breach" (numeric) | "waiver/breach disclosed" (language)
+    near_limit_evidence_quote: str | None = None  # verbatim breach/waiver sentence (language path only; the covenant's own quote stays in evidence_quote)
+    near_limit_section: str | None = None         # where the breach was disclosed: "Debt footnote" | "MD&A" (language path only)
 
 
 @dataclass
@@ -418,30 +404,32 @@ def _derive_cushion(threshold: float | None, reported_actual: float | None,
     return round(cushion, 6), (round(cushion_pct, 4) if cushion_pct is not None else None)
 
 
-def _derive_near_limit(cushion: float | None, cushion_pct: float | None,
-                       evidence_quote: str = "") -> bool:
+def _derive_near_limit(cushion: float | None,
+                       cushion_pct: float | None) -> tuple[bool, str | None]:
     """
-    near_limit IN CODE — NUMERIC ONLY (Stage 2c-i). TRUE when EITHER:
-      1. cushion_pct <= 10 (thin headroom; the range includes breach), OR
-      2. cushion < 0 (in breach).
+    Numeric near_limit IN CODE (Stage 2c-i) — returns (near_limit, reason).
+    TRUE when EITHER:
+      1. cushion < 0 (in breach)            -> reason "breach", OR
+      2. cushion_pct <= 10 (thin headroom)  -> reason "cushion".
     When cushion is uncomputable (threshold or reported_actual is null),
-    near_limit = False.
+    (False, None). The breach branch is checked first only to pick the more
+    precise reason; the boolean is identical to the original order (a breach
+    always has cushion_pct <= 10).
 
-    Language-based breach/waiver detection (LLM_COVENANT §7.2 condition 3) is
-    DEFERRED to step 2c-iii: a footnote-level GROUNDED LLM judgment (the same
-    term-vs-present-state architecture proven on going-concern Tier-2), NOT regex.
-    Two regex attempts each traded one false-positive class for another
-    (term-list "events of default including breach" -> negation "are not in
-    default" -> conditional "if we have failed to maintain ..."), and genuine
-    waivers frequently are not inside the covenant's own quote anyway. So this
-    pass derives near_limit purely from disclosed numbers; _WAIVER_RE is kept
-    below (defined-but-unused) as the starting point for 2c-iii.
+    Language-based breach/waiver near_limit (LLM_COVENANT §7.2 condition 3) is
+    NOT decided here. Stage 2c-iii restores it as a footnote-level GROUNDED LLM
+    judgment (extract_covenant_breach) — the term-vs-present-state architecture
+    proven on going-concern — which stamps near_limit=True +
+    near_limit_reason="waiver/breach disclosed" + the verbatim quote + section
+    onto the matched covenant in review_filing, AFTER dedupe. Regex was abandoned
+    in 2c-i because it could not separate a present breach from covenant TERMS,
+    negations, and conditionals.
     """
-    if cushion_pct is not None and cushion_pct <= 10.0:
-        return True
     if cushion is not None and cushion < 0:
-        return True
-    return False
+        return True, "breach"
+    if cushion_pct is not None and cushion_pct <= 10.0:
+        return True, "cushion"
+    return False, None
 
 
 def _validate_covenant(raw: dict, fallback_source: str, section_conf: str = "low") -> Covenant | None:
@@ -483,7 +471,7 @@ def _validate_covenant(raw: dict, fallback_source: str, section_conf: str = "low
     is_maintenance = _opt_bool(raw.get("is_maintenance"))
     subtype = _derive_subtype(covenant_type, is_springing, is_maintenance)
     cushion, cushion_pct = _derive_cushion(threshold, reported_actual, direction)
-    near_limit = _derive_near_limit(cushion, cushion_pct, evidence_quote)
+    near_limit, near_limit_reason = _derive_near_limit(cushion, cushion_pct)
 
     return Covenant(
         covenant_type=covenant_type,
@@ -505,6 +493,7 @@ def _validate_covenant(raw: dict, fallback_source: str, section_conf: str = "low
         cushion_pct=cushion_pct,
         section_confidence=section_conf,
         null_reason=(str(raw.get("null_reason", "") or "").strip() or None),
+        near_limit_reason=near_limit_reason,   # numeric reason; language path overwrites in review_filing
     )
 
 
@@ -761,9 +750,13 @@ def _merge_into(primary: Covenant, secondary: Covenant) -> None:
     if secondary.section_confidence == "high":                 # keep the better confidence
         primary.section_confidence = "high"
     # Recompute derived fields AFTER the merge on the merged threshold/actual/direction.
+    # Numeric only: dedupe runs BEFORE the breach pass (review_filing), so no
+    # language near_limit exists yet to clobber. near_limit_reason is recomputed
+    # to match; the language path stamps it (and the evidence) afterwards.
     primary.cushion, primary.cushion_pct = _derive_cushion(
         primary.threshold, primary.reported_actual, primary.direction)
-    primary.near_limit = _derive_near_limit(primary.cushion, primary.cushion_pct)
+    primary.near_limit, primary.near_limit_reason = _derive_near_limit(
+        primary.cushion, primary.cushion_pct)
 
 
 def _dedupe_covenants(stage_a: list[Covenant], stage_b: list[Covenant]) -> list[Covenant]:
@@ -1153,22 +1146,420 @@ def _collapse_going_concern(findings: list[GoingConcern]) -> list[GoingConcern]:
     return deduped
 
 
+# ── Covenant breach / waiver pass (Stage 2c-iii) ─────────────────────────────
+# Restores LLM_COVENANT §7.2 condition 3 (the language-based near_limit signal
+# DEFERRED in 2c-i). A footnote-level GROUNDED judgment — NOT per-covenant and
+# NOT regex — asking once over the debt footnote (+ MD&A) whether the filing
+# discloses a PRESENT breach / waiver / forbearance / non-compliance, as a fact
+# about THIS period. Architecture cloned from the going-concern pass: quote-first,
+# an explicit "what is NOT a finding" block (covenant TERMS, negations,
+# conditionals — the three classes that defeated _WAIVER_RE), and a litmus test.
+#
+# Why footnote-level, not per-covenant: in 2c-i the genuine waiver sentences
+# (Halcon / Sanchez / Tailored Brands) sat in DIFFERENT sentences than any single
+# covenant's evidence_quote, so a per-covenant-quote judgment would never see
+# them. The finding is mapped onto covenant rows downstream (Stage 2 wiring).
+#
+# Scope (Stage 2c-iii decision): debt footnote + MD&A ONLY. Risk-factors are
+# EXCLUDED — that section is hypothetical-heavy ("a future breach could ..."),
+# exactly the conditional class we must not fire on. Add later only if validation
+# shows missed breaches.
+#
+# This pass is NET-NEW and not yet wired to near_limit / score / schema: it is
+# validated in isolation (offline judgment harness, tests #2 + #3) BEFORE the
+# score path is touched.
+
+# Present-state confirmatory gate (necessary-but-not-sufficient): some breach /
+# waiver / non-compliance TOKEN must literally appear in the quote. The LLM makes
+# the semantic term-vs-present-state call; this regex can only REJECT a finding
+# whose quote carries no such language (defense against a hallucinated finding),
+# so it cannot manufacture a false positive. It is intentionally NOT the decider
+# (that approach failed twice in 2c-i). Broad on present-state affirmatives so it
+# does not reject a genuine waiver phrased without a specific keyword.
+_BREACH_PRESENT_RE = re.compile(
+    r"waiver|forbearance|amend(?:ment|ed)\b"
+    r"|not\s+in\s+compliance|non-?compliance"
+    r"|in\s+breach|breached\b|covenant\s+violation|violated"
+    r"|in\s+default|event\s+of\s+default"
+    r"|(?:did\s+not|failed\s+to)\s+(?:comply|satisfy|maintain|meet)",
+    re.IGNORECASE,
+)
+_BREACH_STATUSES = (
+    "waiver_obtained", "breach", "non_compliance", "forbearance", "default", "amendment",
+)
+
+_BREACH_MAX_SECTION_CHARS = 60_000
+
+COVENANT_BREACH_SYSTEM = """You are a credit analyst reading SEC filing text for ONE purpose: to detect \
+whether the filing discloses that the company is CURRENTLY in breach of, in \
+default under, or not in compliance with a financial covenant — or has obtained \
+a WAIVER, FORBEARANCE, or amendment because of such a failure.
+
+This is one of the strongest single signals in corporate credit, and it is \
+surrounded by language that LOOKS similar but is NOT a present breach. You must \
+keep these strictly separate:
+
+  - A PRESENT BREACH / WAIVER is a statement of FACT about this reporting period:
+    the company HAS failed a covenant, IS not in compliance, or HAS obtained a
+    waiver / entered a forbearance / amended a covenant because of a failure.
+
+  - COVENANT TERMS are the contract's definitions of what WOULD constitute a
+    default ("events of default include a breach of any covenant"). They describe
+    the rules, not a present failure. NOT a finding.
+
+  - NEGATIONS state the company is fine ("we were not in default", "we were in
+    compliance with all covenants"). The OPPOSITE of a breach. NOT a finding.
+
+  - HYPOTHETICALS / CONDITIONALS describe what could happen ("if we fail to
+    maintain the ratio, we would be in default", "a future breach could result in
+    acceleration"). Forward-looking risk, not a present fact. NOT a finding.
+
+Your output feeds a credit early-warning system. A fabricated breach is worse \
+than a missed one — it manufactures a false alarm. Most filings disclose NO \
+present breach or waiver, and returning an empty list is the correct, common \
+answer. Ground every finding in verbatim text; never infer a breach the text \
+does not state."""
+
+# NOTE: built with str.replace (NOT .format) — the few-shots contain literal { }.
+COVENANT_BREACH_USER = """COMPANY: {COMPANY_NAME}
+FILING: {FILING_TYPE}, period ending {PERIOD_END}
+SECTION: {SECTION_LABEL}  (locator confidence: {SECTION_CONFIDENCE})
+
+============================================================================
+WHAT TO DETECT — A PRESENT BREACH OR WAIVER (a fact about THIS period)
+============================================================================
+Extract a finding ONLY when the text states, as a present fact about this
+reporting period, that the company:
+  - was NOT in compliance with / FAILED / BREACHED / VIOLATED a financial
+    covenant; or
+  - IS in default (or an event of default has occurred and is continuing) under a
+    debt agreement for a financial-covenant reason; or
+  - OBTAINED A WAIVER, entered into a FORBEARANCE agreement, or AMENDED a covenant
+    because of (or to avoid) such a failure.
+
+============================================================================
+WHAT IS NOT A FINDING  (return nothing for these — read carefully)
+============================================================================
+These three classes look like a breach but are NOT. Do NOT extract them:
+
+  1. COVENANT TERMS / DEFINITIONS — the contract describing what would count as a
+     default. NOT a present breach.
+     e.g. "Events of default under the Credit Agreement include the breach of any
+     covenant, a default in payment, or a material adverse change."
+
+  2. NEGATIONS — the company stating it is in compliance / not in default. This is
+     the OPPOSITE signal.
+     e.g. "As of December 31, we were in compliance with all financial covenants."
+     e.g. "We were not in default under any of our debt agreements."
+
+  3. HYPOTHETICALS / CONDITIONALS — what could or would happen, not what has.
+     e.g. "If we have failed to maintain the required ratio, the lenders could
+     accelerate the debt."
+     e.g. "A future breach of our covenants could result in cross-default."
+
+LITMUS TEST to apply before emitting any finding: "Is the filing stating, as a
+present fact about THIS reporting period, that the company HAS breached / been
+waived — or is it merely DEFINING what a breach would be, DENYING a breach, or
+WARNING of a possible future one? Only the first is a finding."
+
+============================================================================
+HOW TO EXTRACT — QUOTE FIRST, CLASSIFY SECOND
+============================================================================
+For each finding, in this order:
+  1. First copy the exact VERBATIM, CONTIGUOUS sentence(s) into evidence_quote.
+     No paraphrase; no stitching distant fragments. The quote MUST contain the
+     present-state breach/waiver language (e.g. "was not in compliance",
+     "obtained a waiver", "entered into a forbearance agreement").
+  2. Then assign the fields, reading them off that quote.
+
+If the filing discloses no present breach or waiver, return an empty list []. That
+is the correct, expected answer for most filings.
+
+============================================================================
+OUTPUT FORMAT
+============================================================================
+Return ONLY a JSON array (no prose, no markdown fences). Each element:
+
+{
+  "evidence_quote":     "<verbatim contiguous span — write this FIRST>",
+  "breach_or_waiver":   true,
+  "status":             "<waiver_obtained | breach | non_compliance | forbearance | default | amendment>",
+  "covenant_reference": "<the covenant named in the quote, e.g. 'maximum consolidated leverage ratio'; null if the quote names no specific covenant>",
+  "description":        "<one-sentence summary of the present breach/waiver>",
+  "null_reason":        "<required when covenant_reference is null; else null>"
+}
+
+============================================================================
+EXAMPLES
+============================================================================
+Example 1 — present non-compliance + waiver (a finding):
+TEXT: "As of December 31, 2019, the Company was not in compliance with the maximum
+total leverage ratio under its Credit Agreement and obtained a waiver from its
+lenders through March 31, 2020."
+OUTPUT:
+[{"evidence_quote":"As of December 31, 2019, the Company was not in compliance with the maximum total leverage ratio under its Credit Agreement and obtained a waiver from its lenders through March 31, 2020.","breach_or_waiver":true,"status":"waiver_obtained","covenant_reference":"maximum total leverage ratio","description":"Company was out of compliance with its leverage covenant and obtained a lender waiver.","null_reason":null}]
+
+Example 2 — COVENANT TERMS, not a present breach (NOT a finding):
+TEXT: "Events of default under the Credit Agreement include the breach of any
+covenant, the failure to pay principal or interest when due, and the occurrence of
+a material adverse change."
+OUTPUT:
+[]
+
+Example 3 — NEGATION, the company is compliant (NOT a finding):
+TEXT: "As of the end of the period, we were in compliance with all financial
+covenants and were not in default under any of our debt agreements."
+OUTPUT:
+[]
+
+Example 4 — HYPOTHETICAL / CONDITIONAL (NOT a finding):
+TEXT: "If we have failed to maintain the required fixed charge coverage ratio, our
+lenders could declare an event of default and accelerate the indebtedness."
+OUTPUT:
+[]
+
+Example 5 — present forbearance (a finding):
+TEXT: "The Company did not satisfy the minimum interest coverage covenant for the
+quarter ended September 30, 2019, and on October 15, 2019 entered into a
+forbearance agreement with its lenders."
+OUTPUT:
+[{"evidence_quote":"The Company did not satisfy the minimum interest coverage covenant for the quarter ended September 30, 2019, and on October 15, 2019 entered into a forbearance agreement with its lenders.","breach_or_waiver":true,"status":"forbearance","covenant_reference":"minimum interest coverage covenant","description":"Company missed its interest coverage covenant and entered a forbearance agreement.","null_reason":null}]
+
+============================================================================
+TEXT TO ANALYZE
+============================================================================
+{SECTION_TEXT}"""
+
+
+@dataclass
+class CovenantBreach:
+    """
+    One footnote-level covenant breach / waiver finding (Stage 2c-iii).
+
+    A PRESENT-STATE disclosure that the company is in breach / default / non-
+    compliance, or has obtained a waiver / forbearance / amendment. Footnote-level
+    (not per-covenant): downstream wiring (Stage 2) maps it onto covenant rows to
+    set near_limit. `covenant_reference` is the free-text covenant the quote names
+    (used for that mapping); null means an "orphan" breach with no named covenant.
+    cik/period_end/created_at are added by the saver, not here.
+    """
+    breach_or_waiver: bool          # always True for a kept finding
+    status: str | None              # waiver_obtained | breach | non_compliance | forbearance | default | amendment
+    covenant_reference: str | None  # covenant named in the quote, else None (orphan)
+    evidence_quote: str             # verbatim, contiguous (required), contains the present-state language
+    description: str | None         # one-line summary
+    section: str | None             # which located section (Debt / MD&A)
+    section_confidence: str         # "high" | "low" (from sections.section_confidence)
+    source: str                     # filing label, e.g. "10-K 2019-12-31, Debt"
+    null_reason: str | None = None
+
+
+def _validate_covenant_breach(
+    raw: dict, filing_label: str, section_label: str, section_conf: str
+) -> CovenantBreach | None:
+    """
+    Validate one raw breach/waiver dict. Enforces the present-state contract:
+      - evidence_quote required (non-empty);
+      - breach_or_waiver must be truthy (the model declined → drop);
+      - the quote MUST contain a present-state breach/waiver token
+        (_BREACH_PRESENT_RE) — the confirmatory gate. The LLM makes the semantic
+        term-vs-present call; this only rejects a finding whose quote carries no
+        such language, so it cannot create a false positive;
+      - status normalized to the controlled vocabulary, else None.
+    Returns None (dropped) on any failure. (quote_in_text against the section
+    excerpt is applied by the caller, like every other pass.)
+    """
+    if not isinstance(raw, dict):
+        return None
+    if not _to_bool(raw.get("breach_or_waiver", False)):
+        return None
+    evidence_quote = str(raw.get("evidence_quote", "") or "").strip()
+    if not evidence_quote:
+        return None
+    # Confirmatory gate: present-state breach/waiver language must be in the quote.
+    if not _BREACH_PRESENT_RE.search(evidence_quote):
+        return None
+
+    status = str(raw.get("status", "") or "").strip().lower()
+    status = status if status in _BREACH_STATUSES else None
+
+    return CovenantBreach(
+        breach_or_waiver=True,
+        status=status,
+        covenant_reference=(str(raw.get("covenant_reference", "") or "").strip() or None),
+        evidence_quote=evidence_quote[:2000],
+        description=(str(raw.get("description", "") or "").strip() or None),
+        section=section_label or None,
+        section_confidence=section_conf,
+        source=filing_label,
+        null_reason=(str(raw.get("null_reason", "") or "").strip() or None),
+    )
+
+
+def extract_covenant_breach(
+    section_text: str,
+    filing_label: str,
+    client: anthropic.Anthropic | None = None,
+    *,
+    section_label: str = "",
+    section_conf: str = "low",
+    company_name: str = "",
+    period_end: str = "",
+    filing_type: str = "10-K",
+    max_chars: int = _BREACH_MAX_SECTION_CHARS,
+    model: str = MODEL,
+) -> list[CovenantBreach]:
+    """
+    Extract present-state covenant breach / waiver findings from one located
+    section slice (debt footnote or MD&A — NOT risk factors, per the 2c-iii scope
+    decision). Haiku, temperature=0, single-shot.
+
+    Grounding: every kept finding's evidence_quote must (a) contain a present-state
+    breach/waiver token (_validate_covenant_breach) AND (b) pass quote_in_text
+    against the excerpt the model saw — same contract as every other pass. Returns
+    [] on any failure so a broken call never blocks the pipeline.
+
+    NET-NEW and not yet wired to near_limit / score: validated in isolation first.
+    """
+    excerpt = (section_text or "")[:max_chars]
+    if not excerpt.strip():
+        return []
+    if client is None:
+        # anthropic.Anthropic() honours ANTHROPIC_BASE_URL (the APIYI relay) from env.
+        client = anthropic.Anthropic()
+
+    user_prompt = (
+        COVENANT_BREACH_USER
+        .replace("{COMPANY_NAME}", company_name or "(issuer)")
+        .replace("{FILING_TYPE}", filing_type)
+        .replace("{PERIOD_END}", period_end or "")
+        .replace("{SECTION_LABEL}", section_label or "(section)")
+        .replace("{SECTION_CONFIDENCE}", section_conf)
+        .replace("{SECTION_TEXT}", excerpt)
+    )
+    message = client.messages.create(
+        model=model,
+        max_tokens=16000,
+        temperature=0,
+        system=COVENANT_BREACH_SYSTEM,
+        messages=[{"role": "user", "content": user_prompt}],
+    )
+    warn_if_truncated(message, filing_label)
+    raw = parse_json_array(message.content[0].text)
+    out = [_validate_covenant_breach(r, filing_label, section_label, section_conf) for r in raw]
+    return [b for b in out if b is not None and quote_in_text(b.evidence_quote, excerpt)]
+
+
+# Keyword → covenant_type map for matching a breach's free-text covenant_reference
+# to an extracted covenant. Ordered most-specific first ("fixed charge coverage"
+# before "coverage"); first hit wins.
+_BREACH_REF_TYPE_MAP = (
+    ("fixed charge", "min_fixed_charge_coverage"),
+    ("leverage", "max_leverage"),
+    ("interest coverage", "min_coverage"),
+    ("coverage", "min_coverage"),
+    ("net worth", "min_net_worth"),
+    ("liquidity", "min_liquidity"),
+    ("availability", "min_liquidity"),
+    ("minimum cash", "min_liquidity"),
+    ("capital expenditure", "max_capex"),
+    ("capex", "max_capex"),
+    ("cross-default", "cross_default"),
+    ("cross default", "cross_default"),
+)
+
+
+def _ref_to_type(ref: str) -> str | None:
+    """Map a breach's covenant_reference free text to a covenant_type, else None."""
+    for kw, ct in _BREACH_REF_TYPE_MAP:
+        if kw in ref:
+            return ct
+    return None
+
+
+def _match_covenant_for_breach(breach: CovenantBreach, covenants: list[Covenant]) -> Covenant | None:
+    """
+    Pick the single covenant a footnote-level breach/waiver finding refers to, or
+    None (an "orphan" breach with no matching extracted covenant).
+
+    Match priority (each picks AT MOST one covenant — a single disclosed breach is
+    one unit of signal, never fanned out across all covenants):
+      1. quote overlap — the breach quote contains/overlaps a covenant's quote
+         (rare: a waiver usually sits in a different sentence than the covenant);
+      2. ratio_name overlap with covenant_reference;
+      3. covenant_type from covenant_reference keyword; among that type prefer a
+         maintenance covenant, then one with a reported_actual, then the first.
+    No reference text and no quote overlap → None (orphan), never a guessed match.
+    """
+    if not covenants:
+        return None
+    for c in covenants:
+        if _quotes_overlap(breach.evidence_quote, c.evidence_quote):
+            return c
+    ref = (breach.covenant_reference or "").strip().lower()
+    if not ref:
+        return None
+    for c in covenants:
+        rn = (c.ratio_name or "").strip().lower()
+        if rn and (rn in ref or ref in rn):
+            return c
+    mapped = _ref_to_type(ref)
+    if mapped:
+        typed = [c for c in covenants if c.covenant_type == mapped]
+        if typed:
+            typed.sort(key=lambda c: (c.is_maintenance is not True, c.reported_actual is None))
+            return typed[0]
+    return None
+
+
+def _apply_breach_findings(
+    covenants: list[Covenant], breaches: list[CovenantBreach]
+) -> list[CovenantBreach]:
+    """
+    Map footnote-level breach/waiver findings onto covenant rows (Stage 2c-iii —
+    restores LLM_COVENANT §7.2 condition 3). For each finding that maps to an
+    existing covenant, set near_limit=True and stamp the three audit fields:
+    near_limit_reason="waiver/breach disclosed", near_limit_evidence_quote (the
+    verbatim breach sentence — distinct from the covenant's own evidence_quote),
+    and near_limit_section (where it was disclosed).
+
+    Returns the ORPHAN breaches (no matching covenant). Per the Stage-1 decision:
+    never fabricate a covenant row, never silently drop a breach — orphans are
+    surfaced to the caller (and logged) for human review; REVIEW_FLAGS persistence
+    is deferred. Mutates the matched covenants in place.
+    """
+    orphans: list[CovenantBreach] = []
+    for b in breaches:
+        match = _match_covenant_for_breach(b, covenants)
+        if match is None:
+            orphans.append(b)
+            continue
+        match.near_limit = True
+        match.near_limit_reason = "waiver/breach disclosed"
+        match.near_limit_evidence_quote = b.evidence_quote
+        match.near_limit_section = b.section
+    return orphans
+
+
 def review_filing(
     cik: str,
     period: str,
     filings: list[dict],
     client: anthropic.Anthropic | None = None,
-) -> tuple[list[Finding], list[Covenant], list[LossProvision], list[GoingConcern]]:
+) -> tuple[list[Finding], list[Covenant], list[LossProvision], list[GoingConcern], list[CovenantBreach]]:
     """
     End-to-end LLM review for one period's 10-K: fetch → locate → extract.
 
     Shared by the CLI (track.py) and the API (api/main.py) so the locate-then-LLM
     flow lives in one place. The filing is fetched once and locate_sections runs
-    once; four extraction passes follow:
+    once; five extraction passes follow:
       1. MD&A             → qualitative Findings (llm_review.review_text)
-      2. debt footnote    → Covenants
-      3. contingencies    → LossProvisions
-      4. auditor report + GC footnote + MD&A + risk factors → GoingConcern
+      2. debt footnote (+ MD&A/risk recall) → Covenants (Stage A ∪ B, deduped)
+      3. debt footnote + MD&A → covenant breach/waiver (Stage 2c-iii): sets
+         near_limit on the matched covenant; the ORPHANS (a disclosed breach with
+         no matching covenant row) are RETURNED as the 5th element for review.
+      4. contingencies    → LossProvisions
+      5. auditor report + GC footnote + MD&A + risk factors → GoingConcern
          (Tier-1 / Tier-2; unioned across sections then collapsed)
 
     The MD&A pass runs ONLY on the located Item 7 section. If the section can't
@@ -1183,14 +1574,25 @@ def review_filing(
     Imports ingest/sections lazily to avoid pulling the HTTP/parsing stack into
     modules that only need the dataclasses.
 
-    Returns ([], [], [], []) if no matching filing or no sections are found.
+    Returns ([], [], [], [], []) if no matching filing or no sections are found.
     """
     from src.ingest import filing_doc_url, find_filing_for_period, get_filing_text
     from src.sections import locate_sections, section_confidence
 
     filing = find_filing_for_period(filings, period)
     if filing is None:
-        return [], [], [], []
+        return [], [], [], [], []
+
+    # One retry-aware client, reused across all five passes below (CLI and API
+    # both call review_filing without a client). max_retries lets the SDK ride out
+    # 429 rate-limits and 5xx with exponential backoff honoring retry-after, so a
+    # rate-limited pass retries instead of erroring out and being skipped. It is a
+    # no-op on the healthy path (only acts on 429/5xx) — no sleep(), no slowdown
+    # when not throttled. Built only after the filing is located, so the no-match
+    # early-return above never constructs a client. Callers that pass their own
+    # client (e.g. tests' MagicMock) keep it; the per-pass fallbacks are untouched.
+    if client is None:
+        client = anthropic.Anthropic(max_retries=8)
 
     text = get_filing_text(cik, filing["accessionNumber"], filing["primaryDocument"])
     # Public EDGAR URL of this document, so qualitative findings can deep-link
@@ -1225,6 +1627,32 @@ def review_filing(
                 period_end=period,
             )
     covenants = _dedupe_covenants(covenants_a, covenants_b)
+
+    # ── Covenant breach / waiver (Stage 2c-iii): footnote-level grounded pass ──
+    # Restores the language-based near_limit signal (LLM_COVENANT §7.2 cond. 3).
+    # Runs over the debt footnote + MD&A ONLY (risk-factors EXCLUDED — hypothetical-
+    # heavy, exactly the conditional class we must not fire on). Runs AFTER dedupe,
+    # so the numeric near_limit recompute in _merge_into can't clobber a language
+    # flag. Maps each finding to one covenant (near_limit + reason + verbatim quote
+    # + section); orphan breaches (no matching covenant) are logged for review,
+    # never fabricated into rows, never silently dropped.
+    breach_findings: list[CovenantBreach] = []
+    for _key, _label in (("debt", "Debt footnote"), ("mdna", "MD&A")):
+        _sec = sections.get(_key)
+        if _sec is not None:
+            breach_findings += extract_covenant_breach(
+                _sec.text, f"10-K {period}, {_label} (breach/waiver)", client,
+                section_label=_label, section_conf=section_confidence(_sec),
+                period_end=period,
+            )
+    orphan_breaches = _apply_breach_findings(covenants, breach_findings)
+    for _orphan in orphan_breaches:
+        logger.warning(
+            "Covenant breach/waiver disclosed but no matching covenant extracted "
+            "(orphan — surfaced for review): cik=%s period=%s section=%s status=%s quote=%r",
+            cik, period, _orphan.section, _orphan.status, _orphan.evidence_quote[:200],
+        )
+
     if sections["contingencies"] is not None:
         provisions = extract_loss_provisions(
             sections["contingencies"].text, f"10-K {period}, Contingencies", client
@@ -1252,4 +1680,4 @@ def review_filing(
         )
     going_concern = _collapse_going_concern(gc_raw)
 
-    return findings, covenants, provisions, going_concern
+    return findings, covenants, provisions, going_concern, orphan_breaches

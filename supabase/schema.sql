@@ -116,6 +116,20 @@ ALTER TABLE covenants ADD COLUMN IF NOT EXISTS cushion_pct        DOUBLE PRECISI
 ALTER TABLE covenants ADD COLUMN IF NOT EXISTS section_confidence TEXT;     -- high (heading-anchored) | low (chunk fallback)
 ALTER TABLE covenants ADD COLUMN IF NOT EXISTS null_reason        TEXT;     -- why a nullable field is null (never guessed)
 
+-- ── covenants: Stage 2c-iii additive extension (language-based near_limit) ──────
+-- Restores LLM_COVENANT §7.2 condition 3 as a footnote-level grounded LLM judgment
+-- (extract_covenant_breach). near_limit_reason distinguishes a language-set flag
+-- ("waiver/breach disclosed") from a numeric one ("cushion" / "breach"). The
+-- evidence_quote + section are the data foundation for the later on-demand evidence
+-- button (verbatim breach/waiver sentence, distinct from the covenant's own
+-- evidence_quote; the section it was disclosed in). All nullable/defaulted, so the
+-- existing inserts keep working. RUN THIS in the Supabase SQL Editor BEFORE the
+-- 2c-iii-enabled live pipeline writes here; golden-set validation is extraction-
+-- only and does NOT require it.
+ALTER TABLE covenants ADD COLUMN IF NOT EXISTS near_limit_reason         TEXT;  -- "cushion" | "breach" (numeric) | "waiver/breach disclosed" (language)
+ALTER TABLE covenants ADD COLUMN IF NOT EXISTS near_limit_evidence_quote TEXT;  -- verbatim breach/waiver sentence (language path only)
+ALTER TABLE covenants ADD COLUMN IF NOT EXISTS near_limit_section        TEXT;  -- "Debt footnote" | "MD&A" (where the breach was disclosed)
+
 
 -- ── loss_provisions ────────────────────────────────────────────────────────────
 -- LLM-extracted litigation/contingency provisions from the commitments &
