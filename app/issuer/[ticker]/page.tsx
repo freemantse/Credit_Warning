@@ -20,6 +20,7 @@ import {
 } from 'recharts'
 import {
   IssuerDetail, PeriodData, Finding, Covenant, LossProvision, RatingOutlook, BondInstrument,
+  AgencyRatingEvent, RatingChangePrediction, MigrationDriver,
   fetchIssuer, trackIssuer, startLlmReview, fetchLlmReviewStatus,
   fmtRatio, fmtFCF, fmtPct, scoreBg, scoreLabel, severityDot,
   ratingBg, ratingFromIndex, RATING_SCALE, outlookBadge, seniorityBadge,
@@ -27,6 +28,11 @@ import {
 
 // How many period rows to show per page in the Ratio History table.
 const PAGE_SIZE = 10
+
+// Agency code → display name, for the chart overlay legend + history section.
+const AGENCY_NAME: Record<string, string> = {
+  MDY: "Moody's", FTC: 'Fitch', SPI: 'S&P', EJR: 'Egan-Jones',
+}
 
 // Metrics selectable in the trend chart's tab bar: the stress score plus each
 // of the 6 financial ratios. `accessor` pulls the value out of a period,
@@ -193,8 +199,17 @@ export default function IssuerPage() {
   // The metric the chart is plotting, and its values per period (chronological).
   // A missing ratio in a period maps to null; connectNulls bridges the gap.
   const metric = TREND_METRICS.find(m => m.key === selectedMetric) ?? TREND_METRICS[0]
+  // On the Implied Rating tab, overlay the primary agency's actual rating (same
+  // index axis) so the implied-vs-agency gap is visible.
+  const showAgencyOverlay =
+    metric.key === 'implied_rating' &&
+    !!data?.periods.some(p => p.agency_rating_index != null)
   const chartData = data
-    ? [...data.periods].reverse().map(p => ({ date: p.period_end, value: metric.accessor(p) ?? null }))
+    ? [...data.periods].reverse().map(p => ({
+        date: p.period_end,
+        value: metric.accessor(p) ?? null,
+        agency: showAgencyOverlay ? (p.agency_rating_index ?? null) : null,
+      }))
     : []
 
   // ── Ratio-history pagination ──────────────────────────────────────────────
@@ -283,6 +298,9 @@ export default function IssuerPage() {
           {/* Shows the stress score on the Y-axis (0–100) over time on the X-axis. */}
           {/* The orange dashed line at Y=50 marks the STRESS_THRESHOLD. */}
           <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
+            {/* Headline prediction — the model's (or outlook's) directional call,
+                front and centre above the chart. */}
+            <PredictionBanner prediction={data.prediction} />
             <div className="mb-4">
               <h2 className="font-semibold text-slate-800">{metric.label} Trend</h2>
               {metric.key === 'score' ? (
@@ -337,7 +355,8 @@ export default function IssuerPage() {
                   width={48}
                 />
                 <Tooltip
-                  formatter={(v: number) => [metric.fmt(v), metric.label]}
+                  // Name the series so the implied-vs-agency overlay reads clearly.
+                  formatter={(v: number, name) => [metric.fmt(v), name as string]}
                   labelFormatter={l => `Period: ${l}`}
                   contentStyle={{ fontSize: 12 }}
                 />
@@ -353,14 +372,44 @@ export default function IssuerPage() {
                 <Line
                   type="monotone"
                   dataKey="value"
+                  name={metric.label}
                   connectNulls            // bridge periods where this ratio is missing
                   stroke="#1e293b"
                   strokeWidth={2}
                   dot={{ r: 4, fill: '#1e293b' }}
                   activeDot={{ r: 6 }}
                 />
+                {/* Agency rating overlay (Implied Rating tab only): the primary
+                    agency's actual rating stepped between actions, dashed blue. */}
+                {showAgencyOverlay && (
+                  <Line
+                    type="stepAfter"
+                    dataKey="agency"
+                    name={`${data.primary_agency ? AGENCY_NAME[data.primary_agency] ?? data.primary_agency : 'Agency'} rating`}
+                    connectNulls
+                    stroke="#2563eb"
+                    strokeWidth={2}
+                    strokeDasharray="5 3"
+                    dot={{ r: 3, fill: '#2563eb' }}
+                    activeDot={{ r: 5 }}
+                  />
+                )}
               </LineChart>
             </ResponsiveContainer>
+
+            {/* Legend for the implied-vs-agency overlay. */}
+            {showAgencyOverlay && (
+              <div className="mt-2 flex flex-wrap items-center gap-4 text-xs text-slate-500">
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="inline-block w-4 h-0.5 bg-slate-800" /> Implied (ratio-derived)
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="inline-block w-4 border-t-2 border-dashed border-blue-600" />
+                  {data.primary_agency ? AGENCY_NAME[data.primary_agency] ?? data.primary_agency : 'Agency'} rating (actual)
+                </span>
+                <span className="text-slate-400">· a gap (implied below agency) flags pressure the agency hasn&apos;t acted on yet</span>
+              </div>
+            )}
           </div>
 
           {/* ── Implied credit rating ──────────────────────────────────── */}
@@ -368,16 +417,21 @@ export default function IssuerPage() {
               and the directional Rating Outlook. */}
           <RatingProfileSection periods={data.periods} outlook={data.outlook} />
 
+          {/* Agency rating history — the real Moody's / Fitch / Egan-Jones actions
+              (dates, from→to, and an upgrade/downgrade/default/withdrawn badge).
+              Placed above the ratio history so the actual agency view leads. */}
+          <AgencyRatingHistorySection
+            agencyRatings={data.agency_ratings}
+            primaryAgency={data.primary_agency}
+          />
+
           {/* ── Ratio history table ────────────────────────────────────── */}
           {/* Each row shows one fiscal year's ratios and score. */}
           {/* Clicking a row toggles an inline XBRL source audit panel below it. */}
-          <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-            <div className="px-6 py-4 border-b border-gray-100">
-              <h2 className="font-semibold text-slate-800">Ratio History</h2>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Click a row to see source audit (XBRL tags + raw inputs).
-              </p>
-            </div>
+          <CollapsibleCard
+            title="Ratio History"
+            description="Click a row to see source audit (XBRL tags + raw inputs)."
+          >
             <div className="overflow-x-auto">
               {/* min-w-max + whitespace-nowrap: this detailed table carries 12 columns
                   (6 original ratios + 3 new ones + period/score/status), so let it grow
@@ -480,7 +534,7 @@ export default function IssuerPage() {
                 </div>
               </div>
             )}
-          </div>
+          </CollapsibleCard>
 
           {/* Debt maturity wall — XBRL-derived, shown for the latest period. */}
           <MaturityWallSection periods={data.periods} />
@@ -539,6 +593,112 @@ export default function IssuerPage() {
           {/* Qualitative findings section — only rendered if findings exist. */}
           <FindingsSection periods={data.periods} />
         </>
+      )}
+    </div>
+  )
+}
+
+
+// ── CollapsibleCard component ─────────────────────────────────────────────────
+//
+// A white rounded card whose body can be collapsed by clicking its header. Used
+// to let the user fold away the Agency Rating History, Ratio History, and Debt
+// Maturity Wall sections — all expanded by default. The header shows a chevron
+// that rotates when open, the title, an optional description, and an optional
+// right-aligned slot (e.g. the maturity wall's "Total scheduled" figure).
+
+function CollapsibleCard({
+  title,
+  description,
+  headerRight,
+  defaultOpen = true,
+  children,
+}: {
+  title: string
+  description?: ReactNode
+  headerRight?: ReactNode
+  defaultOpen?: boolean
+  children: ReactNode
+}) {
+  const [open, setOpen] = useState(defaultOpen)
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      <button
+        onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
+        className={`w-full flex items-start justify-between gap-4 px-6 py-4 text-left hover:bg-gray-50 transition-colors ${open ? 'border-b border-gray-100' : ''}`}
+      >
+        <div className="flex items-start gap-2">
+          <svg
+            xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"
+            fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+            aria-hidden="true"
+            className={`mt-1 text-slate-400 transition-transform ${open ? 'rotate-90' : ''}`}
+          >
+            <path d="m9 18 6-6-6-6" />
+          </svg>
+          <div>
+            <h2 className="font-semibold text-slate-800">{title}</h2>
+            {description && <p className="text-xs text-slate-400 mt-0.5">{description}</p>}
+          </div>
+        </div>
+        {headerRight}
+      </button>
+      {open && children}
+    </div>
+  )
+}
+
+
+// ── PredictionBanner component ────────────────────────────────────────────────
+//
+// The headline directional rating-change call, shown at the very top of the trend
+// chart. Uses the trained model's calibrated probability when available
+// (source === 'model'), otherwise the rule-based Rating Outlook (source ===
+// 'outlook'). Colour-coded: downgrade red, upgrade green, no-change slate.
+
+function PredictionBanner({ prediction }: { prediction?: RatingChangePrediction | null }) {
+  if (!prediction) return null
+  const { direction, p_downgrade, p_upgrade, reason, source } = prediction
+
+  const headline =
+    direction === 'down' ? 'Downgrade likely'
+    : direction === 'up' ? 'Upgrade likely'
+    : 'No rating change likely'
+  const arrow = direction === 'down' ? '↓' : direction === 'up' ? '↑' : '→'
+  const cls =
+    direction === 'down' ? 'bg-red-50 border-red-200 text-red-800'
+    : direction === 'up' ? 'bg-green-50 border-green-200 text-green-800'
+    : 'bg-slate-50 border-slate-200 text-slate-700'
+  const chip =
+    direction === 'down' ? 'bg-red-100 text-red-700'
+    : direction === 'up' ? 'bg-green-100 text-green-700'
+    : 'bg-slate-200 text-slate-600'
+
+  // The probability that matches the predicted direction (model only).
+  const pct = direction === 'down' ? p_downgrade : direction === 'up' ? p_upgrade : null
+
+  return (
+    <div className={`mb-4 rounded-lg border px-4 py-3 ${cls}`}>
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full text-sm font-bold ${chip}`}>
+          {arrow}
+        </span>
+        <span className="font-semibold">{headline}</span>
+        {pct != null && (
+          <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${chip}`}>
+            {(pct * 100).toFixed(0)}% within 12 months
+          </span>
+        )}
+        {/* Provenance: which engine produced the call. */}
+        <span className="ml-auto text-[10px] uppercase tracking-wide font-medium text-slate-400">
+          {source === 'model' ? 'model prediction' : 'rule-based outlook'}
+        </span>
+      </div>
+      {reason && (
+        <p className="mt-1.5 text-sm text-slate-600">
+          {source === 'model' ? reason : <span className="italic">{reason}</span>}
+        </p>
       )}
     </div>
   )
@@ -1014,20 +1174,16 @@ function MaturityWallSection({ periods }: { periods: PeriodData[] }) {
 
   const pct = sched.near_term_pct
   return (
-    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-      <div className="px-6 py-4 border-b border-gray-100 flex items-baseline justify-between">
-        <div>
-          <h2 className="font-semibold text-slate-800">Debt Maturity Wall</h2>
-          <p className="text-xs text-slate-400 mt-0.5">
-            Long-term debt principal due by year (XBRL-sourced) · {period.period_end}
-          </p>
-        </div>
-        <div className="text-right">
+    <CollapsibleCard
+      title="Debt Maturity Wall"
+      description={`Long-term debt principal due by year (XBRL-sourced) · ${period.period_end}`}
+      headerRight={
+        <div className="text-right shrink-0">
           <span className="text-xs text-slate-400">Total scheduled</span>
           <p className="font-mono font-semibold text-slate-700">{fmtMoney(sched.total_scheduled)}</p>
         </div>
-      </div>
-
+      }
+    >
       <div className="p-6">
         <ResponsiveContainer width="100%" height={220}>
           <BarChart data={chartData}>
@@ -1060,7 +1216,104 @@ function MaturityWallSection({ periods }: { periods: PeriodData[] }) {
           </p>
         )}
       </div>
-    </div>
+    </CollapsibleCard>
+  )
+}
+
+
+// ── AgencyRatingHistorySection component ──────────────────────────────────────
+//
+// Lists the real agency rating actions (Moody's / Fitch / Egan-Jones), newest-first
+// within each agency, showing the action date, the from→to notation, and a badge
+// (upgrade / downgrade / default / withdrawn). Renders null when no agency history
+// has been ingested yet (pre-seed), so the page is silent rather than empty.
+
+// Badge label + colour for one rating action.
+function agencyActionBadge(action: string | null, status: string): { label: string; cls: string } {
+  if (status === 'default') return { label: 'Default', cls: 'bg-red-100 text-red-700' }
+  if (status === 'withdrawn') return { label: 'Withdrawn', cls: 'bg-slate-100 text-slate-500' }
+  if (action === 'upgrade') return { label: 'Upgrade', cls: 'bg-green-100 text-green-700' }
+  if (action === 'downgrade') return { label: 'Downgrade', cls: 'bg-red-100 text-red-700' }
+  if (action === 'new') return { label: 'Initiated', cls: 'bg-blue-100 text-blue-700' }
+  return { label: 'Affirmed', cls: 'bg-slate-100 text-slate-500' }
+}
+
+// The notation to show for one event — the agency's own raw notation when rated
+// (Moody's "Baa3" vs S&P-style "BBB-"), or a status token.
+function agencyLetter(e: AgencyRatingEvent): string {
+  if (e.rating_status === 'withdrawn') return 'WR'
+  if (e.rating_status === 'not_rated') return 'NR'
+  return e.rating_raw ?? (e.rating_index != null ? ratingFromIndex(e.rating_index) : '—')
+}
+
+function AgencyRatingHistorySection({
+  agencyRatings,
+  primaryAgency,
+}: {
+  agencyRatings?: Record<string, AgencyRatingEvent[]>
+  primaryAgency?: string | null
+}) {
+  const entries = Object.entries(agencyRatings ?? {}).filter(([, evs]) => evs.length > 0)
+  if (entries.length === 0) return null
+  // Primary (charted) agency first, then the rest alphabetically.
+  entries.sort((a, b) =>
+    a[0] === primaryAgency ? -1 : b[0] === primaryAgency ? 1 : a[0].localeCompare(b[0])
+  )
+
+  return (
+    <CollapsibleCard
+      title="Agency Rating History"
+      description={
+        <>
+          Real long-term issuer ratings (Moody&apos;s / Fitch / Egan-Jones), newest first.
+          The series overlaid on the chart above is the one with the longest history.
+        </>
+      }
+    >
+      <div className="divide-y divide-gray-100">
+        {entries.map(([agency, events]) => {
+          // events arrive ascending; pair each with its predecessor for from→to,
+          // then reverse so the newest action is on top.
+          const rows = events
+            .map((e, i) => ({ e, prev: i > 0 ? events[i - 1] : null }))
+            .reverse()
+          return (
+            <div key={agency} className="px-6 py-4">
+              <div className="flex items-center gap-2 mb-3">
+                <span className="font-semibold text-sm text-slate-700">
+                  {AGENCY_NAME[agency] ?? agency}
+                </span>
+                {agency === primaryAgency && (
+                  <span className="text-[10px] uppercase tracking-wide font-medium text-blue-600 bg-blue-50 border border-blue-100 rounded px-1.5 py-0.5">
+                    charted
+                  </span>
+                )}
+                <span className="text-xs text-slate-400">{events.length} actions</span>
+              </div>
+              <ul className="space-y-1.5">
+                {rows.map(({ e, prev }, i) => {
+                  const badge = agencyActionBadge(e.rating_action, e.rating_status)
+                  const to = agencyLetter(e)
+                  const from = prev ? agencyLetter(prev) : null
+                  return (
+                    <li key={i} className="flex items-center gap-3 text-sm">
+                      <span className="font-mono text-xs text-slate-400 w-24 shrink-0">{e.effective_date}</span>
+                      <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full w-24 text-center shrink-0 ${badge.cls}`}>
+                        {badge.label}
+                      </span>
+                      <span className="font-mono text-slate-700">
+                        {from && from !== to && <span className="text-slate-400">{from} → </span>}
+                        <span className="font-semibold">{to}</span>
+                      </span>
+                    </li>
+                  )
+                })}
+              </ul>
+            </div>
+          )
+        })}
+      </div>
+    </CollapsibleCard>
   )
 }
 
@@ -1207,6 +1460,26 @@ function MigrationPredictionBlock({ periods }: { periods: PeriodData[] }) {
   if (!period || !m) return null
 
   const pct = (v: number | null) => (v == null ? '—' : `${(v * 100).toFixed(0)}%`)
+
+  // Drivers are attributed to the downgrade head: contribution > 0 raises downgrade
+  // risk (credit-negative), < 0 lowers it (credit-positive). Frame the list around
+  // the predicted direction so it explains the call rather than only listing risk:
+  //   down   → downgrade-risk drivers (all, as before)
+  //   up     → only the factors LOWERING downgrade risk (what supports the upgrade)
+  //   stable → the strongest factors either way (what's holding the rating steady)
+  const dir = m.direction ?? 'stable'
+  const driverView = {
+    down:   { title: 'Top drivers of downgrade risk',         keep: (_d: MigrationDriver) => true },
+    up:     { title: 'Top drivers supporting an upgrade',      keep: (d: MigrationDriver) => d.contribution < 0 },
+    stable: { title: 'Top factors holding the rating steady',  keep: (_d: MigrationDriver) => true },
+  }[dir]
+  // Fall back to the full list if the directional filter empties it.
+  const filtered = m.drivers_json.filter(driverView.keep)
+  const shownDrivers = filtered.length > 0 ? filtered : m.drivers_json
+  const headline = dir === 'down' ? 'Downgrade likely'
+    : dir === 'up' ? 'Upgrade likely'
+    : 'Likely to stay stable'
+
   return (
     <div className="rounded-lg border border-gray-200 bg-white p-3">
       <div className="flex items-center gap-4 flex-wrap">
@@ -1229,15 +1502,15 @@ function MigrationPredictionBlock({ periods }: { periods: PeriodData[] }) {
       {/* Plain-language "why" — the model's reasoning, built server-side. */}
       {m.reason && (
         <p className="mt-2 text-sm text-slate-600">
-          <span className="font-medium text-slate-700 capitalize">{m.direction ?? 'change'} likely</span>
+          <span className="font-medium text-slate-700">{headline}</span>
           {' — '}{m.reason}.
         </p>
       )}
-      {m.drivers_json.length > 0 && (
+      {shownDrivers.length > 0 && (
         <div className="mt-2">
-          <p className="text-xs text-slate-400 mb-1">Top drivers of downgrade risk:</p>
+          <p className="text-xs text-slate-400 mb-1">{driverView.title}:</p>
           <ul className="space-y-1">
-            {m.drivers_json.map((d, i) => (
+            {shownDrivers.map((d, i) => (
               <li key={i} className="flex items-center gap-2 text-xs">
                 <span className={d.contribution > 0 ? 'text-red-600' : 'text-green-600'}>
                   {d.contribution > 0 ? '▲' : '▼'}
@@ -1246,6 +1519,12 @@ function MigrationPredictionBlock({ periods }: { periods: PeriodData[] }) {
                 <span className="text-slate-400 font-mono">
                   {d.value == null ? 'n/a' : d.value}
                 </span>
+                {/* YoY move of the underlying ratio — makes clear why it's a driver. */}
+                {d.pct_change != null && Math.abs(d.pct_change) >= 1 && (
+                  <span className="text-slate-400 font-mono" title="Year-over-year change">
+                    ({d.pct_change > 0 ? '↑' : '↓'} {Math.abs(d.pct_change).toFixed(0)}%)
+                  </span>
+                )}
                 <span className="text-slate-400 ml-auto font-mono">
                   {d.contribution > 0 ? '+' : ''}{(d.contribution * 100).toFixed(1)} pts
                 </span>

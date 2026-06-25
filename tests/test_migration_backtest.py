@@ -72,6 +72,26 @@ def test_no_vintage_before_snapshot_is_data_gap():
     assert out["cases"][0]["status"] == "data_gap"
 
 
+def test_deep_history_scores_newer_snapshots_not_data_gap():
+    """
+    Regression: a case whose OLDEST snapshot predates the earliest vintage must NOT be
+    dropped as data_gap — its newer, scorable snapshots still count. (The post-loop
+    check used to look at the oldest snapshot's vintage and discard the whole case,
+    so deep-history issuers like Ford/GE/PG&E wrongly showed "no data".)
+    """
+    scoring = {"0000000001": [
+        {"period_end": "2017-12-31", "leverage": 9.0},  # predates earliest vintage (2018) → unscorable
+        {"period_end": "2019-12-31", "leverage": 8.0},  # vintage 2018 → flag
+        {"period_end": "2021-12-31", "leverage": 8.0},  # vintage 2020 → flag
+    ]}
+    cases = [{"cik": "1", "ticker": "DEEP", "event_type": "downgrade", "event_date": "2022-06-30"}]
+    out = run_migration_backtest(cases, scoring, VINTAGES, threshold=0.5,
+                                 head_prob_fn=stub_head_prob, feature_columns=FEATURES)
+    c = out["cases"][0]
+    assert c["status"] == "caught"          # was wrongly "data_gap" before the fix
+    assert c["caught"] is True
+
+
 def test_missing_issuer_rows_is_data_gap():
     cases = [{"cik": "9", "ticker": "GHOST", "event_type": "downgrade", "event_date": "2022-06-30"}]
     out = run_migration_backtest(cases, {}, VINTAGES, head_prob_fn=stub_head_prob,

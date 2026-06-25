@@ -20,13 +20,12 @@ import {
 } from '@/lib/api'
 
 // ── Rating Change cell ─────────────────────────────────────────────────────────
-// Direction badge (↓ red / → slate / ↑ green) with the model probability when the
-// migration model has been trained, plus a short truncated "why" line (full text
-// in the title). Before a model exists, the direction + reason come from the
-// rule-based outlook (prediction.source === 'outlook').
+// Just the direction arrow + model probability (e.g. "↓ 22%"); ↓ red / → slate /
+// ↑ green. The full "why" reasoning now lives on the issuer detail page (banner),
+// so this overview cell stays compact. The reason is kept in the tooltip title.
 function RatingChangeCell({ prediction }: { prediction?: RatingChangePrediction | null }) {
   if (!prediction) return <span className="text-slate-300 text-xs">—</span>
-  const { direction, p_downgrade, p_upgrade, reason, source } = prediction
+  const { direction, p_downgrade, p_upgrade, reason } = prediction
   const arrow = direction === 'down' ? '↓' : direction === 'up' ? '↑' : '→'
   const cls =
     direction === 'down' ? 'bg-red-100 text-red-700 border border-red-200'
@@ -36,12 +35,12 @@ function RatingChangeCell({ prediction }: { prediction?: RatingChangePrediction 
   const pct = direction === 'down' ? p_downgrade : direction === 'up' ? p_upgrade : null
   const label = pct != null ? `${arrow} ${(pct * 100).toFixed(0)}%` : arrow
   return (
-    <div className="min-w-0">
-      <span className={`inline-block text-xs font-semibold px-2 py-0.5 rounded-full ${cls}`}>{label}</span>
-      <div className="text-[11px] text-slate-400 truncate mt-0.5" title={reason}>
-        {source === 'model' ? reason : <span className="italic">{reason}</span>}
-      </div>
-    </div>
+    <span
+      className={`inline-block text-xs font-semibold px-2 py-0.5 rounded-full ${cls}`}
+      title={reason}
+    >
+      {label}
+    </span>
   )
 }
 
@@ -552,7 +551,7 @@ export default function Dashboard() {
                   equal-width regardless of how long each heading is, instead of each
                   column sizing itself to its content. */}
               <colgroup>
-                <col className="w-[10%]" />  {/* Ticker */}
+                <col className="w-[11%]" />  {/* Ticker */}
                 <col className="w-[6%]" />   {/* Latest Period */}
                 <col className="w-[7%]" />   {/* EBITDA Margin */}
                 <col className="w-[7%]" />   {/* Leverage */}
@@ -561,10 +560,10 @@ export default function Dashboard() {
                 <col className="w-[7%]" />   {/* Liquidity */}
                 <col className="w-[7%]" />   {/* Cash Flow / Debt */}
                 <col className="w-[7%]" />   {/* Debt / Assets */}
-                <col className="w-[5.5%]" /> {/* Implied Rating */}
-                <col className="w-[13%]" />  {/* Rating Change (prediction + why) */}
-                <col className="w-[4%]" />   {/* Score */}
-                <col className="w-[6.5%]" /> {/* Status */}
+                <col className="w-[5%]" />   {/* Score */}
+                <col className="w-[8%]" />   {/* Status */}
+                <col className="w-[6%]" />   {/* Implied Rating */}
+                <col className="w-[10%]" />  {/* Rating Change (12m) */}
                 <col className="w-[5%]" />   {/* Remove */}
               </colgroup>
               <thead>
@@ -580,10 +579,10 @@ export default function Dashboard() {
                   <th className="px-2 py-3 text-right">Liquidity</th>
                   <th className="px-2 py-3 text-right">Cash Flow / Debt</th>
                   <th className="px-2 py-3 text-right">Debt / Assets</th>
-                  <th className="px-2 py-3 text-center">Implied Rating</th>
-                  <th className="px-2 py-3 text-left">Rating Change (12m)</th>
                   <th className="px-2 py-3 text-center">Score</th>
                   <th className="px-2 py-3 text-center">Status</th>
+                  <th className="px-2 py-3 text-center">Implied Rating</th>
+                  <th className="px-2 py-3 text-center">Rating Change (12m)</th>
                   {/* Remove button column, no header */}
                   <th className="px-4 py-3"></th>
                 </tr>
@@ -640,24 +639,6 @@ export default function Dashboard() {
                     <td className="px-2 py-4 text-right font-mono text-slate-700">{fmtPct(iss.cash_flow_to_debt)}</td>
                     <td className="px-2 py-4 text-right font-mono text-slate-700">{fmtPct(iss.debt_to_assets)}</td>
 
-                    {/* Implied S&P-style rating badge (null when uncomputable). */}
-                    <td className="px-2 py-4 text-center">
-                      {iss.implied_rating ? (
-                        <span className={`inline-block text-xs font-mono font-semibold px-2.5 py-1 rounded-full whitespace-nowrap ${ratingBg(iss.implied_rating)}`}>
-                          {iss.implied_rating}
-                        </span>
-                      ) : (
-                        <span className="text-slate-300">—</span>
-                      )}
-                    </td>
-
-                    {/* Rating Change prediction: direction (+ model probability when
-                        trained) and a short "why". Model-sourced before training falls
-                        back to the rule-based outlook. */}
-                    <td className="px-2 py-4">
-                      <RatingChangeCell prediction={iss.prediction} />
-                    </td>
-
                     {/* Score as a rounded integer — the exact value is shown in the detail page.
                         null = no ratios stored yet (e.g. tracking couldn't extract any), shown as —. */}
                     <td className="px-2 py-4 text-center font-mono font-bold text-slate-800">
@@ -675,6 +656,25 @@ export default function Dashboard() {
                           {scoreLabel(iss.score)}
                         </span>
                       )}
+                    </td>
+
+                    {/* Implied S&P-style rating badge (null when uncomputable). Moved
+                        after Status so the agency-facing columns sit at the end. */}
+                    <td className="px-2 py-4 text-center">
+                      {iss.implied_rating ? (
+                        <span className={`inline-block text-xs font-mono font-semibold px-2.5 py-1 rounded-full whitespace-nowrap ${ratingBg(iss.implied_rating)}`}>
+                          {iss.implied_rating}
+                        </span>
+                      ) : (
+                        <span className="text-slate-300">—</span>
+                      )}
+                    </td>
+
+                    {/* Rating Change prediction: direction + model probability (model
+                        once trained, else the rule-based outlook). Reasoning lives on
+                        the detail page; the tooltip carries the one-line "why". */}
+                    <td className="px-2 py-4 text-center">
+                      <RatingChangeCell prediction={iss.prediction} />
                     </td>
 
                     {/* Remove button. Shows "…" while the delete for THIS row is in-flight. */}

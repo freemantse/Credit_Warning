@@ -43,6 +43,20 @@ def _months_between(d_from: str, d_to: str) -> float:
     return (b.year - a.year) * 12 + (b.month - a.month) + (b.day - a.day) / 30.44
 
 
+def _num(v: Any) -> float | None:
+    """Coerce a feature value to a JSON-safe float, or None for missing/NaN/inf.
+
+    Scoring-matrix rows come from a pandas DataFrame, so a missing ratio is NaN
+    (not None); NaN/inf would serialize to invalid JSON the browser can't parse.
+    """
+    import math
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
 def _default_loader():
     from src.model.predict import load_model, predict_proba_all
     cache: dict[str, Any] = {}
@@ -88,7 +102,7 @@ def run_migration_backtest(
     Returns {threshold, by_event_type, cases}.
     """
     import pandas as pd
-    from src.model.features import FEATURE_COLUMNS
+    from src.model.features import FEATURE_COLUMNS, RATIO_FEATURES
 
     feats = feature_columns or FEATURE_COLUMNS
     head_prob = head_prob_fn or _default_loader()
@@ -120,11 +134,13 @@ def run_migration_backtest(
         trajectory: list[dict[str, Any]] = []
         earliest_flag: str | None = None
         flag_count = 0
+        scored_any = False
         for row in snaps:
             period = row["period_end"]
             path = select_vintage(vintages, period)   # vintage trained strictly before T
             prob = None
             if path is not None and head is not None:
+                scored_any = True
                 X = pd.DataFrame([{c: row.get(c) for c in feats}])
                 for c in feats:
                     X[c] = pd.to_numeric(X[c], errors="coerce")
@@ -138,6 +154,10 @@ def run_migration_backtest(
                 "months_before_event": round(_months_between(period, event_date), 1) if event_date else None,
                 "prob": round(prob, 4) if prob is not None else None,
                 "flagged": flagged,
+                # Point-in-time stress score + ratio levels the model saw at this snapshot
+                # (lookahead-free), for the expanded per-period view on the backtest page.
+                "score": _num(row.get("stress_score")),
+                "ratios": {k: _num(row.get(k)) for k in RATIO_FEATURES},
             })
 
         if controls:
@@ -145,8 +165,11 @@ def run_migration_backtest(
                             "fp_count": flag_count, "trajectory": trajectory})
             continue
 
-        if path is None:
-            # No vintage predates these snapshots → can't score without leakage.
+        if not scored_any:
+            # NO snapshot had a vintage trained before it → can't score without leakage.
+            # (Gate on "any snapshot scored", NOT the oldest one: deep-history issuers
+            # have early snapshots that predate the first vintage, but their later
+            # snapshots score fine — those must not be discarded as a data_gap.)
             results.append({**base, "status": "data_gap", "trajectory": trajectory})
             continue
 

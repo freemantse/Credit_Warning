@@ -32,7 +32,10 @@ from src.model.features import FEATURE_COLUMNS
 from src.score import DEFAULT_CONFIG
 
 
-def _build_booster(monotone: list[int], random_state: int):
+_VALIDATION_FRACTION = 0.15
+
+
+def _build_booster(monotone: list[int], random_state: int, *, early_stopping: bool = True):
     from sklearn.ensemble import HistGradientBoostingClassifier
 
     return HistGradientBoostingClassifier(
@@ -41,12 +44,25 @@ def _build_booster(monotone: list[int], random_state: int):
         max_iter=300,
         max_leaf_nodes=31,
         l2_regularization=1.0,
-        early_stopping=True,
-        validation_fraction=0.15,
+        early_stopping=early_stopping,
+        validation_fraction=_VALIDATION_FRACTION if early_stopping else None,
         monotonic_cst=monotone,           # auditability-first: credit-coherent directions
         class_weight="balanced",          # rare downgrades/defaults up-weighted
         random_state=random_state,
     )
+
+
+def _can_early_stop(y) -> bool:
+    """
+    HistGradientBoosting's early-stopping holdout is a STRATIFIED split, so the
+    minority class must be big enough to populate both folds (sklearn requires ≥2,
+    and the 15% validation fold should hold ≥1 positive to be meaningful). For rare
+    heads — e.g. `default`, with only a handful of positives — that split raises
+    "least populated class has only 1 member"; there we train on the fixed max_iter
+    (l2-regularised) without early stopping rather than crash.
+    """
+    n_min = int(y.value_counts().min())
+    return n_min >= 2 and n_min * _VALIDATION_FRACTION >= 1
 
 
 def _build_baseline():
@@ -120,14 +136,19 @@ def train_all(
             metrics["heads"][head] = {"status": "insufficient", "positives": int(y_fit.sum())}
             continue
 
-        booster = _build_booster(monotone_constraints(head), random_state).fit(X_fit, y_fit)
+        early_stop = _can_early_stop(y_fit)
+        booster = _build_booster(
+            monotone_constraints(head), random_state, early_stopping=early_stop,
+        ).fit(X_fit, y_fit)
         X_cal, y_cal, _ = make_xy(cal_df, head) if not cal_df.empty else (None, None, [])
         calibrated = _calibrate(booster, X_cal, y_cal)
         estimator = calibrated if calibrated is not None else booster
 
         baseline = _build_baseline().fit(X_all, y_all)
 
-        head_metrics: dict[str, Any] = {"status": "ok", "calibrated": calibrated is not None}
+        head_metrics: dict[str, Any] = {
+            "status": "ok", "calibrated": calibrated is not None, "early_stopping": early_stop,
+        }
         X_te, y_te, _ = make_xy(test_df, head)
         if len(y_te) and y_te.nunique() > 0:
             head_metrics["model"] = classification_metrics(y_te, estimator.predict_proba(X_te)[:, 1])

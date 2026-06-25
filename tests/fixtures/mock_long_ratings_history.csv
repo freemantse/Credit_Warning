@@ -1,0 +1,17 @@
+Instrument,Company Common Name,Date,Issuer Rating,Rating Source Description,Rating Type Description
+ABC.N,Abc Corp,2018-01-01,A2,Moody's Senior Unsecured,Issuer-level Rating
+ABC.N,,2020-03-15,Baa1,Moody's Senior Unsecured,Issuer-level Rating
+ABC.N,,2021-01-01,Baa1,Moody's Senior Unsecured,Issuer-level Rating
+ABC.N,,2018-01-01,A2,Moody's Long-term Issuer Rating,Issuer-level Rating
+ABC.N,,2019-06-01,WR,Moody's Long-term Issuer Rating,Issuer-level Rating
+ABC.N,,2018-01-01,3,Moody's LGD Senior Unsecured,Issuer-level Rating
+ABC.N,,2018-01-01,P-2,Moody's Commercial Paper,Issuer-level Rating
+ABC.N,,2017-09-01,A,Fitch Senior Unsecured,Issuer-level Rating
+ABC.N,,2020-04-01,BBB+,Fitch Senior Unsecured,Issuer-level Rating
+ABC.N,,2016-02-01,A-,Egan-Jones Senior Unsecured,Issuer-level Rating
+ABC.N,,2019-05-01,BBB,Egan-Jones Senior Unsecured,Issuer-level Rating
+DEF.PK,Def Co,2019-01-10,B3,Moody's Corporate Family Rating,Issuer-level Rating
+DEF.PK,,2020-06-01,Ca,Moody's Corporate Family Rating,Issuer-level Rating
+DEF.PK,,2019-02-01,B,Fitch Senior Unsecured,Issuer-level Rating
+DEF.PK,,2021-03-01,D,Fitch Senior Unsecured,Issuer-level Rating
+DEF.PK,,2018-01-01,A,Dominion Bond Rating Service (DBRS) - Long-term Issuer,Issuer-level Rating

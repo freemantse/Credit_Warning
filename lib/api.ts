@@ -167,6 +167,10 @@ export interface MigrationDriver {
   baseline: number
   contribution: number
   direction: 'raises' | 'lowers'
+  // Year-over-year % move of the underlying ratio (now vs the prior period),
+  // server-computed so it matches the "why" reason text. Null when the feature
+  // isn't a tracked ratio or the prior value is missing/zero.
+  pct_change?: number | null
 }
 
 /**
@@ -215,6 +219,22 @@ export interface PeriodData {
   implied_rating?: ImpliedRating | null  // S&P-style implied rating (null when uncomputable)
   bond_instruments?: BondInstrument[]  // LLM-extracted debt instruments + seniority (empty if no LLM review)
   migration?: MigrationPrediction | null  // calibrated migration prediction (null until the model runs)
+  // Primary agency's actual rating as-of this period_end (forward-filled, absorbing
+  // at withdrawal/default) — overlaid on the implied-rating chart. Null pre-ingest.
+  agency_rating_index?: number | null
+  agency_rating?: string | null          // …as a notation letter (AAA…D)
+}
+
+/**
+ * One dated agency rating action (from the real Moody's/Fitch/Egan-Jones history).
+ * rating_index is null for non-notch statuses (withdrawn / not_rated).
+ */
+export interface AgencyRatingEvent {
+  effective_date: string
+  rating_index: number | null
+  rating_raw: string | null              // raw notation as pulled (e.g. "Baa3", "BB+")
+  rating_status: 'rated' | 'withdrawn' | 'not_rated' | 'default'
+  rating_action: string | null           // new | upgrade | downgrade | affirm | withdrawn | default
 }
 
 /**
@@ -226,6 +246,12 @@ export interface IssuerDetail {
   name: string                     // company display name, e.g. "Apple Inc."
   periods: PeriodData[]
   outlook?: RatingOutlook | null   // directional Rating Outlook (null when no usable history)
+  // Headline directional rating-change signal (model once trained, else outlook) —
+  // shown as the banner atop the trend chart. Null when neither is available.
+  prediction?: RatingChangePrediction | null
+  // Real agency rating actions, keyed by agency code (MDY | FTC | SPI | EJR).
+  agency_ratings?: Record<string, AgencyRatingEvent[]>
+  primary_agency?: string | null   // the agency overlaid on the implied-rating chart
 }
 
 /**
@@ -558,7 +584,14 @@ export interface MigrationCaseResult {
   early_warning?: boolean
   lead_months?: number | null
   fp_count?: number
-  trajectory?: { eval_date: string; months_before_event: number; prob: number | null; flagged: boolean }[]
+  trajectory?: {
+    eval_date: string
+    months_before_event: number
+    prob: number | null
+    flagged: boolean
+    score?: number | null                       // point-in-time stress score (0–100)
+    ratios?: Record<string, number | null>      // ratio levels at that snapshot
+  }[]
   error?: string | null
 }
 

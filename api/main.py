@@ -54,11 +54,13 @@ from src.ingest import (
     resolve_identifier,
 )
 from src.score import DEFAULT_CONFIG, ScoreConfig, compute_score
-from src.rating import compute_implied_rating, rating_outlook, OUTLOOK_DEFAULT, RatingOutlookResult
+from src.rating import compute_implied_rating, rating_outlook, OUTLOOK_DEFAULT, RatingOutlookResult, RATING_SCALE
+from src.ratings.labels import rating_asof
 from src.store import (
     add_case,
     delete_case,
     delete_issuer,
+    get_agency_ratings_grouped,
     get_case,
     get_cik_by_ticker,
     get_company,
@@ -207,6 +209,21 @@ def _driver_phrase(driver: dict, ratios_now: dict, ratios_prev: dict) -> str:
     return f"{'rising' if driver.get('contribution', 0) > 0 else 'easing'} {label}"
 
 
+def _driver_pct_change(driver: dict, ratios_now: dict, ratios_prev: dict) -> float | None:
+    """
+    Year-over-year % move of a driver's underlying ratio (now vs the prior period),
+    so the UI can show "(↑ 20%)" beside each driver. Mirrors _driver_phrase's move
+    exactly, so the per-driver badge agrees with the reason text. None when the
+    feature isn't a tracked ratio or the prior value is missing/zero.
+    """
+    feat = driver.get("feature", "")
+    base = feat[:-4] if feat.endswith("_yoy") else feat
+    now, prev = ratios_now.get(base), ratios_prev.get(base)
+    if isinstance(now, (int, float)) and isinstance(prev, (int, float)) and prev not in (0, None):
+        return round((now - prev) / abs(prev) * 100, 1)
+    return None
+
+
 def _prediction_summary(pred_row: dict | None, outlook, ratios_now: dict, ratios_prev: dict) -> dict | None:
     """
     Unify the directional "rating change" signal + a short "why" for one issuer.
@@ -240,6 +257,35 @@ def _prediction_summary(pred_row: dict | None, outlook, ratios_now: dict, ratios
             "reason": outlook.reasons[0] if outlook.reasons else o,
         }
     return None
+
+
+# ── Agency-rating helpers (issuer detail overlay + history) ──────────────────
+
+# Display priority when an issuer carries more than one agency series, used only to
+# break ties — the richest (most-events) series is preferred for the chart overlay.
+_AGENCY_PRIORITY = {"MDY": 0, "SPI": 1, "FTC": 2, "EJR": 3}
+
+
+def _rating_letter(idx: int | None) -> str | None:
+    """Map a rating_index back to its notation (AAA…D), clamped; None when idx is None."""
+    if idx is None:
+        return None
+    i = max(0, min(len(RATING_SCALE) - 1, int(round(idx))))
+    return RATING_SCALE[i]
+
+
+def _primary_agency(agency_grouped: dict[str, list[dict]]) -> str | None:
+    """
+    Pick the agency whose series to overlay on the implied-rating chart: the one with
+    the most rating actions, ties broken by agency authority (Moody's → S&P → Fitch →
+    Egan-Jones). None when the issuer has no agency history yet.
+    """
+    if not agency_grouped:
+        return None
+    return max(
+        agency_grouped,
+        key=lambda a: (len(agency_grouped[a]), -_AGENCY_PRIORITY.get(a, 9)),
+    )
 
 
 def _resolve_cik_for_read(identifier: str) -> str:
@@ -612,6 +658,14 @@ def get_issuer(ticker: str):
     # reader returns {} if the table is absent, so this never fails the issuer load.
     predictions_by_period = get_migration_predictions_grouped(cik).get(cik, {})
 
+    # Agency-rating history (real Moody's/Fitch/Egan-Jones trajectories), grouped by
+    # agency, each sorted ascending by effective_date. The "primary" agency (richest
+    # series) is overlaid on the implied-rating chart and supplies the per-period
+    # as-of agency rating; empty {} until Stage 1 ratings are ingested.
+    agency_by_agency = get_agency_ratings_grouped(cik).get(cik, {})
+    primary_agency = _primary_agency(agency_by_agency)
+    primary_events = agency_by_agency.get(primary_agency, []) if primary_agency else []
+
     # Per-period source link: the public SEC EDGAR URL of the 10-K each period's
     # ratios were extracted from, so an analyst can trace any figure on the audit
     # card back to the filing. Best-effort — the 10-K list comes from the cached
@@ -655,14 +709,22 @@ def get_issuer(ticker: str):
         if migration:
             _i = _periods_asc.index(period)
             _prior = _periods_asc[_i - 1] if _i > 0 else None
-            summary = _prediction_summary(
-                migration, None,
-                _ratio_values(full_ratios),
-                _ratio_values(ratios_by_period.get(_prior) if _prior else None),
-            )
+            _rn = _ratio_values(full_ratios)
+            _rp = _ratio_values(ratios_by_period.get(_prior) if _prior else None)
+            summary = _prediction_summary(migration, None, _rn, _rp)
+            # Tag each driver with its YoY % move (None when not a tracked ratio),
+            # so the UI can show "(↑ 20%)" beside it and explain why it's a driver.
+            _drivers = [{**d, "pct_change": _driver_pct_change(d, _rn, _rp)}
+                        for d in (migration.get("drivers_json") or [])]
+            migration = {**migration, "drivers_json": _drivers}
             if summary:
                 migration = {**migration, "reason": summary["reason"],
                              "direction": summary["direction"], "source": summary["source"]}
+
+        # As-of agency rating of the primary agency at this period_end — overlaid on
+        # the implied-rating chart so the implied-vs-agency gap is visible. None until
+        # agency ratings are ingested (or before the issuer's first rated date).
+        ag_idx, _ag_status = rating_asof(primary_events, period) if primary_events else (None, None)
 
         period_data.append({
             "period_end": period,
@@ -678,6 +740,8 @@ def get_issuer(ticker: str):
             "implied_rating": ratings_by_period.get(period),  # rating dict or None
             "bond_instruments": instruments_by_period.get(period, []),  # LLM-extracted (may be empty)
             "migration": migration,         # calibrated P(down)/P(up)/P(default) + drivers + reason, or None
+            "agency_rating_index": ag_idx,            # primary agency's rating as-of this period (or None)
+            "agency_rating": _rating_letter(ag_idx),  # …as a notation letter
         })
 
     # Rating Outlook: directional signal from the full (rating_index, score) history.
@@ -692,6 +756,33 @@ def get_issuer(ticker: str):
     ]
     outlook = rating_outlook(outlook_series)
 
+    # Issuer-level directional prediction (model when trained, else the rule-based
+    # outlook) for the headline banner — mirrors the portfolio's per-row prediction.
+    latest = _periods_asc[-1] if _periods_asc else None
+    prior = _periods_asc[-2] if len(_periods_asc) >= 2 else None
+    prediction = _prediction_summary(
+        predictions_by_period.get(latest) if latest else None,
+        outlook,
+        _ratio_values(ratios_by_period.get(latest) if latest else None),
+        _ratio_values(ratios_by_period.get(prior) if prior else None),
+    )
+
+    # Issuer-level agency-rating history (per agency: the dated rating actions), for
+    # the Agency Rating History section. Empty {} when no agency data is ingested.
+    agency_ratings = {
+        ag: [
+            {
+                "effective_date": e["effective_date"],
+                "rating_index": e.get("rating_index"),
+                "rating_raw": e.get("rating_raw"),
+                "rating_status": e.get("rating_status"),
+                "rating_action": e.get("rating_action"),
+            }
+            for e in evs
+        ]
+        for ag, evs in agency_by_agency.items()
+    }
+
     tickers = company.get("tickers") or []
     return {
         "cik": cik,
@@ -699,6 +790,9 @@ def get_issuer(ticker: str):
         "name": company.get("name", ""),
         "periods": period_data,
         "outlook": _outlook_payload(outlook),
+        "prediction": prediction,            # headline directional signal (model/outlook)
+        "agency_ratings": agency_ratings,    # per-agency dated rating actions
+        "primary_agency": primary_agency,    # the agency overlaid on the chart (or None)
     }
 
 
@@ -977,7 +1071,7 @@ class AddCaseRequest(BaseModel):
     # omitted, mapped: distressed→default, healthy→control.
     event_type: str | None = None    # downgrade | upgrade | default | control
     label: str | None = None
-    agency: str | None = None        # MDY|FTC|SPI for a rating-migration event (optional)
+    agency: str | None = None        # MDY|FTC|SPI|EJR for a rating-migration event (optional)
     event_date: str | None = None    # "YYYY-MM-DD"; required for non-control events
     notes: str | None = None
     case_id: str | None = None       # optional explicit slug; auto-generated when omitted
@@ -1001,11 +1095,13 @@ def create_case(req: AddCaseRequest):
     if event_type not in _EVENT_TYPES:
         raise HTTPException(400, f"event_type must be one of {_EVENT_TYPES}")
     # `label` keeps the table's existing CHECK happy and the stress backtest working.
-    label = "healthy" if event_type == "control" else "distressed"
+    # An upgrade is NOT a distress event, so it maps to healthy alongside controls;
+    # only downgrades/defaults are "distressed" for the legacy stress backtest.
+    label = "healthy" if event_type in ("control", "upgrade") else "distressed"
 
     agency = (req.agency or "").strip().upper() or None
-    if agency and agency not in ("MDY", "FTC", "SPI"):
-        raise HTTPException(400, "agency must be MDY, FTC, or SPI")
+    if agency and agency not in ("MDY", "FTC", "SPI", "EJR"):
+        raise HTTPException(400, "agency must be MDY, FTC, SPI, or EJR")
 
     event_date = (req.event_date or "").strip()
     if event_type != "control" and not event_date:

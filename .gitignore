@@ -7,6 +7,11 @@ tsconfig.tsbuildinfo
 data/store.db
 data/backtest_report.txt
 data/backtest_results.json
+
+# Licensed LSEG data drops (raw rating history + universe crosswalk) — not ours
+# to redistribute. Consumed offline by scripts/seed_agency_ratings.py; keep local.
+data/ratings_history_raw.csv
+data/universe_xref.csv
 .env
 .env.local
 

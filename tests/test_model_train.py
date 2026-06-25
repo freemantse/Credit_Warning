@@ -61,6 +61,28 @@ def test_train_learns_and_beats_base_rate():
     assert m["pr_auc"] > max(0.6, m["base_rate"])
 
 
+def test_train_handles_ultra_rare_head_without_crashing():
+    """
+    Regression: a head whose minority class is too small for HistGB's STRATIFIED
+    early-stopping holdout — e.g. `default` with a single positive — must train via
+    the no-early-stopping fallback, not raise "least populated class has only 1
+    member". (This is what the real demo roster hit: only ~2 true 12m defaults.)
+    """
+    df = _synthetic_matrix()
+    # Force the default head ultra-rare: exactly ONE positive, in the oldest period
+    # so it lands in the fit split (not the recent calibration holdout).
+    df["default_12m"] = False
+    df.loc[df.index[0], "period_end"] = "2015-12-31"
+    df.loc[df.index[0], "default_12m"] = True
+
+    bundle, metrics = train_all(df, "2019-12-31", version="test")  # must not raise
+    assert "default" in bundle["heads"]
+    assert metrics["heads"]["default"]["status"] == "ok"
+    assert metrics["heads"]["default"]["early_stopping"] is False
+    # The well-populated downgrade head still uses early stopping.
+    assert metrics["heads"]["downgrade"]["early_stopping"] is True
+
+
 def test_predictions_order_by_risk_and_are_monotone():
     df = _synthetic_matrix()
     bundle, _ = train_all(df, "2019-12-31", version="test")

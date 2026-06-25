@@ -288,7 +288,9 @@ ON CONFLICT (rating_index) DO UPDATE
 -- is captured in rating_status. Raw LSEG ids are retained per row for audit.
 CREATE TABLE IF NOT EXISTS agency_ratings (
   cik            TEXT NOT NULL,
-  agency         TEXT NOT NULL CHECK (agency IN ('MDY', 'FTC', 'SPI')),
+  -- MDY = Moody's, FTC = Fitch, SPI = S&P, EJR = Egan-Jones (broadest US coverage
+  -- in the demo's LSEG drop, so a first-class NRSRO here).
+  agency         TEXT NOT NULL CHECK (agency IN ('MDY', 'FTC', 'SPI', 'EJR')),
   effective_date TEXT NOT NULL,            -- "YYYY-MM-DD" the action took effect
   rating_index   INTEGER,                  -- 0..21; NULL for withdrawn / not_rated
   rating_raw     TEXT,                     -- raw agency notation as pulled (audit)
@@ -299,6 +301,14 @@ CREATE TABLE IF NOT EXISTS agency_ratings (
   created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (cik, agency, effective_date)
 );
+
+-- Reconcile the agency CHECK on PRE-EXISTING installs: CREATE TABLE IF NOT EXISTS
+-- above is a no-op when the table already exists, so a DB created before EJR was
+-- added keeps its narrower constraint and rejects Egan-Jones rows. Idempotent —
+-- drop-if-exists then re-add the current allowed set (a superset, so existing rows
+-- always re-validate).
+ALTER TABLE agency_ratings DROP CONSTRAINT IF EXISTS agency_ratings_agency_check;
+ALTER TABLE agency_ratings ADD  CONSTRAINT agency_ratings_agency_check CHECK (agency IN ('MDY', 'FTC', 'SPI', 'EJR'));
 
 
 -- ── rating_labels ────────────────────────────────────────────────────────────
@@ -317,7 +327,7 @@ CREATE TABLE IF NOT EXISTS agency_ratings (
 CREATE TABLE IF NOT EXISTS rating_labels (
   cik              TEXT NOT NULL,
   period_end       TEXT NOT NULL,          -- a financial period_end from ratios/implied_ratings
-  agency           TEXT NOT NULL CHECK (agency IN ('MDY', 'FTC', 'SPI')),
+  agency           TEXT NOT NULL CHECK (agency IN ('MDY', 'FTC', 'SPI', 'EJR')),
   rating_index     INTEGER,                -- rating as of period_end (NULL if unrated then)
   rating_index_3m  INTEGER,
   rating_index_6m  INTEGER,
@@ -330,6 +340,10 @@ CREATE TABLE IF NOT EXISTS rating_labels (
   created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (cik, period_end, agency)
 );
+
+-- Same EJR reconciliation as agency_ratings above (build_labels writes EJR rows too).
+ALTER TABLE rating_labels DROP CONSTRAINT IF EXISTS rating_labels_agency_check;
+ALTER TABLE rating_labels ADD  CONSTRAINT rating_labels_agency_check CHECK (agency IN ('MDY', 'FTC', 'SPI', 'EJR'));
 
 
 -- ╔══════════════════════════════════════════════════════════════════════════╗
