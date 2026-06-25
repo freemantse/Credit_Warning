@@ -6,7 +6,8 @@ For each case (issuer + event_type + event_date) it walks the issuer's filing
 periods backward from the event and, at each snapshot date T, scores the model
 VINTAGE trained before T (no leakage — see src.model.train.train_vintages /
 select_vintage) on that period's point-in-time features. The head matching the
-event is read (downgrade→p_downgrade, upgrade→p_upgrade, default→p_default); a
+event is read (downgrade→downgrade, upgrade→upgrade, default→distress: a default IS a
+distress transition, so default cases score against the broadened distress head); a
 probability ≥ threshold is a flag. The earliest flag before the event is the catch,
 and the months from it to the event are the lead time. `control` cases have no
 event — any flag is a false positive.
@@ -24,10 +25,11 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from src.model.train import select_vintage
-from src.ratings.labels import add_months
 
-# event_type → the model head (probability key) that should fire for it.
-EVENT_HEAD = {"downgrade": "downgrade", "upgrade": "upgrade", "default": "default"}
+# event_type → the model head (probability key) that should fire for it. A "default"
+# case routes to the broadened "distress" head (D ≥ CCC+ is a distress transition);
+# the case event_type string stays "default" — this is just the head it scores against.
+EVENT_HEAD = {"downgrade": "downgrade", "upgrade": "upgrade", "default": "distress"}
 
 # How many ~quarterly snapshots to walk back from the event (≈ this/4 years).
 DEFAULT_STEPS = 12

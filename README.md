@@ -37,10 +37,11 @@ There is a strict division between **deterministic parsing** and **LLM review**:
 
 | Layer | Where | What |
 |-------|-------|------|
-| Core logic | `src/` | Ingest, extract, score, store, LLM review (pure Python) |
+| Core logic | `src/` | Ingest, extract, score, implied rating, store, LLM review (pure Python) |
+| Rating-migration model | `src/model/`, `src/ratings/` | ML layer: train → calibrated P(upgrade/downgrade/default) + walk-forward event backtest (offline; predictions persisted for the app to read) |
 | Backend API | `api/main.py` | FastAPI, routes under `/api/*` |
 | Frontend | `app/`, `lib/` | Next.js 14 + React 18 dashboard |
-| Persistence | `supabase/schema.sql` | Hosted PostgreSQL (Supabase) — issuer ratios/findings, the backtest `cases` library, and the active `score_config` |
+| Persistence | `supabase/schema.sql` | Hosted PostgreSQL (Supabase) — issuer ratios / findings / implied ratings, real `agency_ratings` + derived `rating_labels`, model `migration_predictions` + `model_registry`, the backtest `cases` library, and the active `score_config` |
 | Data cache | `cache/` | On-disk SEC EDGAR responses (immutable, never stale) |
 
 **Data source:** [SEC EDGAR](https://data.sec.gov) — free, authoritative XBRL company
@@ -60,6 +61,62 @@ ticker → ingest (resolve CIK, fetch XBRL, cached)
        → score   (ratios + findings + maturities → 0–100, via the active scoring config)
        → frontend renders portfolio table + issuer detail
 ```
+
+### Rating-migration model (offline)
+
+#### In plain language
+
+Alongside the rule-based stress score, the system has a **machine-learning model that
+predicts where a company's credit rating is headed** over the next **12 months** —
+specifically the probability that it will be **downgraded**, **upgraded**, or
+**default**. Think of the stress score as a doctor's checklist and this model as a
+second opinion that has *studied the histories of many companies* and learned which
+patterns of financial deterioration tended to precede an actual rating cut.
+
+**How it learned (the training data).** The model is taught from a consolidated history
+of **real agency ratings** — one cleaned "single source of truth" file
+(`data/agency_ratings.csv`) built by merging two datasets:
+
+- a broad cross-section (the Kaggle "corporate credit rating" set) that **adds S&P** and
+  some defaulted companies, and
+- a dense action-by-action history from LSEG covering **Moody's, Fitch, and Egan-Jones**.
+
+After cleaning, resolving company identifiers, and de-duplicating, this yields about
+**~1,790 unique companies and ~12,700 dated rating actions across four agencies**
+(Moody's, S&P, Fitch, Egan-Jones), spanning roughly **2010–2016**. For each of
+those companies the model's *inputs* are **not** taken from the rating file — they are
+**recomputed from the company's own SEC filings** (the same auditable XBRL ratios the
+stress score uses), so every input is traceable to a source document.
+
+**Important constraint — US companies only.** Inputs come from **SEC EDGAR**, which only
+covers **US filers**. Foreign issuers and many ADRs in the raw data have no US 10-K and
+are dropped — that is the main reason the *usable* universe is smaller than the raw data.
+
+**What it produces.** For every company-period it outputs three **calibrated
+probabilities** (downgrade / upgrade / default over 12 months) *plus the top financial
+drivers behind each number* (e.g. "rising leverage", "falling interest coverage"), so a
+prediction is never a black box. These land in the `migration_predictions` table, which
+the portfolio and issuer pages read.
+
+#### The pipeline
+
+It never runs in the API hot path — it trains on a schedule (local / CI / cron) and
+persists its outputs, which the app then reads:
+
+```
+data/agency_ratings.csv  (consolidated real ratings: Moody's/S&P/Fitch/Egan-Jones)
+   → load_agency_ratings  (the single source of truth → agency_ratings table)
+   → track                (each company's SEC filings → auditable XBRL ratio features)
+   → build_labels         (period_end + the next rating event → a lookahead-free label)
+   → train                (one active model on all history + walk-forward "vintages")
+   → predict              (calibrated P(up/down/default) + drivers → migration_predictions)
+   → evaluate             (out-of-time scorecard → data/migration_eval.json)
+```
+
+The issuer page shows each company's prediction from `migration_predictions` (falling
+back to the rule-based Rating Outlook until the model is trained). The `/backtest` page
+replays the **vintages** point-in-time over the case library — each snapshot scored by a
+model trained strictly *before* that date, so there is no look-ahead.
 
 ---
 
@@ -161,6 +218,45 @@ The **Backtest page** (`/backtest`) also lets you do this without the CLI:
   run that does not touch the portfolio), or **Apply to portfolio** to persist them
   as the active config the live dashboard scores with. Defaults reproduce the
   built-in behavior; "Reset to defaults" restores them.
+
+### Rating-migration model (training & prediction)
+
+The training labels come from one consolidated **source-of-truth** rating file,
+`data/agency_ratings.csv` (~1,790 US companies, ~12,700 rating actions, four agencies
+incl. S&P). Rebuild that file only when the underlying rating data changes:
+
+```bash
+# (Re)build the single source of truth from the raw rating drops. One-time / on refresh.
+# Resolves company identifiers against EDGAR and prints a usable-issuer scorecard.
+python3 -m scripts.build_agency_ratings_csv          # → data/agency_ratings.csv
+```
+
+Then run the model pipeline (needs Supabase creds + EDGAR network):
+
+```bash
+# Optional clean slate: wipe the previous run's labels/predictions before retraining.
+python3 -m scripts.reset_training_tables             # see DEPLOY.md (destructive)
+
+python3 -m scripts.load_agency_ratings      # source-of-truth CSV → agency_ratings
+python3 -m src.track <TICKER>               # each company's SEC filings → ratio features
+python3 -m scripts.build_labels             # period_end + next event → rating_labels
+python3 -m src.model.train --split-date 2015-01-01   # active model + vintages → data/
+python3 -m src.model.predict                # calibrated P(up/down/default) → migration_predictions
+python3 -m src.model.evaluate               # out-of-time scorecard → data/migration_eval.json
+```
+
+Tracking each company is the slow step (SEC EDGAR is throttled to 8 requests/second and
+cached on disk); training itself is minutes. Predictions are written to Supabase
+(`migration_predictions`); the app reads them from there. Training is offline by
+design — see Deployment for the optional cron trigger.
+
+### Data files (`data/`)
+
+Committed (inputs / reference): `cases.csv` (backtest roster seed), `backtest_baseline.json`
+(frozen regression reference), and `model_vintages/` + `migration_eval.json` (read by the
+`/backtest` page). Everything else under `data/` is generated and gitignored — the local
+`store.db`, backtest run outputs, the trained `migration_model.joblib`, and the licensed
+LSEG drops (`ratings_history_raw.csv`, `universe_xref.csv`).
 
 ### Tests
 

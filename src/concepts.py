@@ -43,6 +43,10 @@ TAGS: dict[str, list[str]] = {
         "us-gaap/OperatingIncomeLoss",
         "us-gaap/IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
         "us-gaap/IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments",
+        # Oil & gas E&P standardized-measure pre-tax income — some E&P filers (e.g.
+        # Range Resources) report this instead of OperatingIncomeLoss. Last-resort,
+        # consistent with the pre-tax-income proxies already used above.
+        "us-gaap/ResultsOfOperationsIncomeBeforeIncomeTaxes",
     ],
 
     # ── Interest Expense ─────────────────────────────────────────────────────
@@ -72,6 +76,10 @@ TAGS: dict[str, list[str]] = {
         "us-gaap/CostOfServicesDepreciation",            # D&A embedded in cost of services
         "us-gaap/DepreciationNonproduction",             # non-production (SG&A) depreciation
         "us-gaap/AmortizationOfDeferredCharges",         # amortisation of deferred charges
+        # Oil & gas E&P standardized-measure DD&A flow (successful-efforts / full-cost
+        # filers like SM Energy / Range tag DD&A here, not under the generic concept).
+        "us-gaap/ResultsOfOperationsDepreciationDepletionAmortizationAndAccretion",
+        "us-gaap/ResultsOfOperationsDepreciationDepletionAndAmortizationAndValuationProvisions",
         "us-gaap/AmortizationOfIntangibleAssets",        # last resort: intangibles only
     ],
 

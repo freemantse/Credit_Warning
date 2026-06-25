@@ -331,6 +331,10 @@ def get_company_info(cik: str) -> dict[str, Any]:
         exchanges:   List of exchanges the tickers trade on.
         formerNames: List of {name, from, to} dicts for prior names, if any.
                      Useful for matching historical filings and "f/k/a" display.
+        sic:         Standard Industrial Classification code (string, e.g. "4911"),
+                     the industry-risk input for the business-risk proxy
+                     (see src.rating._industry_risk). May be "" if EDGAR omits it.
+        sic_description: Human-readable SIC label (e.g. "Electric Services").
     """
     cik_padded = cik.zfill(10)
     submissions = get_submissions(cik_padded)
@@ -340,6 +344,8 @@ def get_company_info(cik: str) -> dict[str, Any]:
         "tickers": submissions.get("tickers", []),
         "exchanges": submissions.get("exchanges", []),
         "formerNames": submissions.get("formerNames", []),
+        "sic": submissions.get("sic", ""),
+        "sic_description": submissions.get("sicDescription", ""),
     }
 
 

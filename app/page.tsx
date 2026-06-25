@@ -127,6 +127,7 @@ export default function Dashboard() {
   // Error and success banners shown below the Add Issuer input.
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
+  const [hint, setHint] = useState('')   // guidance (e.g. untrackable issuer), shown softer than an error
 
   // Suppresses the table while the first data fetch is in progress.
   // Without this, an empty table flashes briefly before data arrives.
@@ -188,6 +189,7 @@ export default function Dashboard() {
 
     setError('')
     setSuccess('')
+    setHint('')
 
     // Skip the EDGAR round-trip if this issuer is already in the portfolio.
     // Match against the ticker and the CIK (zero-padding so "320193" matches
@@ -215,7 +217,12 @@ export default function Dashboard() {
       setSuccess(`${label} added successfully`)
       await load()   // reload the table to show the newly tracked issuer
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to track issuer')
+      const code = (e as { code?: string })?.code
+      const msg = e instanceof Error ? e.message : 'Failed to track issuer'
+      // An untrackable issuer (no SEC XBRL data) is a guidance case, not a failure —
+      // show it as a softer hint rather than a red error.
+      if (code === 'NO_XBRL_DATA') setHint(msg)
+      else setError(msg)
     } finally {
       setTracking(false)
     }
@@ -314,8 +321,8 @@ export default function Dashboard() {
             <input
               type="text"
               value={ticker}
-              // Clear any stale error/success banner as soon as the user edits the input.
-              onChange={e => { setTicker(e.target.value); setError(''); setSuccess('') }}
+              // Clear any stale error/success/hint banner as soon as the user edits the input.
+              onChange={e => { setTicker(e.target.value); setError(''); setSuccess(''); setHint('') }}
               // Submit on Enter so users don't have to reach for the Track button.
               // Guard with !tracking to prevent double-submits on fast keystrokes.
               onKeyDown={e => e.key === 'Enter' && !tracking && handleTrack()}
@@ -332,7 +339,7 @@ export default function Dashboard() {
             <input
               type="text"
               value={cik}
-              onChange={e => { setCik(e.target.value); setError(''); setSuccess('') }}
+              onChange={e => { setCik(e.target.value); setError(''); setSuccess(''); setHint('') }}
               onKeyDown={e => e.key === 'Enter' && !tracking && handleTrack()}
               placeholder="e.g. 0000320193"
               className="border border-gray-300 rounded-lg px-4 py-2 text-sm w-56 focus:outline-none focus:ring-2 focus:ring-slate-400 font-mono disabled:bg-gray-50"
@@ -363,6 +370,11 @@ export default function Dashboard() {
 
         {/* Error and success messages appear below the input, not in a separate toast. */}
         {error && <p className="text-sm text-red-600 mt-2">{error}</p>}
+        {hint && (
+          <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mt-2">
+            {hint}
+          </p>
+        )}
         {success && <p className="text-sm text-green-600 mt-2">{success}</p>}
       </div>
 
@@ -664,6 +676,15 @@ export default function Dashboard() {
                       {iss.implied_rating ? (
                         <span className={`inline-block text-xs font-mono font-semibold px-2.5 py-1 rounded-full whitespace-nowrap ${ratingBg(iss.implied_rating)}`}>
                           {iss.implied_rating}
+                        </span>
+                      ) : iss.rating_note ? (
+                        // Financial-sector issuer: the industrial model doesn't apply.
+                        // Show a "Fin." chip with the full explanation on hover.
+                        <span
+                          title={iss.rating_note}
+                          className="inline-block text-xs font-medium px-2 py-1 rounded-full whitespace-nowrap bg-slate-100 text-slate-500 cursor-help"
+                        >
+                          n/a
                         </span>
                       ) : (
                         <span className="text-slate-300">—</span>

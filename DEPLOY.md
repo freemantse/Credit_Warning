@@ -33,6 +33,7 @@ cp .env.local.example .env.local
 | `SUPABASE_URL` | yes | Supabase → Settings → API |
 | `SUPABASE_SERVICE_ROLE_KEY` | yes | secret, backend only |
 | `ANTHROPIC_API_KEY` | optional | only for LLM qualitative review |
+| `CRON_SECRET` | optional | secures `/api/cron/*` (daily refresh + model training) |
 | `PYTHON_API_URL` | local only | `http://localhost:8000`; leave unset on Vercel |
 
 Never commit `.env.local`.
@@ -72,6 +73,61 @@ npm run dev
 python3 -m pytest
 ```
 
+## The rating-migration ML model (what it is, in brief)
+
+A supervised model that predicts the **direction of a company's next credit-rating
+change over 12 months** — P(downgrade), P(upgrade), P(default) — as a second opinion to
+the rule-based stress score.
+
+- **Training labels:** one consolidated source-of-truth file, `data/agency_ratings.csv`
+  — **~1,790 US companies, ~12,750 real rating actions, four agencies** (Moody's, S&P,
+  Fitch, Egan-Jones), ~2010–2016, built by `scripts.build_agency_ratings_csv` from
+  the Kaggle + LSEG rating drops (deduped on `cik, agency, effective_date`).
+- **Inputs (features):** recomputed from each company's **SEC EDGAR XBRL** filings (the
+  same auditable ratios as the stress score) — **US filers only**; foreign issuers/ADRs
+  are dropped.
+- **Algorithm:** per head, a monotonic **HistGradientBoostingClassifier** (credit-coherent
+  constraints — e.g. higher leverage can only raise downgrade risk), with an isotonic
+  probability calibration and a LogisticRegression baseline it must beat. **Walk-forward**
+  splits only (train on the past, test on the future — no look-ahead).
+- **Outputs:** calibrated probabilities + top drivers → `migration_predictions`.
+
+## Model artifacts & offline training
+
+The rating-migration model trains **offline** — locally, in CI, or via the cron trigger
+`POST /api/cron/train-model` (guarded by `CRON_SECRET`). A full walk-forward run can
+exceed the 60 s serverless budget, so the heavy job is expected to run as a longer-lived
+process; the deployed function only ever **reads** persisted outputs:
+
+- **Supabase:** `migration_predictions` (shown on issuer pages) and `model_registry`
+  (active-model provenance).
+- **Repo bundle (on disk):** `data/migration_eval.json` (the `/backtest` scorecard) and
+  `data/model_vintages/` (the point-in-time event backtest). These are committed so the
+  deployed `/backtest` page has data.
+
+`data/migration_model.joblib` (the trained model itself) is **gitignored**: nothing in the
+deployed app reads it — predictions are served from Supabase.
+
+### Rebuilding / retraining on the full universe
+
+```bash
+# 1. (Re)build the single source of truth (resolves identifiers vs EDGAR; prints scorecard)
+python3 -m scripts.build_agency_ratings_csv
+
+# 2. Optional CLEAN SLATE — wipe the previous run's training data before reloading.
+#    DESTRUCTIVE: truncates agency_ratings, rating_labels, migration_predictions and
+#    clears the active model_registry row. Features (ratios/implied_ratings) are kept.
+python3 -m scripts.reset_training_tables --yes
+
+# 3. Load labels, build features (slow: EDGAR is throttled 8 req/s, disk-cached), train.
+python3 -m scripts.load_agency_ratings
+python3 -m src.track <TICKER>            # repeated per company (or batch)
+python3 -m scripts.build_labels
+python3 -m src.model.train --split-date 2015-01-01
+python3 -m src.model.predict
+python3 -m src.model.evaluate
+```
+
 ## Deploy to Vercel
 
 > ⚠️ **Set the environment variables in Vercel before (or right after) your first
@@ -90,6 +146,7 @@ python3 -m pytest
    | `SUPABASE_URL` | **yes** | Production + Preview |
    | `SUPABASE_SERVICE_ROLE_KEY` | **yes** | Production + Preview (keep secret — no `NEXT_PUBLIC_` prefix) |
    | `ANTHROPIC_API_KEY` | optional | only if using LLM review |
+   | `CRON_SECRET` | optional | Production — secures `/api/cron/*` (daily refresh + model training) |
 
    Do **not** set `PYTHON_API_URL` — it's local-dev only.
 3. **Redeploy after adding or changing env vars.** Existing deployments do not pick

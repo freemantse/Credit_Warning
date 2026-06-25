@@ -29,7 +29,7 @@ def _synthetic_matrix(n=320, seed=0):
         score = float(rng.uniform(0, 100))
         risk = 0.6 * (lev / 10) + 0.4 * (score / 100)
         label = 1 if risk > 0.6 else (-1 if risk < 0.2 else 0)
-        default = bool(label == 1 and risk > 0.85)
+        distress = bool(label == 1 and risk > 0.85)
         row = {c: np.nan for c in FEATURE_COLUMNS}
         row.update({
             "cik": f"C{i:04d}",
@@ -39,7 +39,7 @@ def _synthetic_matrix(n=320, seed=0):
             "stress_score": score,
             "implied_rating_index": int(round(risk * 15)),
             "label_12m": label,
-            "default_12m": default,
+            "distress_12m": distress,
         })
         rows.append(row)
     return pd.DataFrame(rows)
@@ -64,21 +64,21 @@ def test_train_learns_and_beats_base_rate():
 def test_train_handles_ultra_rare_head_without_crashing():
     """
     Regression: a head whose minority class is too small for HistGB's STRATIFIED
-    early-stopping holdout — e.g. `default` with a single positive — must train via
+    early-stopping holdout — e.g. `distress` with a single positive — must train via
     the no-early-stopping fallback, not raise "least populated class has only 1
-    member". (This is what the real demo roster hit: only ~2 true 12m defaults.)
+    member". (This is what the real demo roster hit before the class was broadened.)
     """
     df = _synthetic_matrix()
-    # Force the default head ultra-rare: exactly ONE positive, in the oldest period
+    # Force the distress head ultra-rare: exactly ONE positive, in the oldest period
     # so it lands in the fit split (not the recent calibration holdout).
-    df["default_12m"] = False
+    df["distress_12m"] = False
     df.loc[df.index[0], "period_end"] = "2015-12-31"
-    df.loc[df.index[0], "default_12m"] = True
+    df.loc[df.index[0], "distress_12m"] = True
 
     bundle, metrics = train_all(df, "2019-12-31", version="test")  # must not raise
-    assert "default" in bundle["heads"]
-    assert metrics["heads"]["default"]["status"] == "ok"
-    assert metrics["heads"]["default"]["early_stopping"] is False
+    assert "distress" in bundle["heads"]
+    assert metrics["heads"]["distress"]["status"] == "ok"
+    assert metrics["heads"]["distress"]["early_stopping"] is False
     # The well-populated downgrade head still uses early stopping.
     assert metrics["heads"]["downgrade"]["early_stopping"] is True
 

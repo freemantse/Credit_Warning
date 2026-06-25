@@ -37,6 +37,7 @@ export interface IssuerSummary {
   alerts: string[]                // human-readable triggered threshold messages
   implied_rating?: string | null  // S&P-style implied rating letter (e.g. "BBB-"); null when uncomputable
   rating_index?: number | null    // its position in RATING_SCALE (0 = AAA) — used for sorting
+  rating_note?: string | null     // why there's no rating (e.g. financial-sector issuer); null otherwise
   outlook?: string | null         // Rating Outlook: "Positive" | "Stable" | "Negative" | null
   prediction?: RatingChangePrediction | null  // directional rating-change signal + a short "why"
 }
@@ -181,7 +182,7 @@ export interface MigrationPrediction {
   horizon_months: number
   p_downgrade: number | null
   p_upgrade: number | null
-  p_default: number | null
+  p_distress: number | null             // P(transition into CCC+/default within horizon)
   drivers_json: MigrationDriver[]
   model_version: string
   reason?: string                       // plain-language "why" (server-built); present on issuer detail
@@ -252,6 +253,7 @@ export interface IssuerDetail {
   // Real agency rating actions, keyed by agency code (MDY | FTC | SPI | EJR).
   agency_ratings?: Record<string, AgencyRatingEvent[]>
   primary_agency?: string | null   // the agency overlaid on the implied-rating chart
+  rating_note?: string | null      // why there's no implied rating (e.g. financial-sector); null otherwise
 }
 
 /**
@@ -428,9 +430,18 @@ export async function trackIssuer(identifier: string, noLlm = true): Promise<Tra
     body: JSON.stringify({ ticker: identifier, no_llm: noLlm }),
   })
   if (!res.ok) {
-    // Try to parse the FastAPI error detail; fall back to a generic message.
+    // Parse the FastAPI error detail. It is either a plain string or a structured
+    // object {code, message} (e.g. NO_XBRL_DATA for an untrackable issuer); surface
+    // the message and carry the code so the caller can show a tailored hint.
     const err = await res.json().catch(() => ({ detail: 'Unknown error' }))
-    throw new Error(err.detail || 'Failed to track issuer')
+    const detail = (err as { detail?: unknown }).detail
+    const isObj = detail !== null && typeof detail === 'object'
+    const message = typeof detail === 'string'
+      ? detail
+      : (isObj && (detail as { message?: string }).message) || 'Failed to track issuer'
+    const error = new Error(message) as Error & { code?: string }
+    if (isObj && (detail as { code?: string }).code) error.code = (detail as { code: string }).code
+    throw error
   }
   // The backend echoes the resolved identity (cik, ticker, name) so the UI can
   // show a confirmation that names the company and its CIK.

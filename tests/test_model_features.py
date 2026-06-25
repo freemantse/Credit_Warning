@@ -86,9 +86,9 @@ def test_merge_labels_attaches_gap_and_targets():
         "C1": {
             "2019-12-31": {
                 "MDY": {"rating_index": 5, "label_3m": 0, "label_6m": 0, "label_12m": 1,
-                        "notch_change_12m": 2, "default_12m": False},
+                        "notch_change_12m": 2, "distress_12m": False},
                 "FTC": {"rating_index": 6, "label_3m": 0, "label_6m": 1, "label_12m": 1,
-                        "notch_change_12m": 1, "default_12m": False},
+                        "notch_change_12m": 1, "distress_12m": False},
             }
         }
     }
@@ -124,7 +124,7 @@ def test_time_in_rating_from_events():
 def test_to_dataframe_orders_columns():
     rows = merge_labels(
         {"C1": {"2019-12-31": {**{c: 0 for c in FEATURE_COLUMNS}, "implied_rating_index": 7}}},
-        {"C1": {"2019-12-31": {"MDY": {"rating_index": 5, "label_12m": 1, "default_12m": False}}}},
+        {"C1": {"2019-12-31": {"MDY": {"rating_index": 5, "label_12m": 1, "distress_12m": False}}}},
     )
     df = to_dataframe(rows)
     assert list(df.columns)[:3] == ID_COLUMNS

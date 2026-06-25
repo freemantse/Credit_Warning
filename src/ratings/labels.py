@@ -8,9 +8,14 @@ Two responsibilities:
                           not ratings, so a stale rating is never carried through one.
   build_rating_labels() — for each financial period_end, the rating now and at
                           +3/+6/+12m, the signed migration labels, the 12m notch
-                          change, and default_12m. Forward windows that extend past
+                          change, and distress_12m. Forward windows that extend past
                           the dataset's last date are CENSORED (left None), never
                           fabricated as "stable".
+
+distress_12m is the rare-event target: a TRANSITION into the distress tail (any event
+reaching index ≥ DISTRESS_INDEX = CCC+, or a default) within 12m, from a non-distressed
+start. It broadens the old default-only signal (≈8 events) into something trainable
+(hundreds), and subsumes default since D (21) ≥ DISTRESS_INDEX.
 
 Sign convention (index space, higher = worse): notch_change/label POSITIVE = DOWNGRADE.
   label_Nm = +1 downgrade, -1 upgrade, 0 stable; None when uncomputable/censored.
@@ -21,7 +26,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-from src.ratings.scale import STATUS_DEFAULT, STATUS_WITHDRAWN, STATUS_NOT_RATED
+from src.ratings.scale import DISTRESS_INDEX, STATUS_DEFAULT, STATUS_NOT_RATED
 
 
 def add_months(date_str: str, months: int) -> str:
@@ -101,7 +106,7 @@ def build_rating_labels(
 
     Returns:
         One row per (cik, period_end, agency) that has any rating coverage, with
-        rating_index{,_3m,_6m,_12m}, label_{3,6,12}m, notch_change_12m, default_12m.
+        rating_index{,_3m,_6m,_12m}, label_{3,6,12}m, notch_change_12m, distress_12m.
     """
     grouped = events_by_key(events)
     rows: list[dict[str, Any]] = []
@@ -134,15 +139,22 @@ def build_rating_labels(
                 idx_12 - idx_now if (idx_12 is not None and idx_now is not None) else None
             )
 
-            # default_12m: a default event observed strictly after period_end and
-            # within 12 months (only meaningful when that window is observed).
+            # distress_12m: a TRANSITION into the distress tail within 12 months — the
+            # issuer is rated and NOT already distressed at period_end, and within the
+            # (observed) window some event either defaults or reaches index ≥
+            # DISTRESS_INDEX (CCC+). Subsumes the old default-only signal (D ≥ CCC+).
             window_end = add_months(period_end, 12)
             observed_12m = window_end <= data_max_date
-            default_12m = observed_12m and any(
-                e["rating_status"] == STATUS_DEFAULT and period_end < e["effective_date"] <= window_end
+            not_distressed_now = idx_now is not None and idx_now < DISTRESS_INDEX
+            distress_12m = observed_12m and not_distressed_now and any(
+                period_end < e["effective_date"] <= window_end
+                and (
+                    e["rating_status"] == STATUS_DEFAULT
+                    or (e["rating_index"] is not None and e["rating_index"] >= DISTRESS_INDEX)
+                )
                 for e in evs
             )
-            row["default_12m"] = bool(default_12m)
+            row["distress_12m"] = bool(distress_12m)
 
             rows.append(row)
 

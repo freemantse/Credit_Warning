@@ -27,9 +27,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <Link href="/" className="text-slate-300 hover:text-white transition-colors">
                 Portfolio
               </Link>
-              <Link href="/screen" className="text-slate-300 hover:text-white transition-colors">
-                Screen
-              </Link>
+              {/* Screen hidden for now — route still exists at /screen but not linked in nav */}
               <Link href="/backtest" className="text-slate-300 hover:text-white transition-colors">
                 Backtest
               </Link>

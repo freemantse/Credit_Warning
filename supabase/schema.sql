@@ -56,7 +56,9 @@ CREATE TABLE IF NOT EXISTS companies (
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),-- when this snapshot was last refreshed
   last_refreshed TIMESTAMPTZ,                       -- when this issuer was last re-tracked from EDGAR (NULL = never; auto-refresh cron picks NULLs first)
   lseg_permid   TEXT,                              -- LSEG PermID resolved to this CIK
-  lseg_ric      TEXT                               -- LSEG RIC resolved to this CIK
+  lseg_ric      TEXT,                              -- LSEG RIC resolved to this CIK
+  sic           TEXT,                              -- SIC industry code (industry-risk input for the business-risk proxy)
+  sic_description TEXT                             -- human-readable SIC label, e.g. "Electric Services"
 );
 
 -- Additive migrations for projects created before these columns existed.
@@ -65,6 +67,8 @@ CREATE TABLE IF NOT EXISTS companies (
 ALTER TABLE companies ADD COLUMN IF NOT EXISTS last_refreshed TIMESTAMPTZ;
 ALTER TABLE companies ADD COLUMN IF NOT EXISTS lseg_permid    TEXT;
 ALTER TABLE companies ADD COLUMN IF NOT EXISTS lseg_ric       TEXT;
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS sic            TEXT;
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS sic_description TEXT;
 
 
 -- ── ratios ───────────────────────────────────────────────────────────────────
@@ -229,12 +233,16 @@ CREATE TABLE IF NOT EXISTS implied_ratings (
   rating_index           INTEGER NOT NULL,               -- position in RATING_SCALE (0 = AAA)
   financial_risk_profile TEXT NOT NULL,                  -- e.g. "Intermediate"
   financial_risk_index   INTEGER NOT NULL,               -- 1..6 (1 = Minimal)
-  business_risk_index    INTEGER NOT NULL,               -- 1..6 (1 = Excellent); default until supplied
+  business_risk_index    INTEGER NOT NULL,               -- 1..6 (1 = Excellent); data-derived proxy (see src.rating._business_risk_index)
   subscores_json         JSONB NOT NULL DEFAULT '{}',    -- {sub_factor: {value, profile, source_ratio, overridden}}
   notes_json             JSONB NOT NULL DEFAULT '[]',    -- human-readable explanation lines
+  business_risk_json     JSONB NOT NULL DEFAULT '{}',    -- business-risk proxy audit: sub-tiers (industry/scale/margin level+vol), inputs, volatility class
   created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (cik, period_end)
 );
+
+-- Additive migration for projects created before business_risk_json existed.
+ALTER TABLE implied_ratings ADD COLUMN IF NOT EXISTS business_risk_json JSONB NOT NULL DEFAULT '{}';
 
 
 -- ╔══════════════════════════════════════════════════════════════════════════╗
@@ -336,7 +344,7 @@ CREATE TABLE IF NOT EXISTS rating_labels (
   label_6m         INTEGER CHECK (label_6m  IN (-1, 0, 1)),
   label_12m        INTEGER CHECK (label_12m IN (-1, 0, 1)),
   notch_change_12m INTEGER,                -- signed; + = downgrade
-  default_12m      BOOLEAN NOT NULL DEFAULT FALSE,
+  distress_12m     BOOLEAN NOT NULL DEFAULT FALSE,   -- transition into CCC+/default within 12m
   created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (cik, period_end, agency)
 );
@@ -344,6 +352,16 @@ CREATE TABLE IF NOT EXISTS rating_labels (
 -- Same EJR reconciliation as agency_ratings above (build_labels writes EJR rows too).
 ALTER TABLE rating_labels DROP CONSTRAINT IF EXISTS rating_labels_agency_check;
 ALTER TABLE rating_labels ADD  CONSTRAINT rating_labels_agency_check CHECK (agency IN ('MDY', 'FTC', 'SPI', 'EJR'));
+
+-- Migrate existing tables: default_12m → distress_12m (the rare-event target was
+-- broadened from "actual default" to "transition into the CCC+/default distress tail").
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+             WHERE table_name = 'rating_labels' AND column_name = 'default_12m') THEN
+    ALTER TABLE rating_labels RENAME COLUMN default_12m TO distress_12m;
+  END IF;
+END $$;
 
 
 -- ╔══════════════════════════════════════════════════════════════════════════╗
@@ -354,7 +372,7 @@ ALTER TABLE rating_labels ADD  CONSTRAINT rating_labels_agency_check CHECK (agen
 -- ╚══════════════════════════════════════════════════════════════════════════╝
 
 -- ── migration_predictions ────────────────────────────────────────────────────
--- Calibrated P(downgrade)/P(upgrade)/P(default) per (issuer, period, horizon),
+-- Calibrated P(downgrade)/P(upgrade)/P(distress) per (issuer, period, horizon),
 -- with the top signed drivers of p_downgrade.
 CREATE TABLE IF NOT EXISTS migration_predictions (
   cik             TEXT NOT NULL,
@@ -362,12 +380,21 @@ CREATE TABLE IF NOT EXISTS migration_predictions (
   horizon_months  INTEGER NOT NULL DEFAULT 12,
   p_downgrade     DOUBLE PRECISION,            -- calibrated P(rating worse within horizon)
   p_upgrade       DOUBLE PRECISION,            -- calibrated P(rating better within horizon)
-  p_default       DOUBLE PRECISION,            -- calibrated P(default within horizon)
+  p_distress      DOUBLE PRECISION,            -- calibrated P(transition into CCC+/default within horizon)
   drivers_json    JSONB NOT NULL DEFAULT '[]', -- top signed feature contributions to p_downgrade
   model_version   TEXT NOT NULL DEFAULT '',
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (cik, period_end, horizon_months)
 );
+
+-- Migrate existing tables: p_default → p_distress (broadened rare-event head).
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+             WHERE table_name = 'migration_predictions' AND column_name = 'p_default') THEN
+    ALTER TABLE migration_predictions RENAME COLUMN p_default TO p_distress;
+  END IF;
+END $$;
 
 
 -- ── model_registry ───────────────────────────────────────────────────────────

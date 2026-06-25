@@ -5,7 +5,7 @@ prediction head, with a TIME-RESPECTING split and the per-head monotone constrai
 Three heads, all over the 12-month horizon:
   downgrade — y = (label_12m == +1)   (rating got worse)
   upgrade   — y = (label_12m == -1)   (rating got better)
-  default   — y = default_12m         (a default occurred)
+  distress  — y = distress_12m        (fell into the CCC+/default distress tail)
 
 Only rows whose 12-month outcome is OBSERVED (label_12m not null — censored rows
 are null per the label builder) are usable, so right-edge censoring never leaks in
@@ -29,11 +29,11 @@ from src.ratings.labels import add_months
 
 # Per-head spec. `monotone_sign` multiplies FEATURE_DIRECTIONS (which is expressed
 # w.r.t. downgrade risk): the upgrade head flips it (a feature that raises downgrade
-# risk lowers upgrade odds); default shares the downgrade direction.
+# risk lowers upgrade odds); distress shares the downgrade direction.
 HEADS: dict[str, dict[str, Any]] = {
     "downgrade": {"monotone_sign": 1,  "positive": lambda r: r.get("label_12m") == 1},
     "upgrade":   {"monotone_sign": -1, "positive": lambda r: r.get("label_12m") == -1},
-    "default":   {"monotone_sign": 1,  "positive": lambda r: bool(r.get("default_12m"))},
+    "distress":  {"monotone_sign": 1,  "positive": lambda r: bool(r.get("distress_12m"))},
 }
 
 HORIZON_MONTHS = 12
@@ -58,7 +58,6 @@ def make_xy(df, head: str):
     handles them natively; the logistic baseline imputes). y is the binary head
     target over the observed rows. Returns (X, y, index).
     """
-    import numpy as np
     import pandas as pd
 
     usable = observed(df)

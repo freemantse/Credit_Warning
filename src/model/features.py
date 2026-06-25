@@ -3,7 +3,7 @@ Stage 2 — assemble the rating-migration model's feature matrix.
 
 Grain: one row per (cik, period_end, agency), to join 1:1 with rating_labels (the
 targets). Every FEATURE is known AS OF period_end — no lookahead; only the TARGETS
-(label_*m, default_12m) look forward, which is intentional. The financial features
+(label_*m, distress_12m) look forward, which is intentional. The financial features
 come from data already stored point-in-time at ingest (ratios extracted with
 filed_before, the per-period implied rating); the only derived-over-time features
 (YoY deltas, the Stage-0 outlook) are computed causally from periods ≤ period_end.
@@ -35,7 +35,7 @@ RATIO_FEATURES = [
 ]
 
 ID_COLUMNS = ["cik", "period_end", "agency"]
-TARGET_COLUMNS = ["label_3m", "label_6m", "label_12m", "notch_change_12m", "default_12m"]
+TARGET_COLUMNS = ["label_3m", "label_6m", "label_12m", "notch_change_12m", "distress_12m"]
 
 # Full ordered feature list (the model's X). Built once so train/predict agree.
 FEATURE_COLUMNS = (

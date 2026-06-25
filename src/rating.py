@@ -31,8 +31,15 @@ Honesty notes (surfaced in the result `notes` / `subscores`):
   - The grid edges and anchor matrix are public-methodology APPROXIMATIONS, not the
     agencies' exact (industry-specific, qualitatively-modified) criteria. They are
     meant to be validated against real agency ratings (Phase B).
-  - Business risk defaults to a mid value until a per-issuer input is supplied, so
-    the rating reflects the financial profile primarily.
+  - Business risk is a DATA-DERIVED PROXY (industry via SIC, scale via revenue, and
+    profitability level + volatility via EBITDA margin) — see _business_risk_index
+    and compute_implied_ratings_series. It captures S&P's data-observable
+    business-risk factors only; competitive advantage and operating efficiency
+    (genuinely qualitative) are NOT modelled and would need an analyst/LLM layer.
+    Calling compute_implied_rating directly without a business_risk falls back to a
+    mid default, so a rating is still computable from financials alone.
+  - The financial-risk ratios are read off S&P-style Standard / Medial / Low
+    benchmark tables selected by trailing cash-flow volatility (volatility_class).
 
 Returns None (never a guess) when fewer than two of the three sub-factors resolve —
 mirroring extract.py's "never fabricate a number" contract.
@@ -40,10 +47,18 @@ mirroring extract.py's "never fabricate a number" contract.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import statistics
+from dataclasses import dataclass, field
 from typing import Any
 
 from src.extract import RatioResult, recover_ebitda
+
+# Trailing window (in annual periods, inclusive of the period being rated) over
+# which profitability- and cash-flow-volatility are measured for the business-risk
+# proxy and the volatility-class benchmark selection. The window is STRICTLY
+# trailing (never reads future periods) because `implied_rating_index` is a feature
+# in the walk-forward migration model — using future data would leak look-ahead.
+BUSINESS_RISK_TRAILING_WINDOW = 5
 
 
 # ── Rating scale ─────────────────────────────────────────────────────────────
@@ -103,6 +118,35 @@ def is_investment_grade(letter: str) -> bool:
     return RATING_SCALE.index(letter) <= RATING_SCALE.index("BBB-")
 
 
+# SIC major groups in Division H (Finance, Insurance, Real Estate): 60 depository,
+# 61 nondepository credit, 62 brokers, 63 insurance carriers, 64 insurance agents,
+# 65 real estate, 67 holding/investment offices (66 is unused in the SIC scheme).
+_FINANCIAL_SIC_PREFIXES = {"60", "61", "62", "63", "64", "65", "67"}
+
+
+def financial_sector_note(sic: str | None) -> str | None:
+    """
+    Explain why a financial-sector issuer isn't rated, or None if it isn't financial.
+
+    The implied rating uses S&P's INDUSTRIAL cash-flow/leverage framework
+    (FFO/Debt, Debt/EBITDA, EBITDA/Interest), which structurally doesn't fit banks,
+    insurers, BDCs, and funds — they fund via deposits/float and report investment
+    income, not EBITDA. For those (SIC 6000–6799) we surface this note instead of a
+    blank rating. For NON-financial issuers an absent rating is a data/extraction
+    gap, not a structural one, so this returns None (no excuse offered).
+    """
+    if not sic:
+        return None
+    digits = "".join(ch for ch in str(sic) if ch.isdigit())
+    if len(digits) >= 2 and digits[:2] in _FINANCIAL_SIC_PREFIXES:
+        return (
+            "Not rated: financial-sector issuer (bank / insurer / fund). The "
+            "Debt/EBITDA model doesn't apply; a capital-adequacy assessment is "
+            "future work."
+        )
+    return None
+
+
 # ── Tunable parameters ───────────────────────────────────────────────────────
 
 # All rating knobs live in one config dict so the grids and anchor matrix can be
@@ -124,10 +168,18 @@ DEFAULT_RATING_CONFIG: dict = {
         # FFO/Debt (proxy = CFO/gross debt). Higher is healthier. S&P bands:
         # Minimal ≥60%, Modest 45–60%, Intermediate 30–45%, Significant 20–30%,
         # Aggressive 12–20%, Highly Leveraged <12%.
+        # `edges` is S&P's STANDARD-volatility table; `edges_by_volatility` carries
+        # the relaxed Medial/Low tables (see volatility_class_edges below). A
+        # low-volatility issuer is allowed weaker ratios for the same band.
         "ffo_to_debt": {
             "source": "cash_flow_to_debt",
             "higher_is_better": True,
             "edges": [0.60, 0.45, 0.30, 0.20, 0.12],
+            "edges_by_volatility": {
+                "standard": [0.60, 0.45, 0.30, 0.20, 0.12],
+                "medial":   [0.50, 0.35, 0.23, 0.15, 0.09],
+                "low":      [0.40, 0.25, 0.15, 0.10, 0.06],
+            },
         },
         # Debt/EBITDA (= net_debt/EBITDA via `leverage`). Lower is healthier. S&P:
         # Minimal <1.5×, Modest 1.5–2×, Intermediate 2–3×, Significant 3–4×,
@@ -136,6 +188,11 @@ DEFAULT_RATING_CONFIG: dict = {
             "source": "leverage",
             "higher_is_better": False,
             "edges": [1.5, 2.0, 3.0, 4.0, 5.0],
+            "edges_by_volatility": {
+                "standard": [1.5, 2.0, 3.0, 4.0, 5.0],
+                "medial":   [1.75, 2.5, 3.5, 4.5, 5.5],
+                "low":      [2.0, 3.0, 4.0, 5.0, 6.0],
+            },
         },
         # EBITDA/Interest coverage. Higher is healthier. S&P:
         # Minimal >15×, Modest 10–15×, Intermediate 6–10×, Significant 3–6×,
@@ -144,6 +201,11 @@ DEFAULT_RATING_CONFIG: dict = {
             "source": "interest_coverage",
             "higher_is_better": True,
             "edges": [15.0, 10.0, 6.0, 3.0, 2.0],
+            "edges_by_volatility": {
+                "standard": [15.0, 10.0, 6.0, 3.0, 2.0],
+                "medial":   [12.0, 8.0, 5.0, 2.5, 1.75],
+                "low":      [10.0, 6.0, 4.0, 2.0, 1.5],
+            },
         },
     },
     "weights": {
@@ -166,6 +228,82 @@ DEFAULT_RATING_CONFIG: dict = {
         ["BBB-","BB+", "BB",  "BB-", "B+",  "B-"],     # 5 Weak
         ["BB",  "BB-", "B+",  "B",   "B-",  "CCC+"],   # 6 Vulnerable
     ],
+    # ── Business-risk proxy ──────────────────────────────────────────────────
+    # S&P's Business Risk Profile = CICRA (country + industry risk) + competitive
+    # position (competitive advantage, scale/scope/diversity, operating efficiency,
+    # profitability level + volatility). We approximate the DATA-OBSERVABLE subset:
+    # industry risk (from SIC), scale (revenue), profitability level (EBITDA margin)
+    # and profitability volatility (trailing std-dev of that margin). Competitive
+    # advantage / operating efficiency are genuinely qualitative and NOT captured —
+    # a future LLM/analyst layer would refine them. The four sub-tiers (each 1..6,
+    # 1 = strongest) blend by weighted mean → round → 1..6. Industry risk carries
+    # the largest weight because CICRA caps the business-risk profile in S&P.
+    # All knobs live here so the proxy can be recalibrated without code changes.
+    "business_risk": {
+        "weights": {
+            "industry": 0.40,
+            "scale": 0.25,
+            "margin_level": 0.20,
+            "margin_volatility": 0.15,
+        },
+        # Business risk should evolve slowly (a company's industry/scale/competitive
+        # position changes structurally, not annually). The LEVEL inputs (revenue,
+        # EBITDA margin) are therefore averaged over the most-recent N periods
+        # (strictly trailing) before being mapped to tiers, so a one-year blip can't
+        # flip the anchor-matrix row. Set to 1 to disable (use single-period values).
+        # NOTE: the volatility sub-factor is deliberately NOT smoothed — rising
+        # profitability volatility genuinely signals rising business risk.
+        "smoothing_window": 3,
+        # Revenue ($) → scale tier (higher_is_better: bigger issuer = lower risk).
+        # Edges DESCENDING: ≥ $50bn → 1 (Excellent) … < $0.5bn → 6.
+        "scale_edges": [50e9, 15e9, 5e9, 1.5e9, 0.5e9],
+        # EBITDA margin level → tier (higher_is_better). Edges DESCENDING.
+        "margin_level_edges": [0.30, 0.22, 0.15, 0.08, 0.03],
+        # EBITDA-margin volatility (trailing std-dev, in margin points) → tier.
+        # LOWER is better, so edges ASCENDING: ≤ 1.5pp → 1 (very stable) … > 12pp → 6.
+        "margin_volatility_edges": [0.015, 0.03, 0.05, 0.08, 0.12],
+        # Industry-risk tier (1 Very-Low … 6 Very-High risk) by SIC prefix, matched
+        # LONGEST-prefix-first (so "2834" pharma overrides "28" chemicals). Midpoint
+        # approximations of S&P's published industry risk assessments; unmatched SICs
+        # fall back to `default_industry_risk`.
+        "default_industry_risk": 3,
+        "sic_industry_risk": {
+            # Agriculture / extractive / construction — cyclical, commodity-exposed.
+            "01": 4, "02": 4, "07": 4, "08": 4, "09": 4,
+            "10": 5, "12": 5, "13": 5, "14": 5,          # mining, oil & gas extraction
+            "15": 5, "16": 5, "17": 5,                    # construction
+            # Manufacturing.
+            "20": 2, "21": 2,                             # food, tobacco — defensive
+            "22": 5, "23": 5,                             # textiles, apparel
+            "24": 4, "25": 4, "26": 4, "27": 4,           # lumber, furniture, paper, printing
+            "28": 3, "2834": 2, "2836": 2,                # chemicals; pharma/biologics defensive
+            "29": 5,                                      # petroleum refining
+            "30": 4, "31": 5, "32": 4, "33": 5, "34": 4,  # rubber, leather, stone, primary/fab metals
+            "35": 3, "36": 4, "37": 4, "371": 5, "372": 4,# machinery, electronics, transport equip (autos/aero)
+            "38": 3, "39": 4,                             # instruments / medical devices; misc mfg
+            # Transportation, communications, utilities.
+            "40": 4, "41": 4, "42": 4, "44": 4, "45": 5, "47": 4,  # rail/transit/trucking/water/air
+            "48": 3,                                      # communications / telecom
+            "49": 2, "4911": 1, "4931": 2, "4932": 2,     # regulated utilities — low risk
+            # Trade.
+            "50": 4, "51": 4, "52": 4, "53": 4, "54": 3, "55": 4,  # wholesale / retail (food retail 54 defensive)
+            "56": 5, "57": 4, "58": 4, "59": 4,
+            # Finance / insurance / real estate (mostly out of scope — no financials resolve).
+            "60": 3, "61": 3, "62": 3, "63": 3, "64": 3, "65": 4, "67": 3,
+            # Services.
+            "70": 5, "72": 4, "73": 3, "75": 4, "78": 4, "79": 5,  # hotels/biz svcs/software/amusement
+            "80": 3, "82": 3, "83": 3, "87": 3,
+        },
+    },
+    # ── Cash-flow volatility class (benchmark-table selection) ───────────────
+    # S&P reads the financial-risk ratios off one of three benchmark tables by the
+    # issuer's cash-flow volatility. We classify from the trailing std-dev of
+    # cash_flow_to_debt (the FFO/Debt proxy) and select the matching grid table.
+    # ASCENDING: std ≤ low_max → "low"; ≤ medial_max → "medial"; else "standard".
+    "volatility_class_edges": {
+        "low_max": 0.04,
+        "medial_max": 0.09,
+    },
 }
 
 
@@ -183,6 +321,8 @@ class RatingConfig:
     business_risk_default: int
     min_subfactors: int
     anchor_matrix: list
+    business_risk: dict
+    volatility_class_edges: dict
 
     @classmethod
     def from_dict(cls, d: dict | None) -> "RatingConfig":
@@ -191,22 +331,52 @@ class RatingConfig:
         merged_grids: dict[str, dict] = {}
         for key, defaults in DEFAULT_RATING_CONFIG["grids"].items():
             g = {**defaults, **(in_grids.get(key) or {})}
-            merged_grids[key] = {
+            merged: dict[str, Any] = {
                 "source": str(g["source"]),
                 "higher_is_better": bool(g["higher_is_better"]),
                 "edges": [float(e) for e in g["edges"]],
             }
+            ev = g.get("edges_by_volatility")
+            if ev:
+                merged["edges_by_volatility"] = {
+                    str(cls_): [float(e) for e in edges] for cls_, edges in ev.items()
+                }
+            merged_grids[key] = merged
         weights = {
             k: float(v)
             for k, v in {**DEFAULT_RATING_CONFIG["weights"], **(d.get("weights") or {})}.items()
         }
         anchor = d.get("anchor_matrix") or DEFAULT_RATING_CONFIG["anchor_matrix"]
+
+        # Business-risk proxy config (deep-merged over the default block).
+        br_def = DEFAULT_RATING_CONFIG["business_risk"]
+        br_in = d.get("business_risk") or {}
+        business_risk = {
+            "weights": {**br_def["weights"], **(br_in.get("weights") or {})},
+            "smoothing_window": max(1, int(br_in.get("smoothing_window", br_def["smoothing_window"]))),
+            "scale_edges": [float(e) for e in (br_in.get("scale_edges") or br_def["scale_edges"])],
+            "margin_level_edges": [float(e) for e in (br_in.get("margin_level_edges") or br_def["margin_level_edges"])],
+            "margin_volatility_edges": [float(e) for e in (br_in.get("margin_volatility_edges") or br_def["margin_volatility_edges"])],
+            "default_industry_risk": int(br_in.get("default_industry_risk", br_def["default_industry_risk"])),
+            "sic_industry_risk": {
+                str(k): int(v)
+                for k, v in {**br_def["sic_industry_risk"], **(br_in.get("sic_industry_risk") or {})}.items()
+            },
+        }
+        vce_def = DEFAULT_RATING_CONFIG["volatility_class_edges"]
+        vce_in = d.get("volatility_class_edges") or {}
+        volatility_class_edges = {
+            "low_max": float(vce_in.get("low_max", vce_def["low_max"])),
+            "medial_max": float(vce_in.get("medial_max", vce_def["medial_max"])),
+        }
         return cls(
             grids=merged_grids,
             weights=weights,
             business_risk_default=int(d.get("business_risk_default", DEFAULT_RATING_CONFIG["business_risk_default"])),
             min_subfactors=int(d.get("min_subfactors", DEFAULT_RATING_CONFIG["min_subfactors"])),
             anchor_matrix=[list(row) for row in anchor],
+            business_risk=business_risk,
+            volatility_class_edges=volatility_class_edges,
         )
 
     def to_dict(self) -> dict:
@@ -216,6 +386,16 @@ class RatingConfig:
             "business_risk_default": self.business_risk_default,
             "min_subfactors": self.min_subfactors,
             "anchor_matrix": [list(row) for row in self.anchor_matrix],
+            "business_risk": {
+                "weights": dict(self.business_risk["weights"]),
+                "smoothing_window": self.business_risk["smoothing_window"],
+                "scale_edges": list(self.business_risk["scale_edges"]),
+                "margin_level_edges": list(self.business_risk["margin_level_edges"]),
+                "margin_volatility_edges": list(self.business_risk["margin_volatility_edges"]),
+                "default_industry_risk": self.business_risk["default_industry_risk"],
+                "sic_industry_risk": dict(self.business_risk["sic_industry_risk"]),
+            },
+            "volatility_class_edges": dict(self.volatility_class_edges),
         }
 
 
@@ -243,6 +423,12 @@ class ImpliedRatingResult:
                                 fed each sub-factor and the band it landed in.
         notes:                  human-readable explanation lines (e.g. the FFO/Debt
                                 proxy caveat, EBITDA-override, near-edge band).
+        business_risk:          audit of the business-risk proxy: the sub-tiers
+                                (industry/scale/margin level/margin volatility) and
+                                inputs that produced business_risk_index, plus the
+                                cash-flow volatility class used for the benchmark
+                                table. Empty when business risk wasn't derived
+                                (e.g. the legacy default or a directly-supplied index).
     """
     implied_rating: str
     rating_index: int
@@ -251,6 +437,7 @@ class ImpliedRatingResult:
     business_risk_index: int
     subscores: dict[str, dict[str, Any]]
     notes: list[str]
+    business_risk: dict[str, Any] = field(default_factory=dict)
 
 
 # ── Mapping helpers ──────────────────────────────────────────────────────────
@@ -290,22 +477,159 @@ def _metric_value(ratios: dict[str, Any], source_name: str) -> float | None:
     return None
 
 
+def _input_value(ratios: dict[str, Any], ratio_names: tuple[str, ...], key: str) -> float | None:
+    """
+    Read a raw dollar INPUT (e.g. "revenue", "total_assets") from the first of
+    `ratio_names` that carries it. Both RatioResult and MissingRatio expose an
+    `inputs` dict — even a ratio that failed to compute may still carry the
+    inputs that DID resolve — so we read the attribute rather than type-check.
+    """
+    for name in ratio_names:
+        r = ratios.get(name)
+        if r is None:
+            continue
+        v = getattr(r, "inputs", {}).get(key)
+        if v is not None:
+            return float(v)
+    return None
+
+
+def _series_volatility(values: list[float]) -> float | None:
+    """Population std-dev of a series, or None when fewer than two points exist."""
+    clean = [v for v in values if v is not None]
+    if len(clean) < 2:
+        return None
+    return statistics.pstdev(clean)
+
+
+def _trailing_mean(values: list[float], window: int) -> float | None:
+    """
+    Mean of the most-recent `window` non-None values, or None when none exist.
+    Used to smooth the business-risk LEVEL inputs (revenue, margin) so the axis
+    evolves gradually instead of reacting to a single noisy year. `values` must be
+    in chronological order; only its trailing slice is read, so it stays
+    strictly point-in-time (no look-ahead).
+    """
+    clean = [v for v in values if v is not None]
+    if not clean:
+        return None
+    return statistics.fmean(clean[-window:])
+
+
+def _industry_risk(sic: str | None, config: RatingConfig) -> int:
+    """
+    Map a SIC code to an industry-risk tier 1..6 (1 = lowest risk) by LONGEST
+    matching prefix, falling back to the configured default. A CICRA proxy: the
+    industry/sector half of S&P's business-risk profile.
+    """
+    br = config.business_risk
+    default = br["default_industry_risk"]
+    if not sic:
+        return default
+    digits = "".join(ch for ch in str(sic) if ch.isdigit())
+    if not digits:
+        return default
+    table = br["sic_industry_risk"]
+    # Longest prefix wins (4-digit override beats 2-digit major group).
+    for length in range(len(digits), 0, -1):
+        tier = table.get(digits[:length])
+        if tier is not None:
+            return int(tier)
+    return default
+
+
+def _volatility_class(cf_series: list[float], config: RatingConfig) -> str | None:
+    """
+    Classify cash-flow volatility into "low" / "medial" / "standard" from the
+    trailing std-dev of cash_flow_to_debt (the FFO/Debt proxy). Returns None when
+    there's too little history to judge, so the caller falls back to the STANDARD
+    benchmark table (the conservative default).
+    """
+    std = _series_volatility(cf_series)
+    if std is None:
+        return None
+    edges = config.volatility_class_edges
+    if std <= edges["low_max"]:
+        return "low"
+    if std <= edges["medial_max"]:
+        return "medial"
+    return "standard"
+
+
+def _business_risk_index(
+    sic: str | None,
+    revenue: float | None,
+    ebitda_margin: float | None,
+    margin_volatility: float | None,
+    config: RatingConfig,
+) -> tuple[int, dict[str, Any]]:
+    """
+    Blend the data-observable business-risk sub-tiers into one 1..6 index.
+
+    Industry risk (from SIC) is always present; scale, profitability level, and
+    profitability volatility contribute only when their input resolved, with the
+    weights renormalised over whichever sub-tiers are available (the same
+    discipline as the financial-risk blend). Returns (index, rationale) where the
+    rationale records each sub-tier and its input for the audit trail.
+    """
+    br = config.business_risk
+    weights = br["weights"]
+
+    tiers: dict[str, int] = {"industry": _industry_risk(sic, config)}
+    used_w: dict[str, float] = {"industry": weights["industry"]}
+    rationale: dict[str, Any] = {
+        "sic": str(sic) if sic else None,
+        "industry_tier": tiers["industry"],
+    }
+
+    if revenue is not None and revenue > 0:
+        tiers["scale"] = _grid_profile(revenue, br["scale_edges"], higher_is_better=True)
+        used_w["scale"] = weights["scale"]
+        rationale["scale_tier"] = tiers["scale"]
+        rationale["revenue"] = revenue
+    if ebitda_margin is not None:
+        tiers["margin_level"] = _grid_profile(ebitda_margin, br["margin_level_edges"], higher_is_better=True)
+        used_w["margin_level"] = weights["margin_level"]
+        rationale["margin_level_tier"] = tiers["margin_level"]
+        rationale["ebitda_margin"] = ebitda_margin
+    if margin_volatility is not None:
+        tiers["margin_volatility"] = _grid_profile(margin_volatility, br["margin_volatility_edges"], higher_is_better=False)
+        used_w["margin_volatility"] = weights["margin_volatility"]
+        rationale["margin_volatility_tier"] = tiers["margin_volatility"]
+        rationale["margin_volatility"] = margin_volatility
+
+    total_w = sum(used_w.values())
+    blended = sum(used_w[k] * tiers[k] for k in tiers) / total_w if total_w > 0 else 3.0
+    br_index = max(1, min(6, round(blended)))
+    rationale["business_risk_index"] = br_index
+    rationale["business_risk_profile"] = BUSINESS_RISK_PROFILES[br_index]
+    return br_index, rationale
+
+
 def compute_implied_rating(
     ratios: dict[str, Any],
     *,
     business_risk: int | None = None,
+    volatility_class: str | None = None,
+    business_risk_rationale: dict[str, Any] | None = None,
     config: RatingConfig = DEFAULT,
 ) -> ImpliedRatingResult | None:
     """
     Map a period's extracted ratios to an implied S&P-style rating letter.
 
     Args:
-        ratios:        the dict from extract.extract_all() (RatioResult / MissingRatio).
-        business_risk: optional business-risk index 1..6 (1 = Excellent). When None,
-                       config.business_risk_default is used so a rating is always
-                       computable from financials alone.
-        config:        RatingConfig (grids, weights, anchor matrix). Defaults to
-                       DEFAULT, the materialised DEFAULT_RATING_CONFIG.
+        ratios:            the dict from extract.extract_all() (RatioResult / MissingRatio).
+        business_risk:     optional business-risk index 1..6 (1 = Excellent). When None,
+                           config.business_risk_default is used so a rating is always
+                           computable from financials alone. compute_implied_ratings_series
+                           supplies a data-derived value (see _business_risk_index).
+        volatility_class:  optional "low"/"medial"/"standard" selecting which benchmark
+                           table the sub-factor grids read (S&P's volatility-adjusted
+                           tables). None → the STANDARD table (the conservative default).
+        business_risk_rationale: optional audit dict (from _business_risk_index) recorded
+                           on the result and used to flag the rating as data-derived.
+        config:            RatingConfig (grids, weights, anchor matrix). Defaults to
+                           DEFAULT, the materialised DEFAULT_RATING_CONFIG.
 
     Returns:
         ImpliedRatingResult, or None when fewer than config.min_subfactors of the
@@ -327,6 +651,12 @@ def compute_implied_rating(
     for sub, grid in config.grids.items():
         source = grid["source"]
         value = _metric_value(ratios, source)
+
+        # Select the volatility-adjusted benchmark table when one is requested and
+        # available; otherwise fall back to the grid's STANDARD `edges`.
+        edges = grid["edges"]
+        if volatility_class and "edges_by_volatility" in grid:
+            edges = grid["edges_by_volatility"].get(volatility_class, edges)
 
         if ebitda_negative and sub in _ebitda_driven:
             # Forced to band 6 regardless of the (sign-flipped) ratio value.
@@ -351,7 +681,7 @@ def compute_implied_rating(
             }
             continue
 
-        profile = _grid_profile(value, grid["edges"], grid["higher_is_better"])
+        profile = _grid_profile(value, edges, grid["higher_is_better"])
         resolved[sub] = profile
         subscores[sub] = {
             "value": value,
@@ -400,12 +730,25 @@ def compute_implied_rating(
                 f"{FINANCIAL_RISK_PROFILES[alt]} is the nearest alternative."
             )
 
+    # Flag when a relaxed (non-standard) benchmark table was used — the rating is
+    # only comparable to a Standard-volatility issuer's after accounting for this.
+    if volatility_class in ("low", "medial"):
+        notes.append(
+            f"{volatility_class.capitalize()}-volatility benchmark table applied "
+            "(stable cash flows allow weaker ratios at the same band)."
+        )
+
     br_index = business_risk if business_risk is not None else config.business_risk_default
     br_index = max(1, min(6, int(br_index)))
     if business_risk is None:
         notes.append(
             f"Business risk assumed {BUSINESS_RISK_PROFILES[br_index]} (default); "
             "supply a per-issuer business-risk input to refine."
+        )
+    elif business_risk_rationale is not None:
+        notes.append(
+            f"Business risk {BUSINESS_RISK_PROFILES[br_index]} (data-derived proxy: "
+            "industry / scale / profitability level + volatility)."
         )
 
     letter = config.anchor_matrix[br_index - 1][fr_index - 1]
@@ -422,7 +765,79 @@ def compute_implied_rating(
         business_risk_index=br_index,
         subscores=subscores,
         notes=notes,
+        business_risk=dict(business_risk_rationale) if business_risk_rationale else {},
     )
+
+
+def compute_implied_ratings_series(
+    results_by_period: dict[str, dict[str, Any]],
+    *,
+    sic: str | None = None,
+    config: RatingConfig = DEFAULT,
+) -> dict[str, ImpliedRatingResult]:
+    """
+    Compute implied ratings for an issuer's full period history in one pass,
+    deriving the per-period business-risk index and volatility-class benchmark
+    selection from data — the single entry point both track pipelines use.
+
+    For each period it builds STRICTLY-TRAILING windows (this period and up to
+    BUSINESS_RISK_TRAILING_WINDOW-1 prior periods — never future ones, so the
+    resulting implied_rating_index is safe to feed the walk-forward migration
+    model) of:
+      - EBITDA margin → profitability level + volatility (the trailing std-dev), and
+      - cash_flow_to_debt → the cash-flow volatility class (low/medial/standard).
+    Scale (revenue) and industry (SIC) complete the business-risk proxy.
+
+    Business-risk SMOOTHING: the level inputs (revenue, EBITDA margin) are averaged
+    over the trailing config.business_risk["smoothing_window"] periods before being
+    mapped to tiers, so the business-risk axis evolves gradually rather than flipping
+    the rating on a single noisy year. The volatility sub-factor is left reactive.
+
+    Args:
+        results_by_period: period_end → ratios dict (from extract.extract_all).
+        sic:               the issuer's SIC code (industry-risk proxy); may be None.
+        config:            RatingConfig. Defaults to DEFAULT.
+
+    Returns:
+        period_end → ImpliedRatingResult, omitting periods that can't be rated
+        (compute_implied_rating returned None) — same contract as before.
+    """
+    out: dict[str, ImpliedRatingResult] = {}
+    periods = sorted(results_by_period)  # period_end strings sort chronologically
+    win = BUSINESS_RISK_TRAILING_WINDOW
+    smooth = config.business_risk["smoothing_window"]
+
+    for i, period in enumerate(periods):
+        ratios = results_by_period[period]
+        trailing = periods[max(0, i - win + 1): i + 1]
+
+        margin_series = [_metric_value(results_by_period[p], "ebitda_margin") for p in trailing]
+        cf_series = [_metric_value(results_by_period[p], "cash_flow_to_debt") for p in trailing]
+        revenue_series = [_input_value(results_by_period[p], ("ebitda_margin", "fcf_margin"), "revenue") for p in trailing]
+
+        # Volatility stays reactive (raw trailing std-dev); LEVEL inputs are
+        # trailing-averaged over the smoothing window so business risk is sticky.
+        margin_volatility = _series_volatility(margin_series)
+        vol_class = _volatility_class(cf_series, config)
+        revenue = _trailing_mean(revenue_series, smooth)
+        ebitda_margin = _trailing_mean(margin_series, smooth)
+
+        br_index, rationale = _business_risk_index(
+            sic, revenue, ebitda_margin, margin_volatility, config
+        )
+        rationale["volatility_class"] = vol_class or "standard"
+        rationale["level_smoothing_window"] = smooth
+
+        r = compute_implied_rating(
+            ratios,
+            business_risk=br_index,
+            volatility_class=vol_class,
+            business_risk_rationale=rationale,
+            config=config,
+        )
+        if r is not None:
+            out[period] = r
+    return out
 
 
 # ── Rating Outlook signal (Stage 0) ──────────────────────────────────────────

@@ -26,7 +26,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-from typing import Any
 
 from src.ingest import (
     get_company_facts,
@@ -49,11 +48,9 @@ from src.store import (
     save_covenants,
     save_loss_provisions,
     save_bond_instruments,
-    get_periods,
 )
 from src.score import compute_score, STRESS_THRESHOLD
-from src.rating import compute_implied_rating
-from src.concepts import MissingDataError
+from src.rating import compute_implied_ratings_series
 
 
 # ── Display helpers ──────────────────────────────────────────────────────────
@@ -151,9 +148,11 @@ def track(ticker: str, n_periods: int | None = None, include_llm: bool = True) -
     cik = resolve_identifier(ticker)
     print(f"  CIK: {cik}")
 
-    # Step 2: Persist the company identity snapshot (name, current tickers, former names),
-    # keyed on the permanent CIK, so reads can map CIK ↔ ticker without an EDGAR call.
-    save_company(get_company_info(cik))
+    # Step 2: Persist the company identity snapshot (name, current tickers, former names,
+    # SIC), keyed on the permanent CIK, so reads can map CIK ↔ ticker without an EDGAR
+    # call. `info` is retained for the SIC used by the business-risk proxy below.
+    info = get_company_info(cik)
+    save_company(info)
 
     # Step 3: Fetch the full XBRL companyfacts JSON from EDGAR (cached after first fetch).
     facts = get_company_facts(cik)
@@ -179,12 +178,13 @@ def track(ticker: str, n_periods: int | None = None, include_llm: bool = True) -
     save_ratios_bulk(cik, results_by_period)
 
     # Step 4a2: Implied credit ratings — pure compute over the ratios just
-    # extracted, bulk-saved alongside them (periods that can't be rated are omitted).
-    ratings_by_period = {
-        period: r
-        for period in periods
-        if (r := compute_implied_rating(results_by_period[period])) is not None
-    }
+    # extracted, bulk-saved alongside them. compute_implied_ratings_series derives
+    # the per-period business-risk proxy (SIC industry + scale + profitability
+    # level/volatility) and volatility-adjusted benchmark table; periods that can't
+    # be rated are omitted.
+    ratings_by_period = compute_implied_ratings_series(
+        results_by_period, sic=info.get("sic")
+    )
     save_implied_ratings_bulk(cik, ratings_by_period)
 
     # Step 4b: Debt maturity schedules are pure XBRL compute (no LLM, no filing

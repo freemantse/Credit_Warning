@@ -65,10 +65,10 @@ def test_compute_labels_downgrade_and_default():
     assert r1["rating_index"] == 5 and r1["rating_index_12m"] == 7
     assert r1["label_12m"] == 1 and r1["notch_change_12m"] == 2
 
-    # Issuer 2 @ 2020-12-31: B now, D within 12m → downgrade + default flagged. The
-    # 2023 anchor keeps the 2021-12-31 window observed (not censored).
+    # Issuer 2 @ 2020-12-31: B now (non-distressed), D within 12m → downgrade + distress
+    # flagged. The 2023 anchor keeps the 2021-12-31 window observed (not censored).
     r2 = by_key[("0000000002", "2020-12-31")]
-    assert r2["label_12m"] == 1 and r2["default_12m"] is True
+    assert r2["label_12m"] == 1 and r2["distress_12m"] is True
 
 
 def test_compute_labels_censors_past_data_max():

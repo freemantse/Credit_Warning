@@ -89,6 +89,13 @@ def normalize_rating(raw: str | None) -> tuple[int | None, str]:
     return (None, STATUS_NOT_RATED)
 
 
+# Start of the distress tail on the canonical axis: CCC+ (16) and worse. This is the
+# rating-migration model's rare-event boundary — a transition to index ≥ this within
+# 12m is the "distress" head's positive (see src.ratings.labels.build_rating_labels),
+# broadening the old default-only target (D = 21) into something trainable.
+DISTRESS_INDEX = rating_index("CCC+")   # 16
+
+
 def grade_for_index(idx: int | None) -> str | None:
     """IG (≤ BBB-), HY (BB+ … C), or D (default). None when idx is None."""
     if idx is None:

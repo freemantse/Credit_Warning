@@ -9,10 +9,10 @@ from src.model.dataset import (
 from src.model.features import FEATURE_COLUMNS, FEATURE_DIRECTIONS
 
 
-def _row(period_end, label_12m=0, default_12m=False, **feats):
+def _row(period_end, label_12m=0, distress_12m=False, **feats):
     base = {c: None for c in FEATURE_COLUMNS}
     base.update({"cik": "C1", "period_end": period_end, "agency": "MDY",
-                 "label_12m": label_12m, "default_12m": default_12m})
+                 "label_12m": label_12m, "distress_12m": distress_12m})
     base.update(feats)
     return base
 
@@ -22,9 +22,9 @@ def test_monotone_signs_per_head():
     cov = FEATURE_COLUMNS.index("interest_coverage")
     down = monotone_constraints("downgrade")
     up = monotone_constraints("upgrade")
-    deflt = monotone_constraints("default")
-    # Leverage raises downgrade & default risk (+1), lowers upgrade odds (−1).
-    assert down[lev] == 1 and deflt[lev] == 1 and up[lev] == -1
+    distress = monotone_constraints("distress")
+    # Leverage raises downgrade & distress risk (+1), lowers upgrade odds (−1).
+    assert down[lev] == 1 and distress[lev] == 1 and up[lev] == -1
     # Coverage is the opposite.
     assert down[cov] == -1 and up[cov] == 1
     assert len(down) == len(FEATURE_COLUMNS)

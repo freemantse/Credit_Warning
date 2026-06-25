@@ -54,7 +54,7 @@ from src.ingest import (
     resolve_identifier,
 )
 from src.score import DEFAULT_CONFIG, ScoreConfig, compute_score
-from src.rating import compute_implied_rating, rating_outlook, OUTLOOK_DEFAULT, RatingOutlookResult, RATING_SCALE
+from src.rating import compute_implied_ratings_series, rating_outlook, OUTLOOK_DEFAULT, RatingOutlookResult, RATING_SCALE, financial_sector_note
 from src.ratings.labels import rating_asof
 from src.store import (
     add_case,
@@ -75,7 +75,6 @@ from src.store import (
     get_model_registry,
     get_ratios_grouped,
     get_score_config,
-    list_cases,
     save_model_registry,
     save_bond_instruments,
     save_company,
@@ -367,6 +366,7 @@ def list_issuers():
                 "alerts": [],
                 "implied_rating": None,
                 "rating_index": None,
+                "rating_note": financial_sector_note(issuer.get("sic")),
                 "outlook": None,
                 "prediction": None,
             })
@@ -451,10 +451,37 @@ def list_issuers():
             "alerts": score_result.alerts,
             "implied_rating": rating["implied_rating"] if rating else None,
             "rating_index": rating["rating_index"] if rating else None,
+            # Explain a blank rating for financial-sector issuers (industrial model N/A).
+            "rating_note": None if rating else financial_sector_note(issuer.get("sic")),
             "outlook": outlook.outlook if outlook else None,
             "prediction": prediction,
         })
     return result
+
+
+def _reject_untrackable(identifier: str, cik: str) -> None:
+    """
+    Block tracking an issuer that has no usable SEC XBRL financials, and remove any
+    stale row it may already carry (best-effort — it may never have been saved).
+
+    Raises HTTPException(422) with a STRUCTURED detail ({code, message}) so the
+    frontend can render a tailored hint instead of a generic error. Never returns.
+    """
+    try:
+        delete_issuer(cik)
+    except Exception:
+        pass  # nothing to clean up if it was never persisted
+    raise HTTPException(
+        422,
+        detail={
+            "code": "NO_XBRL_DATA",
+            "message": (
+                f"{identifier} has no SEC XBRL financial statements, so it can't be "
+                "tracked. This usually means it's a fund, a foreign filer (20-F/40-F), "
+                "a private company, or a subsidiary without its own SEC filings."
+            ),
+        },
+    )
 
 
 def _track_one(identifier: str, *, no_llm: bool = True, periods: int | None = None) -> dict:
@@ -476,28 +503,35 @@ def _track_one(identifier: str, *, no_llm: bool = True, periods: int | None = No
     except Exception as e:
         raise HTTPException(500, f"EDGAR lookup failed: {e}")
 
-    # Step 2: Persist the company's identity snapshot (name, current tickers,
-    # former names) keyed on the permanent CIK. Best-effort: a failure here
-    # shouldn't block ratio ingestion, but we still surface a clear error.
-    try:
-        info = get_company_info(cik)
-        save_company(info)
-    except Exception as e:
-        raise HTTPException(500, f"Failed to fetch/save company info: {e}")
-
-    # Step 3: Fetch the full XBRL company facts JSON (cached to disk after first fetch).
+    # Step 2: Fetch the XBRL company facts and confirm the issuer actually has
+    # trackable annual periods BEFORE persisting any identity. Issuers with no SEC
+    # XBRL financials (funds, foreign 20-F/40-F filers, private companies,
+    # subsidiaries) must never enter the DB — and if one slipped in under the old
+    # ordering, _reject_untrackable removes it. Note: get_company_info/save_company
+    # are deferred to Step 3 so a no-data issuer leaves no trace.
     try:
         facts = get_company_facts(cik)
     except Exception as e:
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        if status == 404:
+            _reject_untrackable(identifier, cik)  # no companyfacts at all (always raises)
         raise HTTPException(500, f"Failed to fetch company facts: {e}")
 
-    # Step 4: Determine which annual periods are available. Fetch the full
+    # Step 3: Determine which annual periods are available. Fetch the full
     # history by default (req.periods=None); a caller may still cap it to the
     # most recent N. XBRL data only goes back to ~2009, so "full" is ~15 years.
     available = _get_available_periods(facts)
     periods = available if periods is None else available[: periods]
     if not periods:
-        raise HTTPException(404, f"No annual XBRL periods found for {identifier}")
+        _reject_untrackable(identifier, cik)  # facts exist but no annual periods (always raises)
+
+    # Step 4: The issuer is trackable — persist its identity snapshot now (name,
+    # current tickers, former names, SIC) keyed on the permanent CIK.
+    try:
+        info = get_company_info(cik)
+        save_company(info)
+    except Exception as e:
+        raise HTTPException(500, f"Failed to fetch/save company info: {e}")
 
     # Step 5: Extract ratios for every period (pure compute, instant) and persist
     # them in a SINGLE bulk upsert. Writing one period at a time was ~18 separate
@@ -507,12 +541,13 @@ def _track_one(identifier: str, *, no_llm: bool = True, periods: int | None = No
 
     # Step 5a2: Implied credit ratings are pure compute over the ratios just
     # extracted (no extra EDGAR round-trip), so derive and bulk-save them here.
-    # Periods whose rating can't be computed (too few sub-factors) are omitted.
-    ratings_by_period = {
-        period: r
-        for period in periods
-        if (r := compute_implied_rating(results_by_period[period])) is not None
-    }
+    # compute_implied_ratings_series derives the per-period business-risk proxy
+    # (industry via SIC + scale + profitability level/volatility) and the
+    # volatility-adjusted benchmark table from the full history in one pass;
+    # periods whose rating can't be computed (too few sub-factors) are omitted.
+    ratings_by_period = compute_implied_ratings_series(
+        results_by_period, sic=info.get("sic")
+    )
     save_implied_ratings_bulk(cik, ratings_by_period)
 
     # Step 5b: Debt maturity schedules are pure XBRL compute (no LLM, no filing
@@ -793,6 +828,12 @@ def get_issuer(ticker: str):
         "prediction": prediction,            # headline directional signal (model/outlook)
         "agency_ratings": agency_ratings,    # per-agency dated rating actions
         "primary_agency": primary_agency,    # the agency overlaid on the chart (or None)
+        # When no period carries an implied rating and the issuer is financial-sector,
+        # explain why (industrial Debt/EBITDA model doesn't apply) instead of a blank.
+        "rating_note": (
+            None if any(p.get("implied_rating") for p in period_data)
+            else financial_sector_note(company.get("sic"))
+        ),
     }
 
 

@@ -3,6 +3,7 @@
 from src.ratings.scale import (
     normalize_rating,
     grade_for_index,
+    DISTRESS_INDEX,
     RATING_SCALE_ROWS,
     STATUS_RATED,
     STATUS_WITHDRAWN,
@@ -56,6 +57,12 @@ def test_grade_boundary():
     assert grade_for_index(10) == "HY"   # BB+
     assert grade_for_index(21) == "D"
     assert grade_for_index(None) is None
+
+
+def test_distress_index_is_ccc_plus():
+    # The migration model's rare-event boundary: CCC+ (16) and worse is "distress".
+    assert DISTRESS_INDEX == 16
+    assert normalize_rating("CCC+")[0] == DISTRESS_INDEX
 
 
 def test_scale_rows_cover_full_axis():

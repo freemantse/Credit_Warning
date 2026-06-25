@@ -94,7 +94,7 @@ def predict_rows(bundle: dict[str, Any], df, *, top_n: int = 5) -> list[dict]:
             "horizon_months": HORIZON_MONTHS,
             "p_downgrade": float(np.mean(probs["downgrade"])) if "downgrade" in probs else None,
             "p_upgrade": float(np.mean(probs["upgrade"])) if "upgrade" in probs else None,
-            "p_default": float(np.mean(probs["default"])) if "default" in probs else None,
+            "p_distress": float(np.mean(probs["distress"])) if "distress" in probs else None,
             "drivers_json": attribute(bundle, X.iloc[[0]], "downgrade", top_n),
             "model_version": version,
         }
@@ -119,6 +119,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Predict rating migrations + store them")
     parser.add_argument("--model", default="data/migration_model.joblib", help="joblib artifact")
     parser.add_argument("--matrix", default=None, help="feature-matrix CSV (else assemble from Supabase)")
+    parser.add_argument("--no-replace", action="store_true",
+                        help="upsert without clearing migration_predictions first (keeps stale rows)")
     args = parser.parse_args()
 
     bundle = load_model(args.model)
@@ -128,6 +130,11 @@ if __name__ == "__main__":
     else:
         from src.model.features import load_training_matrix
         df = load_training_matrix()
+
+    if not args.no_replace:
+        from src.store import clear_migration_predictions
+        clear_migration_predictions()
+        print("Cleared migration_predictions (replace mode).")
 
     n = predict_and_store(bundle, df)
     print(f"Wrote {n} migration_predictions with model {bundle.get('version')}")

@@ -138,8 +138,9 @@ def save_company(info: dict[str, Any], **_) -> None:
 
     `info` is the dict returned by src.ingest.get_company_info — it must contain
     the canonical `cik` plus the mutable display attributes (name, tickers,
-    exchanges, formerNames). The CIK is the conflict target, so re-tracking a
-    company refreshes its name/ticker rather than inserting a duplicate.
+    exchanges, formerNames, sic, sic_description). The CIK is the conflict target,
+    so re-tracking a company refreshes its name/ticker rather than inserting a
+    duplicate.
     """
     cik = info["cik"].zfill(10)
     row = {
@@ -148,6 +149,8 @@ def save_company(info: dict[str, Any], **_) -> None:
         "tickers": info.get("tickers", []),
         "exchanges": info.get("exchanges", []),
         "former_names": info.get("formerNames", []),
+        "sic": info.get("sic", ""),
+        "sic_description": info.get("sic_description", ""),
     }
     _client().table("companies").upsert(row).execute()
 
@@ -485,7 +488,7 @@ def save_implied_ratings_bulk(
     Persist implied credit ratings for MANY periods in one upsert round-trip.
 
     `results_by_period` maps period_end → ImpliedRatingResult (see
-    src.rating.compute_implied_rating). One row per period; same
+    src.rating.compute_implied_ratings_series). One row per period; same
     overwrite-on-PK-conflict semantics as save_ratios_bulk, so re-tracking an
     issuer refreshes its ratings rather than duplicating them. Periods whose
     rating couldn't be computed (None) are simply absent from the dict.
@@ -500,8 +503,9 @@ def save_implied_ratings_bulk(
             "financial_risk_profile": r.financial_risk_profile,
             "financial_risk_index": r.financial_risk_index,
             "business_risk_index": r.business_risk_index,
-            "subscores_json": r.subscores,   # Python dict → JSONB
-            "notes_json": r.notes,           # Python list → JSONB
+            "subscores_json": r.subscores,         # Python dict → JSONB
+            "notes_json": r.notes,                 # Python list → JSONB
+            "business_risk_json": r.business_risk, # business-risk proxy audit → JSONB
         }
         for period_end, r in results_by_period.items()
     ]
@@ -521,7 +525,7 @@ _AGENCY_RATING_COLUMNS = (
 _RATING_LABEL_COLUMNS = (
     "cik", "period_end", "agency", "rating_index",
     "rating_index_3m", "rating_index_6m", "rating_index_12m",
-    "label_3m", "label_6m", "label_12m", "notch_change_12m", "default_12m",
+    "label_3m", "label_6m", "label_12m", "notch_change_12m", "distress_12m",
 )
 
 
@@ -541,6 +545,21 @@ def save_agency_ratings_bulk(events: list[dict[str, Any]], **_) -> None:
         _client().table("agency_ratings").upsert(rows).execute()
 
 
+def _delete_all_rows(table: str) -> None:
+    """Delete every row of `table` (needs the service-role key). supabase-py requires a
+    filter on delete, so match a sentinel CIK no row can have — the same idiom as
+    scripts.reset_training_tables."""
+    _client().table(table).delete().neq("cik", "__none__").execute()
+
+
+def clear_agency_ratings(**_) -> None:
+    """Truncate agency_ratings so a reload MIRRORS the canonical CSV exactly — dropping
+    rows the CSV no longer contains (e.g. a retired source like the old S&P/Kaggle drop).
+    A plain upsert can't do this: keys absent from the CSV would survive and feed stale
+    labels downstream. Used by load_agency_ratings' default replace mode."""
+    _delete_all_rows("agency_ratings")
+
+
 def save_rating_labels_bulk(labels: list[dict[str, Any]], **_) -> None:
     """
     Upsert ML label rows (one per cik+period_end+agency) from build_rating_labels.
@@ -552,6 +571,13 @@ def save_rating_labels_bulk(labels: list[dict[str, Any]], **_) -> None:
     ]
     if rows:
         _client().table("rating_labels").upsert(rows).execute()
+
+
+def clear_rating_labels(**_) -> None:
+    """Truncate rating_labels so a rebuild MIRRORS the freshly built set — dropping stale
+    rows for (cik, period_end, agency) combinations no longer produced (e.g. an agency
+    dropped from the universe). Used by build_labels' default replace mode."""
+    _delete_all_rows("rating_labels")
 
 
 def get_rating_scale(**_) -> list[dict[str, Any]]:
@@ -592,7 +618,7 @@ def agency_rating_asof(cik: str, agency: str, as_of: str, **_) -> dict[str, Any]
 
 _MIGRATION_PREDICTION_COLUMNS = (
     "cik", "period_end", "horizon_months", "p_downgrade", "p_upgrade",
-    "p_default", "drivers_json", "model_version",
+    "p_distress", "drivers_json", "model_version",
 )
 
 
@@ -610,6 +636,13 @@ def save_migration_predictions_bulk(rows: list[dict[str, Any]], **_) -> None:
     ]
     if out:
         _client().table("migration_predictions").upsert(out).execute()
+
+
+def clear_migration_predictions(**_) -> None:
+    """Truncate migration_predictions so a fresh predict run doesn't leave stale rows for
+    issuers no longer scored (and, after the p_default→p_distress rename, no rows whose
+    values predate the new head). Used by src.model.predict's default replace mode."""
+    _delete_all_rows("migration_predictions")
 
 
 def get_migration_predictions_grouped(cik: str | None = None, **_) -> dict[str, dict[str, dict]]:
@@ -807,15 +840,16 @@ def get_issuers(**_) -> list[dict[str, Any]]:
     """
     Return one identity row per tracked company (all rows in the companies table).
 
-    Each row is {cik, name, ticker, last_refreshed} where `ticker` is the first
-    current ticker (or "" if unknown) and `last_refreshed` is when the issuer was
-    last re-tracked from EDGAR (None = never). Querying companies directly —
+    Each row is {cik, name, ticker, last_refreshed, sic} where `ticker` is the
+    first current ticker (or "" if unknown), `last_refreshed` is when the issuer
+    was last re-tracked from EDGAR (None = never), and `sic` is the industry code
+    (used to flag unrated financial-sector issuers). Querying companies directly —
     rather than deriving CIKs from the ratios table — ensures issuers whose ratio
     extraction failed (e.g. banks with non-standard XBRL) are still visible in
     the portfolio list.
     """
     res = _client().table("companies").select(
-        "cik, name, tickers, last_refreshed"
+        "cik, name, tickers, last_refreshed, sic"
     ).execute()
     issuers = []
     for row in sorted(res.data, key=lambda r: r["cik"]):
@@ -825,6 +859,7 @@ def get_issuers(**_) -> list[dict[str, Any]]:
             "name": row.get("name", ""),
             "ticker": tickers[0] if tickers else "",
             "last_refreshed": row.get("last_refreshed"),
+            "sic": row.get("sic"),
         })
     return issuers
 
@@ -1058,9 +1093,9 @@ def get_implied_ratings_grouped(cik: str | None = None, **_) -> dict[str, dict[s
     Fetch implied ratings in ONE query, grouped as cik → period_end → rating dict.
 
     Each rating dict is {implied_rating, rating_index, financial_risk_profile,
-    financial_risk_index, business_risk_index, subscores, notes} — the same shape
-    the API attaches to each period. Pass a cik to scope to one issuer (detail
-    page); omit it to fetch every issuer at once (portfolio list).
+    financial_risk_index, business_risk_index, business_risk, subscores, notes} —
+    the same shape the API attaches to each period. Pass a cik to scope to one
+    issuer (detail page); omit it to fetch every issuer at once (portfolio list).
     """
     def build():
         q = (
@@ -1068,7 +1103,8 @@ def get_implied_ratings_grouped(cik: str | None = None, **_) -> dict[str, dict[s
             .table("implied_ratings")
             .select(
                 "cik, period_end, implied_rating, rating_index, financial_risk_profile, "
-                "financial_risk_index, business_risk_index, subscores_json, notes_json"
+                "financial_risk_index, business_risk_index, subscores_json, notes_json, "
+                "business_risk_json"
             )
             .order("cik").order("period_end")  # stable order for paging
         )
@@ -1082,6 +1118,7 @@ def get_implied_ratings_grouped(cik: str | None = None, **_) -> dict[str, dict[s
             "financial_risk_profile": row["financial_risk_profile"],
             "financial_risk_index": row["financial_risk_index"],
             "business_risk_index": row["business_risk_index"],
+            "business_risk": row.get("business_risk_json") or {},
             "subscores": row.get("subscores_json") or {},
             "notes": row.get("notes_json") or [],
         }

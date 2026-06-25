@@ -19,7 +19,7 @@ import {
   XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer,
 } from 'recharts'
 import {
-  IssuerDetail, PeriodData, Finding, Covenant, LossProvision, RatingOutlook, BondInstrument,
+  IssuerDetail, PeriodData, Covenant, LossProvision, RatingOutlook, BondInstrument,
   AgencyRatingEvent, RatingChangePrediction, MigrationDriver,
   fetchIssuer, trackIssuer, startLlmReview, fetchLlmReviewStatus,
   fmtRatio, fmtFCF, fmtPct, scoreBg, scoreLabel, severityDot,
@@ -415,7 +415,7 @@ export default function IssuerPage() {
           {/* ── Implied credit rating ──────────────────────────────────── */}
           {/* S&P-style rating for the latest period, with its sub-factor breakdown
               and the directional Rating Outlook. */}
-          <RatingProfileSection periods={data.periods} outlook={data.outlook} />
+          <RatingProfileSection periods={data.periods} outlook={data.outlook} ratingNote={data.rating_note} />
 
           {/* Agency rating history — the real Moody's / Fitch / Egan-Jones actions
               (dates, from→to, and an upgrade/downgrade/default/withdrawn badge).
@@ -1340,11 +1340,27 @@ function fmtSubfactor(sub: string, value: number | null): string {
   return fmtRatio(value)
 }
 
-function RatingProfileSection({ periods, outlook }: { periods: PeriodData[]; outlook?: RatingOutlook | null }) {
+function RatingProfileSection({ periods, outlook, ratingNote }: { periods: PeriodData[]; outlook?: RatingOutlook | null; ratingNote?: string | null }) {
   // Use the most recent period that actually carries an implied rating.
   const period = periods.find(p => p.implied_rating)
   const rating = period?.implied_rating
-  if (!period || !rating) return null
+  if (!period || !rating) {
+    // No implied rating. For a financial-sector issuer, explain why (the
+    // industrial Debt/EBITDA model doesn't apply) instead of rendering nothing.
+    if (!ratingNote) return null
+    return (
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+        <div className="px-6 py-4 border-b border-gray-100">
+          <h2 className="font-semibold text-slate-800">Implied Credit Rating</h2>
+        </div>
+        <div className="p-6">
+          <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+            {ratingNote}
+          </p>
+        </div>
+      </div>
+    )
+  }
 
   const ob = outlookBadge(outlook?.outlook)
 
@@ -1433,6 +1449,75 @@ function RatingProfileSection({ periods, outlook }: { periods: PeriodData[]; out
             ))}
           </ul>
         )}
+
+        {/* Methodology & sources — static, collapsed-by-default provenance note. Uses
+            a native <details> so it needs no React state; the chevron rotates via
+            Tailwind's group-open: variant, matching the cards' other disclosures. */}
+        <details className="group border-t border-gray-100 pt-3">
+          <summary className="flex items-center gap-1.5 cursor-pointer list-none [&::-webkit-details-marker]:hidden text-xs font-medium text-slate-500 hover:text-slate-700 transition-colors">
+            <svg
+              xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24"
+              fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+              aria-hidden="true"
+              className="text-slate-400 transition-transform group-open:rotate-90"
+            >
+              <path d="m9 18 6-6-6-6" />
+            </svg>
+            Methodology &amp; sources
+          </summary>
+          <ul className="mt-2 space-y-1.5 pl-1">
+            <li className="flex items-start gap-2 text-xs text-slate-500">
+              <span className="mt-1 w-1 h-1 rounded-full bg-slate-300 flex-shrink-0" />
+              <span>
+                <span className="font-medium text-slate-600">Framework</span> — Three sub-factors
+                (FFO/Debt, Debt/EBITDA, EBITDA/Interest) map to one of S&amp;P&apos;s six financial-risk
+                profiles (Minimal → Highly Leveraged), blend into one risk index, then combine with a
+                business-risk profile via an anchor matrix to produce the letter.
+              </span>
+            </li>
+            <li className="flex items-start gap-2 text-xs text-slate-500">
+              <span className="mt-1 w-1 h-1 rounded-full bg-slate-300 flex-shrink-0" />
+              <span>
+                <span className="font-medium text-slate-600">Thresholds</span> — The band cut-offs restate
+                S&amp;P&apos;s published cash-flow/leverage benchmark ranges (e.g. FFO/Debt ≥60% = Minimal;
+                Debt/EBITDA &gt;5× = Highly Leveraged).
+              </span>
+            </li>
+            <li className="flex items-start gap-2 text-xs text-slate-500">
+              <span className="mt-1 w-1 h-1 rounded-full bg-slate-300 flex-shrink-0" />
+              <span>
+                <span className="font-medium text-slate-600">Weights</span> — The blend (FFO/Debt 45% ·
+                Debt/EBITDA 35% · EBITDA/Interest 20%) is a heuristic favoring FFO/Debt as the strongest
+                distress predictor — not an agency-published weighting (S&amp;P uses a core/supplementary
+                + qualitative process).
+              </span>
+            </li>
+            <li className="flex items-start gap-2 text-xs text-slate-500">
+              <span className="mt-1 w-1 h-1 rounded-full bg-slate-300 flex-shrink-0" />
+              <span>
+                <span className="font-medium text-slate-600">FFO/Debt proxy</span> — Approximated by
+                operating cash flow ÷ gross debt; true FFO (an analyst construct, pre-working-capital)
+                isn&apos;t reported as an XBRL tag.
+              </span>
+            </li>
+            <li className="flex items-start gap-2 text-xs text-slate-500">
+              <span className="mt-1 w-1 h-1 rounded-full bg-slate-300 flex-shrink-0" />
+              <span>
+                <span className="font-medium text-slate-600">Business risk</span> — Defaults to
+                &ldquo;Satisfactory&rdquo; until a per-issuer input is supplied, so the rating reflects the
+                financial profile primarily.
+              </span>
+            </li>
+            <li className="flex items-start gap-2 text-xs text-slate-500">
+              <span className="mt-1 w-1 h-1 rounded-full bg-slate-300 flex-shrink-0" />
+              <span>
+                <span className="font-medium text-slate-600">Status</span> — Grids and anchor matrix are
+                public-methodology approximations, tunable, intended to be calibrated against real
+                agency-rating history.
+              </span>
+            </li>
+          </ul>
+        </details>
       </div>
     </div>
   )
@@ -1492,9 +1577,9 @@ function MigrationPredictionBlock({ periods }: { periods: PeriodData[] }) {
         <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-green-50 text-green-700 border border-green-100">
           Upgrade {pct(m.p_upgrade)}
         </span>
-        {m.p_default != null && (
+        {m.p_distress != null && (
           <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-slate-100 text-slate-600 border border-slate-200">
-            Default {pct(m.p_default)}
+            Distress {pct(m.p_distress)}
           </span>
         )}
         <span className="text-[10px] text-slate-300 font-mono ml-auto">{m.model_version}</span>
@@ -1619,8 +1704,8 @@ function BondInstrumentsSection({ periods }: { periods: PeriodData[] }) {
       <div className="px-6 py-4 border-b border-gray-100">
         <h2 className="font-semibold text-slate-800">Debt Instruments &amp; Seniority</h2>
         <p className="text-xs text-slate-400 mt-0.5">
-          Extracted from the debt footnote. Seniority drives the senior-secured screen and
-          issue-level notching. Figures shown only when quoted verbatim.
+          Extracted from the debt footnote. Seniority drives issue-level notching.
+          Figures shown only when quoted verbatim.
         </p>
       </div>
       <YearGroupedList
