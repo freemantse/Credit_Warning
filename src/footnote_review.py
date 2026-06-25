@@ -105,11 +105,34 @@ ground every finding in verbatim text and never guess.
 You do not compute arithmetic. You do not calculate cushions or proximity. You
 extract what the text states, verbatim, and classify it. Nothing more."""
 
-# {PASS_MODE} block — Stage A only in 2c-i (Stage B / recall sweep is 2c-ii).
+# {PASS_MODE} blocks — Stage A (PRECISE, 2c-i) and Stage B (RECALL SWEEP, 2c-ii).
 COVENANT_PASS_PRECISE = (
     "PASS: PRECISE. This is the debt / long-term-obligations footnote, where "
     "covenants are usually stated clearly. Extract the covenants that are actually "
     "present. Do not over-reach into general debt description."
+)
+
+# Stage B recall sweep over MD&A + risk factors. Leans aggressive on recall, BUT
+# the finding must be a PRESENT contractual requirement, not a hypothetical — this
+# instruction + the grounding gates (quote_in_text, _number_in_text) are the
+# fabrication controls (a broad sweep over risk-factor prose is the FP risk).
+COVENANT_PASS_RECALL = (
+    "PASS: RECALL SWEEP. This is MD&A and/or risk-factor text, where covenant "
+    "requirements are often buried in prose and NOT labeled \"covenant.\" Lean "
+    "toward flagging: if a sentence plausibly states a financial test the company "
+    "is subject to under a debt agreement, extract it even if you are not fully "
+    "certain. Downstream deduplication and the grounding check will filter false "
+    "positives. Missing a buried covenant here is the costliest error.\n\n"
+    "CRITICAL — PRESENT REQUIREMENT, NOT A HYPOTHETICAL: extract only an ACTUAL "
+    "covenant the company is CURRENTLY subject to. Quote the sentence stating the "
+    "real requirement (e.g. \"we are required to maintain a leverage ratio not to "
+    "exceed 4.00 to 1.00\"). Do NOT extract forward-looking or hypothetical "
+    "descriptions of covenant RISK — e.g. \"we may become subject to covenants in "
+    "the future\", \"our future debt agreements could contain restrictions that "
+    "might limit us\", \"covenants in our agreements could restrict our ability "
+    "to ...\". A description of what covenants might do, or might exist, is NOT a "
+    "covenant. If the sentence does not state a real, current contractual test, "
+    "return nothing for it."
 )
 
 COVENANT_USER = """COMPANY: {COMPANY_NAME}
@@ -512,6 +535,11 @@ def _validate_provision(raw: dict, fallback_source: str) -> LossProvision | None
 # capped at 40k chars by sections.py; this is the single trim applied here.
 MAX_SECTION_CHARS = 40_000
 
+# Stage B (recall sweep) trims MD&A / risk-factors to a larger window: covenant
+# language in liquidity / indebtedness risk factors sits deeper than the 40k
+# footnote cap (risk_factors' own section cap is 80k). Tunable recall lever.
+_COV_RECALL_MAX_CHARS = 60_000
+
 
 def _extract(
     section_text: str,
@@ -579,6 +607,35 @@ def extract_debt_footnote(
     Returns validated Covenant objects (may be empty). Ungrounded numbers are
     nulled; covenants without a verifiable quote are dropped.
     """
+    return _run_covenant_pass(
+        section_text, filing_label, client,
+        section_conf=section_conf, pass_mode=COVENANT_PASS_PRECISE,
+        section_label="Debt footnote", company_name=company_name,
+        period_end=period_end, filing_type=filing_type, max_chars=max_chars, model=model,
+    )
+
+
+def _run_covenant_pass(
+    section_text: str,
+    filing_label: str,
+    client: anthropic.Anthropic | None,
+    *,
+    section_conf: str,
+    pass_mode: str,
+    section_label: str,
+    company_name: str = "",
+    period_end: str = "",
+    filing_type: str = "10-K",
+    max_chars: int = MAX_SECTION_CHARS,
+    model: str = MODEL,
+) -> list[Covenant]:
+    """
+    Shared covenant LLM pass (Stage A and Stage B both delegate here, so the
+    call + validation + grounding logic cannot drift). Haiku, temperature=0,
+    the COVENANT_PROMPT.md template with the given `pass_mode` (PRECISE / RECALL).
+    Stamps `section_conf` onto every covenant; drops findings whose quote isn't
+    in the section excerpt (quote_in_text) — same grounding as before.
+    """
     excerpt = (section_text or "")[:max_chars]
     if not excerpt.strip():
         return []
@@ -591,9 +648,9 @@ def extract_debt_footnote(
         .replace("{COMPANY_NAME}", company_name or "(issuer)")
         .replace("{FILING_TYPE}", filing_type)
         .replace("{PERIOD_END}", period_end or "")
-        .replace("{SECTION_LABEL}", "Debt footnote")
+        .replace("{SECTION_LABEL}", section_label)
         .replace("{SECTION_CONFIDENCE}", section_conf)
-        .replace("{PASS_MODE}", COVENANT_PASS_PRECISE)
+        .replace("{PASS_MODE}", pass_mode)
         .replace("{SECTION_TEXT}", excerpt)
     )
     message = client.messages.create(
@@ -607,6 +664,149 @@ def extract_debt_footnote(
     raw = parse_json_array(message.content[0].text)
     out = [_validate_covenant(r, filing_label, section_conf) for r in raw]
     return [c for c in out if c is not None and quote_in_text(c.evidence_quote, excerpt)]
+
+
+def extract_covenants_broad(
+    section_text: str,
+    filing_label: str,
+    client: anthropic.Anthropic | None = None,
+    *,
+    section_label: str,
+    section_conf: str = "low",
+    company_name: str = "",
+    period_end: str = "",
+    filing_type: str = "10-K",
+    max_chars: int = _COV_RECALL_MAX_CHARS,
+    model: str = MODEL,
+) -> list[Covenant]:
+    """
+    Stage B (2c-ii): broad recall sweep for covenants hiding in MD&A / risk-factor
+    prose (team requirement #3 — covenants not in the debt footnote). RECALL pass
+    mode (leans aggressive), but the prompt requires a PRESENT contractual
+    requirement (not a hypothetical) and the grounding gates filter the rest.
+    Larger window than the footnote (_COV_RECALL_MAX_CHARS). Returns validated
+    Covenant objects (may be empty); the caller dedupes Stage A ∪ Stage B.
+    """
+    return _run_covenant_pass(
+        section_text, filing_label, client,
+        section_conf=section_conf, pass_mode=COVENANT_PASS_RECALL,
+        section_label=section_label, company_name=company_name,
+        period_end=period_end, filing_type=filing_type, max_chars=max_chars, model=model,
+    )
+
+
+# ── Stage A ∪ Stage B dedupe (2c-ii) ──────────────────────────────────────────
+_COV_MERGE_FIELDS = (
+    "threshold", "reported_actual", "ratio_name", "unit", "testing_frequency",
+    "is_springing", "springing_trigger", "step_down", "is_maintenance",
+    "covenant_subtype", "null_reason",
+)
+
+
+def _threshold_match(a: float | None, b: float | None) -> bool:
+    """Equal within rounding tolerance; both-null counts as equal."""
+    if a is None and b is None:
+        return True
+    if a is None or b is None:
+        return False
+    return abs(a - b) <= max(0.01, 0.01 * max(abs(a), abs(b)))
+
+
+def _quotes_overlap(q1: str, q2: str) -> bool:
+    """One evidence_quote contained in the other (normalized substring)."""
+    return quote_in_text(q1, q2) or quote_in_text(q2, q1)
+
+
+def _same_covenant(a: Covenant, b: Covenant) -> bool:
+    """Same covenant_type + direction AND (threshold within tol OR overlapping quote)."""
+    return (
+        a.covenant_type == b.covenant_type
+        and a.direction == b.direction
+        and (_threshold_match(a.threshold, b.threshold)
+             or _quotes_overlap(a.evidence_quote, b.evidence_quote))
+    )
+
+
+def _field_count(c: Covenant) -> int:
+    return sum(getattr(c, f) is not None for f in _COV_MERGE_FIELDS)
+
+
+def _primary(x: Covenant, y: Covenant, x_is_a: bool, y_is_a: bool) -> Covenant:
+    """Pick which finding to keep on a match (priority order, as approved)."""
+    xa, ya = x.reported_actual is not None, y.reported_actual is not None
+    if xa != ya:                                   # (1) reported_actual non-null
+        return x if xa else y
+    xc, yc = x.section_confidence == "high", y.section_confidence == "high"
+    if xc != yc:                                   # (2) higher section_confidence
+        return x if xc else y
+    xf, yf = _field_count(x), _field_count(y)
+    if xf != yf:                                   # (3) more populated fields
+        return x if xf > yf else y
+    if x_is_a != y_is_a:                           # (4) Stage A over Stage B
+        return x if x_is_a else y
+    return x
+
+
+def _merge_into(primary: Covenant, secondary: Covenant) -> None:
+    """Fill primary's null fields from secondary; union source; recompute cushion/near_limit."""
+    for f in _COV_MERGE_FIELDS:
+        if getattr(primary, f) is None and getattr(secondary, f) is not None:
+            setattr(primary, f, getattr(secondary, f))
+    # Union sources: split already-unioned strings on "; " first, then de-dup, so a
+    # source can't repeat across successive merges (avoids "Debt; MD&A; MD&A").
+    parts: list[str] = []
+    for s in (primary.source, secondary.source):
+        parts.extend(p.strip() for p in (s or "").split(";") if p.strip())
+    primary.source = "; ".join(dict.fromkeys(parts))          # union, order-preserving, de-duped
+    if secondary.section_confidence == "high":                 # keep the better confidence
+        primary.section_confidence = "high"
+    # Recompute derived fields AFTER the merge on the merged threshold/actual/direction.
+    primary.cushion, primary.cushion_pct = _derive_cushion(
+        primary.threshold, primary.reported_actual, primary.direction)
+    primary.near_limit = _derive_near_limit(primary.cushion, primary.cushion_pct)
+
+
+def _dedupe_covenants(stage_a: list[Covenant], stage_b: list[Covenant]) -> list[Covenant]:
+    """
+    Collapse Stage A ∪ Stage B (and any intra-stage dupes) to one row per covenant
+    (LLM_COVENANT §4). Matches merge into the higher-priority record (most complete),
+    sources unioned, cushion/near_limit recomputed. Stage-B-only findings are kept
+    as full covenants (not downgraded). Processing order: all Stage A first, then
+    Stage B, so a footnote (Stage A) record is the default primary on a tie.
+
+    KNOWN DEDUPE GAP (cosmetic, deliberately not fixed):
+      A Stage-A covenant with a disclosed threshold and a Stage-B *restatement* of
+      the SAME covenant with a null threshold and a differently-worded quote will
+      NOT merge — _same_covenant needs a threshold match OR a quote overlap, and a
+      null-vs-number threshold matches neither while different wording gives no
+      overlap. So the same covenant can surface as two rows (observed on Tuesday
+      Morning's secured-net-leverage test: Stage-A thr=8.0 + Stage-B thr=None).
+
+      This is COUNT-ONLY, with NO score impact: each row carries its own
+      code-derived near_limit, and a null-actual restatement is near_limit=False,
+      so it adds no covenant_proximity points. It is NOT fixed by loosening
+      _same_covenant to merge on covenant_type + direction alone, because that
+      would over-merge genuinely DISTINCT same-type covenants (e.g. a maintenance
+      leverage test and a separate incurrence leverage test) — silently dropping a
+      real covenant, which is worse than over-counting. The proper future fix, if
+      the count ever matters (e.g. a confusing dashboard), is a grounded-LLM
+      "do these two quotes describe the same single covenant?" judgment (the
+      term-vs-present-state architecture proven on going-concern), NOT a broader
+      lexical merge rule.
+    """
+    merged: list[list] = []   # each: [covenant, is_stage_a]
+    for c, is_a in ([(x, True) for x in stage_a] + [(y, False) for y in stage_b]):
+        hit = next((e for e in merged if _same_covenant(e[0], c)), None)
+        if hit is None:
+            merged.append([c, is_a])
+            continue
+        existing, existing_is_a = hit[0], hit[1]
+        prim = _primary(existing, c, existing_is_a, is_a)
+        sec = c if prim is existing else existing
+        _merge_into(prim, sec)
+        hit[0] = prim
+        hit[1] = existing_is_a if prim is existing else is_a
+    return [e[0] for e in merged]
 
 
 def extract_loss_provisions(
@@ -1006,11 +1206,25 @@ def review_filing(
         findings = review_text(
             sections["mdna"].text, f"10-K {period}, MD&A", client, source_url=doc_url
         )
+    # Covenants: Stage A (debt footnote, precise) ∪ Stage B (MD&A + risk-factors
+    # recall sweep, 2c-ii), deduped to one row per covenant. cushion/near_limit
+    # are recomputed in code after the merge (2c-i logic, unchanged).
+    covenants_a: list[Covenant] = []
     if sections["debt"] is not None:
-        covenants = extract_debt_footnote(
+        covenants_a = extract_debt_footnote(
             sections["debt"].text, f"10-K {period}, Debt", client,
             section_conf=section_confidence(sections["debt"]), period_end=period,
         )
+    covenants_b: list[Covenant] = []
+    for _key, _label in (("mdna", "MD&A"), ("risk_factors", "Risk Factors")):
+        _sec = sections.get(_key)
+        if _sec is not None:
+            covenants_b += extract_covenants_broad(
+                _sec.text, f"10-K {period}, {_label} (covenants)", client,
+                section_label=_label, section_conf=section_confidence(_sec),
+                period_end=period,
+            )
+    covenants = _dedupe_covenants(covenants_a, covenants_b)
     if sections["contingencies"] is not None:
         provisions = extract_loss_provisions(
             sections["contingencies"].text, f"10-K {period}, Contingencies", client
