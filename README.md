@@ -75,15 +75,12 @@ patterns of financial deterioration tended to precede an actual rating cut.
 
 **How it learned (the training data).** The model is taught from a consolidated history
 of **real agency ratings** — one cleaned "single source of truth" file
-(`data/agency_ratings.csv`) built by merging two datasets:
-
-- a broad cross-section (the Kaggle "corporate credit rating" set) that **adds S&P** and
-  some defaulted companies, and
-- a dense action-by-action history from LSEG covering **Moody's, Fitch, and Egan-Jones**.
+(`data/agency_ratings.csv`) built from a dense action-by-action history from LSEG covering
+**Moody's, Fitch, and Egan-Jones**.
 
 After cleaning, resolving company identifiers, and de-duplicating, this yields about
-**~1,790 unique companies and ~12,700 dated rating actions across four agencies**
-(Moody's, S&P, Fitch, Egan-Jones), spanning roughly **2010–2016**. For each of
+**~1,645 unique companies and ~10,950 dated rating actions across three agencies**
+(Moody's, Fitch, Egan-Jones), spanning **2003–2026**. For each of
 those companies the model's *inputs* are **not** taken from the rating file — they are
 **recomputed from the company's own SEC filings** (the same auditable XBRL ratios the
 stress score uses), so every input is traceable to a source document.
@@ -93,10 +90,10 @@ covers **US filers**. Foreign issuers and many ADRs in the raw data have no US 1
 are dropped — that is the main reason the *usable* universe is smaller than the raw data.
 
 **What it produces.** For every company-period it outputs three **calibrated
-probabilities** (downgrade / upgrade / default over 12 months) *plus the top financial
-drivers behind each number* (e.g. "rising leverage", "falling interest coverage"), so a
-prediction is never a black box. These land in the `migration_predictions` table, which
-the portfolio and issuer pages read.
+probabilities** (downgrade / upgrade / distress over 12 months — "distress" = a transition
+into the CCC+/default tail) *plus the top financial drivers behind each number* (e.g.
+"rising leverage", "falling interest coverage"), so a prediction is never a black box.
+These land in the `migration_predictions` table, which the portfolio and issuer pages read.
 
 #### The pipeline
 
@@ -104,12 +101,12 @@ It never runs in the API hot path — it trains on a schedule (local / CI / cron
 persists its outputs, which the app then reads:
 
 ```
-data/agency_ratings.csv  (consolidated real ratings: Moody's/S&P/Fitch/Egan-Jones)
+data/agency_ratings.csv  (consolidated real ratings: Moody's/Fitch/Egan-Jones)
    → load_agency_ratings  (the single source of truth → agency_ratings table)
-   → track                (each company's SEC filings → auditable XBRL ratio features)
+   → track_universe       (each company's SEC filings → auditable XBRL ratio features)
    → build_labels         (period_end + the next rating event → a lookahead-free label)
    → train                (one active model on all history + walk-forward "vintages")
-   → predict              (calibrated P(up/down/default) + drivers → migration_predictions)
+   → predict              (calibrated P(up/down/distress) + drivers → migration_predictions)
    → evaluate             (out-of-time scorecard → data/migration_eval.json)
 ```
 
@@ -222,27 +219,29 @@ The **Backtest page** (`/backtest`) also lets you do this without the CLI:
 ### Rating-migration model (training & prediction)
 
 The training labels come from one consolidated **source-of-truth** rating file,
-`data/agency_ratings.csv` (~1,790 US companies, ~12,700 rating actions, four agencies
-incl. S&P). Rebuild that file only when the underlying rating data changes:
+`data/agency_ratings.csv` (~1,645 US issuers, ~10,950 rating actions, three agencies —
+Moody's, Fitch, Egan-Jones). This file is **committed**; the raw LSEG drop it was built
+from is no longer in the repo, so `scripts.build_agency_ratings_csv` is only for a fresh
+LSEG re-drop. Normal retrains start from the committed CSV:
 
 ```bash
-# (Re)build the single source of truth from the raw rating drops. One-time / on refresh.
-# Resolves company identifiers against EDGAR and prints a usable-issuer scorecard.
+# (Re)build the source of truth — ONLY when a new raw LSEG drop is added. Resolves company
+# identifiers against EDGAR and prints a usable-issuer scorecard.
 python3 -m scripts.build_agency_ratings_csv          # → data/agency_ratings.csv
 ```
 
-Then run the model pipeline (needs Supabase creds + EDGAR network):
+Then run the model pipeline (needs Supabase creds + EDGAR network). `load_agency_ratings`
+and `build_labels` clear-then-write by default, so each table mirrors the current source —
+`reset_training_tables` is optional:
 
 ```bash
-# Optional clean slate: wipe the previous run's labels/predictions before retraining.
-python3 -m scripts.reset_training_tables             # see DEPLOY.md (destructive)
-
-python3 -m scripts.load_agency_ratings      # source-of-truth CSV → agency_ratings
-python3 -m src.track <TICKER>               # each company's SEC filings → ratio features
-python3 -m scripts.build_labels             # period_end + next event → rating_labels
-python3 -m src.model.train --split-date 2015-01-01   # active model + vintages → data/
-python3 -m src.model.predict                # calibrated P(up/down/default) → migration_predictions
-python3 -m src.model.evaluate               # out-of-time scorecard → data/migration_eval.json
+python3 -m scripts.load_agency_ratings      # source-of-truth CSV → agency_ratings (replaces)
+python3 -m scripts.track_universe           # each company's SEC filings → ratio features
+#   └ add --distressed-only to track just the issuers that hit the CCC+/default tail first
+python3 -m scripts.build_labels             # period_end + next event → rating_labels (replaces)
+python3 -m src.model.train --split-date 2022-12-31   # active model + vintages → data/
+python3 -m src.model.predict                # calibrated P(up/down/distress) → migration_predictions
+python3 -m src.model.evaluate --splits 2018-12-31,2020-12-31,2022-12-31   # scorecard → data/migration_eval.json
 ```
 
 Tracking each company is the slow step (SEC EDGAR is throttled to 8 requests/second and
@@ -252,11 +251,12 @@ design — see Deployment for the optional cron trigger.
 
 ### Data files (`data/`)
 
-Committed (inputs / reference): `cases.csv` (backtest roster seed), `backtest_baseline.json`
-(frozen regression reference), and `model_vintages/` + `migration_eval.json` (read by the
-`/backtest` page). Everything else under `data/` is generated and gitignored — the local
-`store.db`, backtest run outputs, the trained `migration_model.joblib`, and the licensed
-LSEG drops (`ratings_history_raw.csv`, `universe_xref.csv`).
+Committed (inputs / reference): `agency_ratings.csv` (consolidated source-of-truth ratings),
+`cases.csv` (backtest roster seed), `backtest_baseline.json` (frozen regression reference),
+and `model_vintages/` + `migration_eval.json` (read by the `/backtest` page). Everything
+else under `data/` is generated and gitignored — the local `store.db`, backtest run
+outputs, the trained `migration_model.joblib`, and the licensed LSEG crosswalk
+(`universe_xref.csv`).
 
 ### Tests
 

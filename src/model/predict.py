@@ -80,9 +80,11 @@ def predict_rows(bundle: dict[str, Any], df, *, top_n: int = 5) -> list[dict]:
     period has multiple agency rows, the probabilities are averaged and the drivers
     taken from the representative (first) row.
     """
+    import logging
     import numpy as np
     import pandas as pd
 
+    log = logging.getLogger("model.predict")
     version = bundle.get("version", "")
     out: list[dict] = []
     for (cik, period_end), grp in df.groupby(["cik", "period_end"], sort=False):
@@ -99,6 +101,9 @@ def predict_rows(bundle: dict[str, Any], df, *, top_n: int = 5) -> list[dict]:
             "model_version": version,
         }
         out.append(row)
+        if len(out) % 2000 == 0:
+            log.info("  scored %d issuer-periods...", len(out))
+    log.info("  scored %d issuer-periods", len(out))
     return out
 
 
@@ -115,6 +120,10 @@ def predict_and_store(bundle: dict[str, Any], df) -> int:
 
 if __name__ == "__main__":
     import argparse
+    import logging
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(message)s", datefmt="%H:%M:%S")
+    cli_log = logging.getLogger("model.predict")
 
     parser = argparse.ArgumentParser(description="Predict rating migrations + store them")
     parser.add_argument("--model", default="data/migration_model.joblib", help="joblib artifact")
@@ -123,13 +132,16 @@ if __name__ == "__main__":
                         help="upsert without clearing migration_predictions first (keeps stale rows)")
     args = parser.parse_args()
 
+    cli_log.info("Loading model %s...", args.model)
     bundle = load_model(args.model)
     if args.matrix:
         import pandas as pd
         df = pd.read_csv(args.matrix, dtype={"cik": str, "period_end": str, "agency": str})
     else:
         from src.model.features import load_training_matrix
+        cli_log.info("Assembling feature matrix from Supabase...")
         df = load_training_matrix()
+    cli_log.info("Matrix: %d rows", len(df))
 
     if not args.no_replace:
         from src.store import clear_migration_predictions

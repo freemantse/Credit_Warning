@@ -94,9 +94,23 @@ def main() -> None:
                     help="upsert without clearing rating_labels first (keeps stale rows)")
     args = ap.parse_args()
 
+    import time
+
+    print("Reading agency ratings from Supabase...", flush=True)
+    t = time.perf_counter()
     agency_grouped = get_agency_ratings_grouped()
+    n_events = sum(len(rows) for by in agency_grouped.values() for rows in by.values())
+    print(f"  {n_events} events / {len(agency_grouped)} issuers ({time.perf_counter() - t:.1f}s)", flush=True)
+
+    print("Reading tracked financial periods (ratios)...", flush=True)
+    t = time.perf_counter()
     ratios_grouped = get_ratios_grouped()
+    print(f"  {len(ratios_grouped)} tracked issuers ({time.perf_counter() - t:.1f}s)", flush=True)
+
+    print("Computing lookahead-free labels...", flush=True)
+    t = time.perf_counter()
     labels = compute_labels(agency_grouped, ratios_grouped)
+    print(f"  built {len(labels)} label rows ({time.perf_counter() - t:.1f}s)", flush=True)
 
     if not labels:
         print("No labels built — load agency ratings (scripts.load_agency_ratings) and "
@@ -104,10 +118,14 @@ def main() -> None:
         return
 
     if not args.no_replace:
+        print("Clearing rating_labels (replace mode)...", flush=True)
         clear_rating_labels()
-        print("Cleared rating_labels (replace mode) — table will mirror this build.")
 
-    save_rating_labels_bulk(labels)
+    # Chunk the upsert (a single ~30k-row request can exceed payload limits) and show progress.
+    BATCH = 500
+    for i in range(0, len(labels), BATCH):
+        save_rating_labels_bulk(labels[i:i + BATCH])
+        print(f"  saved {min(i + BATCH, len(labels))}/{len(labels)}", flush=True)
 
     observed = sum(1 for r in labels if r.get("label_12m") is not None)
     downgrades = sum(1 for r in labels if r.get("label_12m") == 1)

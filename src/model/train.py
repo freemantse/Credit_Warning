@@ -105,10 +105,14 @@ def train_all(
       out-of-time (test) PR-AUC/recall/calibration for the model AND the baseline.
     A head with a single class in its fit data is recorded as 'insufficient' and skipped.
     """
+    import logging
     import numpy as np
 
+    log = logging.getLogger("model.train")
     train_df, test_df = time_split(df, split_date)
     fit_df, cal_df = recent_holdout(train_df, calibration_frac)
+    log.info("Training %d heads | split=%s | train=%d test=%d rows",
+             len(HEADS), split_date, len(train_df), len(test_df))
 
     # Per-feature medians (head-independent — X is identical across heads) for attribution.
     X_for_medians, _, _ = make_xy(train_df, "downgrade")
@@ -134,9 +138,11 @@ def train_all(
         X_all, y_all, _ = make_xy(train_df, head)   # full train for the baseline
         if y_fit.nunique() < 2:
             metrics["heads"][head] = {"status": "insufficient", "positives": int(y_fit.sum())}
+            log.info("  head '%s': insufficient (%d positives) — skipped", head, int(y_fit.sum()))
             continue
 
         early_stop = _can_early_stop(y_fit)
+        log.info("  head '%s': fitting (%d positives, early_stop=%s)...", head, int(y_fit.sum()), early_stop)
         booster = _build_booster(
             monotone_constraints(head), random_state, early_stopping=early_stop,
         ).fit(X_fit, y_fit)
@@ -160,6 +166,7 @@ def train_all(
             "calibrated": calibrated is not None,
         }
         metrics["heads"][head] = head_metrics
+        log.info("  head '%s': done (calibrated=%s)", head, calibrated is not None)
 
     return bundle, metrics
 
@@ -275,7 +282,11 @@ def _load_matrix(matrix_csv: str | None):
 
 if __name__ == "__main__":
     import json
+    import logging
     from datetime import datetime, timezone
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(message)s", datefmt="%H:%M:%S")
+    cli_log = logging.getLogger("model.train")
 
     parser = argparse.ArgumentParser(description="Train the rating-migration model")
     parser.add_argument("--split-date", required=True, help="walk-forward cutoff, YYYY-MM-DD")
@@ -286,7 +297,9 @@ if __name__ == "__main__":
                         help="skip persisting the model-learned stress-score weights")
     args = parser.parse_args()
 
+    cli_log.info("Loading training matrix%s...", "" if args.matrix is None else f" from {args.matrix}")
     df = _load_matrix(args.matrix)
+    cli_log.info("Matrix: %d rows / %d issuers", len(df), df["cik"].nunique() if len(df) else 0)
     version = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     bundle, metrics = train_all(df, args.split_date, version=version)
     path = save_model(bundle, args.out)

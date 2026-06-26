@@ -2,9 +2,9 @@
 Seed the `agency_ratings` table from the canonical source-of-truth CSV
 (``data/agency_ratings.csv``, built by scripts.build_agency_ratings_csv).
 
-This REPLACES the old two-file ingestion in scripts.seed_agency_ratings: CIKs and
-rating indices are already resolved/normalised in the canonical CSV, so this is a thin
-read-and-upsert. Rows are projected to the agency_ratings columns by
+This is the single agency-ratings ingestion path: CIKs and rating indices are already
+resolved/normalised in the canonical CSV (built by scripts.build_agency_ratings_csv), so
+this is a thin read-and-upsert. Rows are projected to the agency_ratings columns by
 store.save_agency_ratings_bulk (one row per cik + agency + effective_date), which is
 idempotent on its primary key.
 

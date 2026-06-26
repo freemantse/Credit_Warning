@@ -15,9 +15,9 @@ Progress is printed per company (ok / skip / fail) with a running tally, so you 
 watch it live (foreground) or `tail -f` a log (background).
 
 Usage:
-    python3 -m scripts.track_universe                 # track all not-yet-tracked
-    python3 -m scripts.track_universe --limit 150     # pilot: first N untracked
-    python3 -m scripts.track_universe --retry-failed   # also re-attempt prior failures
+    python3 -m scripts.track_universe                   # track all not-yet-tracked
+    python3 -m scripts.track_universe --limit 150       # pilot: first N untracked
+    python3 -m scripts.track_universe --distressed-only # only issuers that hit distress
 """
 
 from __future__ import annotations
@@ -44,15 +44,49 @@ def _universe() -> list[tuple[str, str | None]]:
     return sorted(seen.items())
 
 
+def _distressed_ciks() -> set[str]:
+    """CIKs whose canonical-CSV history contains a TRANSITION into the distress tail — an
+    event reaching index ≥ DISTRESS_INDEX (CCC+) or a default, from a non-distressed prior
+    rating in the same (cik, agency) series. These are the issuers that produce the model's
+    distress-head positives, so tracking them first maximises distress signal per EDGAR
+    fetch. Mirrors the distress_12m rule in src.ratings.labels.build_rating_labels."""
+    import pandas as pd
+    from src.ratings.scale import DISTRESS_INDEX, STATUS_DEFAULT
+
+    df = load_csv(CANONICAL_CSV)
+    df["cik"] = df["cik"].astype(str).str.zfill(10)
+    df["_idx"] = pd.to_numeric(df["rating_index"], errors="coerce")
+    out: set[str] = set()
+    for (cik, _agency), g in df.sort_values("effective_date").groupby(["cik", "agency"]):
+        prev_distress = False
+        for _, r in g.iterrows():
+            d = r["rating_status"] == STATUS_DEFAULT or (
+                pd.notna(r["_idx"]) and r["_idx"] >= DISTRESS_INDEX
+            )
+            if d and not prev_distress:
+                out.add(cik)
+            prev_distress = d
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--limit", type=int, default=None, help="track only the first N untracked (pilot)")
+    ap.add_argument("--distressed-only", action="store_true",
+                    help="restrict to issuers whose history hits the distress tail (CCC+/default) — "
+                         "maximises distress-head signal per EDGAR fetch")
     args = ap.parse_args()
 
     if not CANONICAL_CSV.exists():
         raise SystemExit(f"Missing {CANONICAL_CSV} — run scripts.build_agency_ratings_csv first.")
 
+    print("Loading canonical universe from CSV...", flush=True)
     universe = _universe()
+    if args.distressed_only:
+        distressed = _distressed_ciks()
+        universe = [(cik, tkr) for cik, tkr in universe if cik in distressed]
+        print(f"Distressed-only mode: {len(universe)} issuers with a distress transition.", flush=True)
+    print("Loading already-tracked issuers from Supabase (skip-set)...", flush=True)
     already = set(get_ratios_grouped().keys())   # CIKs that already have ratios → skip
     pending = [(cik, tkr) for cik, tkr in universe if cik not in already]
     if args.limit is not None:

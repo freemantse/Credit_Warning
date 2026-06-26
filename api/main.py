@@ -85,6 +85,7 @@ from src.store import (
     save_maturities_bulk,
     save_ratios_bulk,
     save_score_config,
+    set_portfolio,
     touch_last_refreshed,
 )
 
@@ -330,7 +331,9 @@ def list_issuers():
     """
     # Fetch identity, all ratios, and all findings in a fixed handful of queries
     # (instead of ~3 per issuer). Grouped dicts are keyed by cik → period → ….
-    issuers = get_issuers()
+    # portfolio_only: the dashboard shows the curated watchlist, NOT every issuer
+    # tracked solely to train the model (those stay in_portfolio=FALSE).
+    issuers = get_issuers(portfolio_only=True)
     ratios_by_cik = get_ratios_grouped()       # 1 query for every issuer's ratios
     findings_by_cik = get_findings_grouped()   # 1 query for every issuer's findings
     maturities_by_cik = get_maturities_grouped()       # 1 query for every issuer's maturities
@@ -598,8 +601,14 @@ def track_issuer(req: TrackRequest):
     Optionally runs an LLM qualitative review of the 10-K MD&A text for each
     period if no_llm=False (slow; disabled by default in the UI). Thin wrapper
     around _track_one, which is also used by the auto-refresh cron.
+
+    Tracking via this route is an explicit user action, so the issuer joins the
+    curated portfolio (in_portfolio=TRUE) — unlike batch training-only tracking
+    (scripts.track_universe), which leaves it FALSE and out of the dashboard.
     """
-    return _track_one(req.ticker, no_llm=req.no_llm, periods=req.periods)
+    result = _track_one(req.ticker, no_llm=req.no_llm, periods=req.periods)
+    set_portfolio(result["cik"], True)
+    return result
 
 
 # Number of seconds into the run after which the cron stops *starting* new

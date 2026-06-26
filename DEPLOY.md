@@ -76,13 +76,13 @@ python3 -m pytest
 ## The rating-migration ML model (what it is, in brief)
 
 A supervised model that predicts the **direction of a company's next credit-rating
-change over 12 months** — P(downgrade), P(upgrade), P(default) — as a second opinion to
-the rule-based stress score.
+change over 12 months** — P(downgrade), P(upgrade), P(distress) — as a second opinion to
+the rule-based stress score. ("distress" = a transition into the CCC+/default tail.)
 
 - **Training labels:** one consolidated source-of-truth file, `data/agency_ratings.csv`
-  — **~1,790 US companies, ~12,750 real rating actions, four agencies** (Moody's, S&P,
-  Fitch, Egan-Jones), ~2010–2016, built by `scripts.build_agency_ratings_csv` from
-  the Kaggle + LSEG rating drops (deduped on `cik, agency, effective_date`).
+  — **~1,645 US issuers, ~10,950 real rating actions, three agencies** (Moody's, Fitch,
+  Egan-Jones), 2003–2026, built by `scripts.build_agency_ratings_csv` from the LSEG rating
+  drop (deduped on `cik, agency, effective_date`).
 - **Inputs (features):** recomputed from each company's **SEC EDGAR XBRL** filings (the
   same auditable ratios as the stress score) — **US filers only**; foreign issuers/ADRs
   are dropped.
@@ -121,9 +121,9 @@ python3 -m scripts.reset_training_tables --yes
 
 # 3. Load labels, build features (slow: EDGAR is throttled 8 req/s, disk-cached), train.
 python3 -m scripts.load_agency_ratings
-python3 -m src.track <TICKER>            # repeated per company (or batch)
+python3 -m scripts.track_universe        # full universe (or --distressed-only for the CCC+/default names)
 python3 -m scripts.build_labels
-python3 -m src.model.train --split-date 2015-01-01
+python3 -m src.model.train --split-date 2022-12-31
 python3 -m src.model.predict
 python3 -m src.model.evaluate
 ```

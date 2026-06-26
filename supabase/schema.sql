@@ -58,7 +58,12 @@ CREATE TABLE IF NOT EXISTS companies (
   lseg_permid   TEXT,                              -- LSEG PermID resolved to this CIK
   lseg_ric      TEXT,                              -- LSEG RIC resolved to this CIK
   sic           TEXT,                              -- SIC industry code (industry-risk input for the business-risk proxy)
-  sic_description TEXT                             -- human-readable SIC label, e.g. "Electric Services"
+  sic_description TEXT,                            -- human-readable SIC label, e.g. "Electric Services"
+  -- Curated-watchlist membership: the dashboard (/api/issuers) shows ONLY in_portfolio
+  -- rows. Tracking an issuer for model TRAINING writes ratios/labels but leaves this
+  -- FALSE, so the full universe can be trained on without cluttering the portfolio.
+  -- Set TRUE by an explicit add (POST /api/track or scripts.portfolio).
+  in_portfolio  BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 -- Additive migrations for projects created before these columns existed.
@@ -69,6 +74,7 @@ ALTER TABLE companies ADD COLUMN IF NOT EXISTS lseg_permid    TEXT;
 ALTER TABLE companies ADD COLUMN IF NOT EXISTS lseg_ric       TEXT;
 ALTER TABLE companies ADD COLUMN IF NOT EXISTS sic            TEXT;
 ALTER TABLE companies ADD COLUMN IF NOT EXISTS sic_description TEXT;
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS in_portfolio   BOOLEAN NOT NULL DEFAULT FALSE;
 
 
 -- ── ratios ───────────────────────────────────────────────────────────────────

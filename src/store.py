@@ -836,21 +836,25 @@ def save_bond_instruments(
 
 # ── Read operations ──────────────────────────────────────────────────────────
 
-def get_issuers(**_) -> list[dict[str, Any]]:
+def get_issuers(portfolio_only: bool = False, **_) -> list[dict[str, Any]]:
     """
-    Return one identity row per tracked company (all rows in the companies table).
+    Return one identity row per tracked company.
 
     Each row is {cik, name, ticker, last_refreshed, sic} where `ticker` is the
     first current ticker (or "" if unknown), `last_refreshed` is when the issuer
     was last re-tracked from EDGAR (None = never), and `sic` is the industry code
     (used to flag unrated financial-sector issuers). Querying companies directly —
     rather than deriving CIKs from the ratios table — ensures issuers whose ratio
-    extraction failed (e.g. banks with non-standard XBRL) are still visible in
-    the portfolio list.
+    extraction failed (e.g. banks with non-standard XBRL) are still visible.
+
+    `portfolio_only=True` restricts to the curated watchlist (in_portfolio = TRUE) —
+    used by the dashboard so issuers tracked solely to TRAIN the model don't appear.
+    The default (all tracked) is what the refresh cron and model pipeline want.
     """
-    res = _client().table("companies").select(
-        "cik, name, tickers, last_refreshed, sic"
-    ).execute()
+    q = _client().table("companies").select("cik, name, tickers, last_refreshed, sic")
+    if portfolio_only:
+        q = q.eq("in_portfolio", True)
+    res = q.execute()
     issuers = []
     for row in sorted(res.data, key=lambda r: r["cik"]):
         tickers = row.get("tickers") or []
@@ -862,6 +866,23 @@ def get_issuers(**_) -> list[dict[str, Any]]:
             "sic": row.get("sic"),
         })
     return issuers
+
+
+def set_portfolio(cik: str, member: bool = True, **_) -> bool:
+    """
+    Flip companies.in_portfolio for one issuer (the curated-watchlist flag the
+    dashboard filters on). Returns True if a row was updated, False if the CIK
+    isn't tracked yet (track it first — features must exist to score it). Keyed on
+    the permanent CIK; never touches ratios/labels, so training is unaffected.
+    """
+    res = (
+        _client()
+        .table("companies")
+        .update({"in_portfolio": bool(member)})
+        .eq("cik", cik.zfill(10))
+        .execute()
+    )
+    return bool(res.data)
 
 
 def touch_last_refreshed(cik: str, **_) -> None:
