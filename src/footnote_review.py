@@ -32,6 +32,17 @@ from src.llm_review import (
 
 logger = logging.getLogger(__name__)
 
+# Default number of most-recent annual periods to run the LLM passes over (single
+# source of truth, imported by track.py and api/main.py). The LLM findings are
+# present-state signals, so deep history adds little; full history stays the job
+# of the free, deterministic ratio extraction (which feeds the migration
+# detector's trajectory). The full history is ~15 filings (~7 min) — far past the
+# 60 s Vercel function limit — so capping to the most recent few keeps a track
+# fast and focuses the LLM where credit concerns are most actionable. The
+# dashboard "add period" button requests more via the dedicated on-demand
+# llm-review endpoint, which accepts its own `periods` count.
+LLM_DEFAULT_PERIODS = 3
+
 # Same fast/cheap model used for the qualitative review — structured extraction
 # from a focused excerpt is well within Haiku's capability.
 MODEL = "claude-haiku-4-5-20251001"

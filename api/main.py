@@ -27,7 +27,7 @@ from typing import Any
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # Load .env.local (Next.js convention) so the Python API sees the same
 # SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY / ANTHROPIC_API_KEY as the frontend.
@@ -332,8 +332,12 @@ def track_issuer(req: TrackRequest):
     # contingencies / auditor / risk-factors / going-concern sections, and runs
     # the four LLM passes on the located slices only.
     if not req.no_llm:
+        # LLM passes are present-state, so hard-cap to the most-recent periods
+        # (ratios above already cover full history). `periods` is newest-first.
+        # On-demand deeper review is served by the dedicated llm-review endpoint.
+        from src.footnote_review import LLM_DEFAULT_PERIODS
         filings = get_filings(cik, ["10-K"])
-        for period in periods:
+        for period in periods[:LLM_DEFAULT_PERIODS]:
             try:
                 from src.footnote_review import review_filing
                 # 5th element = orphan breach/waiver findings (breach disclosed,
@@ -459,16 +463,24 @@ def remove_issuer(ticker: str):
 # process (true on Vercel and locally) — move to Redis/Supabase if scaled out.
 _llm_review_status: dict[str, dict[str, Any]] = {}
 
-# Default number of most-recent annual periods to review. The full history is
-# ~15 filings (~7 min) — far past the 60 s Vercel function limit — so we cap to
-# the most recent few, which is where credit concerns are most actionable.
-_LLM_REVIEW_DEFAULT_PERIODS = 3
+def _llm_default_periods() -> int:
+    """
+    Lazy accessor for the shared LLM period cap
+    (src.footnote_review.LLM_DEFAULT_PERIODS — single source of truth). Imported
+    lazily so importing api.main stays free of the anthropic/HTTP stack, matching
+    the deferred `review_filing` imports below (keeps the LLM stack out of server
+    start / serverless cold-start). The full history is ~15 filings (~7 min) — far
+    past the 60 s Vercel function limit — so the LLM caps to the most recent few.
+    """
+    from src.footnote_review import LLM_DEFAULT_PERIODS
+    return LLM_DEFAULT_PERIODS
 
 
 class LlmReviewRequest(BaseModel):
-    # How many most-recent annual periods to review. None = all stored periods
+    # How many most-recent annual periods to review. Omitted → LLM_DEFAULT_PERIODS
+    # (via default_factory, resolved lazily). Explicit null = all stored periods
     # (slow; only safe on a long-lived local server, not Vercel's 60 s limit).
-    periods: int | None = _LLM_REVIEW_DEFAULT_PERIODS
+    periods: int | None = Field(default_factory=_llm_default_periods)
 
 
 def _run_llm_review_task(cik: str, periods: list[str]) -> None:

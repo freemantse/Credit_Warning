@@ -130,17 +130,27 @@ def _display_table(
 
 # ── Main tracking function ───────────────────────────────────────────────────
 
-def track(ticker: str, n_periods: int | None = None, include_llm: bool = True) -> None:
+def track(
+    ticker: str,
+    n_periods: int | None = None,
+    include_llm: bool = True,
+    llm_periods: int | None = None,
+) -> None:
     """
     Fetch, extract, store, and display credit ratios for a ticker.
 
     Args:
         ticker:      Stock ticker symbol (case-insensitive).
-        n_periods:   Number of most recent annual periods to process.
+        n_periods:   Number of most recent annual periods to process for RATIOS.
                      None (the default) processes the full available history
                      (~15 years — XBRL data only goes back to ~2009).
-        include_llm: If True, attempt an LLM qualitative review for each period.
-                     Set False (--no-llm) to skip and run faster.
+        include_llm: If True, attempt an LLM qualitative review. Set False
+                     (--no-llm) to skip and run faster.
+        llm_periods: Number of most-recent periods to run the LLM passes over
+                     (--llm-periods). None resolves to LLM_DEFAULT_PERIODS. Ratios
+                     always cover the full n_periods history; only the LLM is
+                     capped, because its findings are present-state signals while
+                     ratios feed the migration detector's deep-history trajectory.
     """
     ticker = ticker.upper()
     print(f"Tracking {ticker}...")
@@ -183,6 +193,16 @@ def track(ticker: str, n_periods: int | None = None, include_llm: bool = True) -
     }
     save_maturities_bulk(cik, maturities_by_period)
 
+    # The LLM passes are present-state signals, so cap them to the most-recent
+    # periods (ratios above already cover the full history for the migration
+    # detector). `periods` is newest-first, so periods[:llm_n] is the latest few.
+    # Lazy import keeps `import src.track` free of the anthropic/HTTP stack.
+    llm_period_set: set[str] = set()
+    if include_llm:
+        from src.footnote_review import LLM_DEFAULT_PERIODS
+        llm_n = LLM_DEFAULT_PERIODS if llm_periods is None else llm_periods
+        llm_period_set = set(periods[:llm_n])
+
     for period in periods:
 
         results = results_by_period[period]
@@ -192,7 +212,7 @@ def track(ticker: str, n_periods: int | None = None, include_llm: bool = True) -
         covenants = []
         provisions = []
         going_concern = []
-        if include_llm:
+        if include_llm and period in llm_period_set:
             try:
                 # Step 4c: Review the period's 10-K. review_filing fetches the
                 # filing once, locates the MD&A / debt / contingencies / auditor /
@@ -252,6 +272,16 @@ if __name__ == "__main__":
         "--periods", type=int, default=None,
         help="Number of most recent annual periods to show (default: full history)"
     )
+    parser.add_argument(
+        "--llm-periods", type=int, default=None,
+        help="Number of most-recent periods to run the LLM passes over "
+             "(default: LLM_DEFAULT_PERIODS). Ratios always cover full history."
+    )
     args = parser.parse_args()
 
-    track(args.ticker, n_periods=args.periods, include_llm=not args.no_llm)
+    track(
+        args.ticker,
+        n_periods=args.periods,
+        include_llm=not args.no_llm,
+        llm_periods=args.llm_periods,
+    )
