@@ -200,11 +200,20 @@ def get_cik(ticker: str) -> str:
     Raises:
         ValueError — if neither lookup finds the ticker.
     """
+    ticker_upper = ticker.strip().upper()
+    # Reject blank/placeholder tickers up front. Without this, a pandas "nan" string
+    # would match the real SEC ticker NAN (Nuveen NY Quality Municipal Income Fund) and
+    # silently resolve to the wrong company. Callers should pass a CIK in this case.
+    if not ticker_upper or ticker_upper in {"NAN", "NONE", "<NA>"}:
+        raise ValueError(
+            f"Refusing to resolve blank/placeholder ticker {ticker!r}; "
+            f"pass the company's CIK instead."
+        )
+
     data = _get(
         "https://www.sec.gov/files/company_tickers.json",
         "company_tickers",  # cached as company_tickers.json
     )
-    ticker_upper = ticker.upper()
 
     for entry in data.values():
         if entry.get("ticker", "").upper() == ticker_upper:

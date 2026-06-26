@@ -40,7 +40,12 @@ def _universe() -> list[tuple[str, str | None]]:
         cik = str(r["cik"]).zfill(10)
         if cik not in seen:
             tkr = r.get("ticker")
-            seen[cik] = str(tkr).strip() if tkr is not None and str(tkr).strip() else None
+            tkr_str = str(tkr).strip() if tkr is not None else ""
+            # Treat pandas placeholders ("nan"/"none"/"<na>") as empty, otherwise the
+            # literal "nan" collides with the real SEC ticker NAN (a Nuveen fund) and
+            # mis-resolves every blank-ticker row to CIK 0001074769. Falling back to None
+            # makes `ident = tkr or cik` use the row's own (correct) CIK instead.
+            seen[cik] = tkr_str if tkr_str and tkr_str.lower() not in {"nan", "none", "<na>"} else None
     return sorted(seen.items())
 
 

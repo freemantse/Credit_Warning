@@ -1,0 +1,666 @@
+Loading canonical universe from CSV...
+Loading already-tracked issuers from Supabase (skip-set)...
+Universe: 1645 issuers | already tracked: 1585 | to track now: 81
+Tracking BCV...
+  CIK: 0000009521
+  No annual periods found in XBRL data.
+[1/81] BCV      ok   (ok=1 fail=0)
+Tracking AILLP...
+  CIK: 0000018654
+[2/81] AILLP    FAIL   (ok=1 fail=1)
+Tracking CRD.B...
+[3/81] CRD.B    FAIL   (ok=1 fail=2)
+Tracking GAM...
+  CIK: 0000040417
+[4/81] GAM      FAIL   (ok=1 fail=3)
+Tracking MOG.A...
+[5/81] MOG.A    FAIL   (ok=1 fail=4)
+Tracking SOCGP...
+  CIK: 0000092108
+  No annual periods found in XBRL data.
+[6/81] SOCGP    ok   (ok=2 fail=4)
+Tracking UELMO...
+  CIK: 0000100826
+  No annual periods found in XBRL data.
+[7/81] UELMO    ok   (ok=3 fail=4)
+Tracking CMS PR B...
+[8/81] CMS PR B FAIL   (ok=3 fail=5)
+Tracking TRCY...
+[9/81] TRCY     FAIL   (ok=3 fail=6)
+Tracking EXCE...
+[10/81] EXCE     FAIL   (ok=3 fail=7)
+Tracking 0000351834...
+  CIK: 0000351834
+  Extracting ratios for 16 periods...
+
+==========================================================================================
+  0000351834 — Credit Ratio Summary
+==========================================================================================
+Period          Leverage  Coverage   FCF ($M)  Liquidity  Score  Alerts
+------------------------------------------------------------------------------------------
+2026-01-03          3.16      3.76       21.2       0.01     27  EBITDA margin 10% weak (0/14 pts); Leverage 3.2× elevated (1/17 pts); Interest coverage 3.8× thin (1/14 pts); Liquidity 0.01× thin (9/9 pts); Cash flow to debt 17% weak (9/15 pts); Debt to assets 41% elevated (0/9 pts); Maturity wall: 98% of debt due within 3 years (6/6 pts)
+2024-12-28          5.06      2.09       18.1      N/A       32  EBITDA margin 7% weak (3/14 pts); Leverage 5.1× elevated (12/17 pts); Interest coverage 2.1× thin (9/14 pts); Cash flow to debt 19% weak (8/15 pts); Maturity wall: 35% of debt due within 3 years (1/6 pts)
+2023-12-30          6.69      1.46      -31.3       0.01     63  EBITDA margin 6% weak (4/14 pts); Leverage 6.7× elevated (17/17 pts); Interest coverage 1.5× thin (12/14 pts); Free cash flow negative (-31,281,000, -5% margin, 5/10 pts); Liquidity 0.01× thin (9/9 pts); Cash flow to debt 5% weak (15/15 pts); Debt to assets 43% elevated (1/9 pts); Maturity wall: 32% of debt due within 3 years (0/6 pts); Distress escalation: 4 core signals severe (leverage>5x, coverage<2x, cash_flow_to_debt<30%, liquidity<1x) — score floored at 60 *** STRESS ***
+2022-12-31          7.59      2.75      -68.1       0.02     60  EBITDA margin 4% weak (5/14 pts); Leverage 7.6× elevated (17/17 pts); Interest coverage 2.8× thin (6/14 pts); Free cash flow negative (-68,051,000, -7% margin, 7/10 pts); Liquidity 0.02× thin (9/9 pts); Cash flow to debt 17% weak (9/15 pts); Debt to assets 41% elevated (0/9 pts); Maturity wall: 91% of debt due within 3 years (6/6 pts) *** STRESS ***
+2022-01-01          6.25      4.09      -79.7       0.02     60  EBITDA margin 4% weak (5/14 pts); Leverage 6.3× elevated (17/17 pts); Free cash flow negative (-79,729,000, -10% margin, 10/10 pts); Liquidity 0.02× thin (9/9 pts); Cash flow to debt -9% weak (15/15 pts); Distress escalation: 4 core signals severe (leverage>5x, cash_flow_to_debt<30%, fcf_negative, liquidity<1x) — score floored at 60 *** STRESS ***
+2021-01-02          3.61      0.64       66.9       0.07     34  EBITDA margin 2% weak (7/14 pts); Leverage 3.6× elevated (4/17 pts); Interest coverage 0.6× thin (14/14 pts); Liquidity 0.07× thin (9/9 pts)
+2019-12-28          3.42      2.05      -23.0       0.01     52  EBITDA margin 6% weak (4/14 pts); Leverage 3.4× elevated (2/17 pts); Interest coverage 2.1× thin (9/14 pts); Free cash flow negative (-22,955,000, -2% margin, 2/10 pts); Liquidity 0.01× thin (9/9 pts); Cash flow to debt 2% weak (15/15 pts); Debt to assets 53% elevated (5/9 pts); Maturity wall: 95% of debt due within 3 years (6/6 pts) *** STRESS ***
+2018-12-29         -4.77     -1.38      -42.7       0.01     77  EBITDA margin -4% weak (13/14 pts); Leverage rule maxed: negative EBITDA — debt unservable from earnings (17/17 pts); Coverage rule maxed: negative EBITDA — interest uncovered by earnings (14/14 pts); Free cash flow negative (-42,744,000, -3% margin, 3/10 pts); Liquidity 0.01× thin (9/9 pts); Cash flow to debt -2% weak (15/15 pts); Debt to assets 57% elevated (6/9 pts); Distress escalation: 5 core signals severe (profitability, leverage>5x, coverage<2x, cash_flow_to_debt<30%, liquidity<1x) — score floored at 60 *** STRESS ***
+2017-12-30         -2.14     -3.23       -9.7       0.01     72  EBITDA margin -8% weak (14/14 pts); Leverage rule maxed: negative EBITDA — debt unservable from earnings (17/17 pts); Coverage rule maxed: negative EBITDA — interest uncovered by earnings (14/14 pts); Free cash flow negative (-9,676,000, -1% margin, 1/10 pts); Liquidity 0.01× thin (9/9 pts); Cash flow to debt 7% weak (15/15 pts); Debt to assets 47% elevated (2/9 pts); Distress escalation: 5 core signals severe (profitability, leverage>5x, coverage<2x, cash_flow_to_debt<30%, liquidity<1x) — score floored at 60 *** STRESS ***
+2016-12-31         75.01      0.07      -21.1       0.01     66  EBITDA margin 0% weak (9/14 pts); Leverage 75.0× elevated (17/17 pts); Interest coverage 0.1× thin (14/14 pts); Free cash flow negative (-21,081,000, -2% margin, 2/10 pts); Liquidity 0.01× thin (9/9 pts); Cash flow to debt 0% weak (15/15 pts); Distress escalation: 4 core signals severe (leverage>5x, coverage<2x, cash_flow_to_debt<30%, liquidity<1x) — score floored at 60 *** STRESS ***
+2016-01-02         10.64      1.92        0.1       0.01     58  EBITDA margin 3% weak (7/14 pts); Leverage 10.6× elevated (17/17 pts); Interest coverage 1.9× thin (10/14 pts); Liquidity 0.01× thin (9/9 pts); Cash flow to debt 6% weak (15/15 pts) *** STRESS ***
+2015-01-03          0.56      6.90        4.9       0.11     24  EBITDA margin 4% weak (5/14 pts); Liquidity 0.11× thin (9/9 pts); Cash flow to debt 19% weak (8/15 pts); Maturity wall: 43% of debt due within 3 years (2/6 pts)
+2013-12-28          0.80      6.47       -3.9       0.06     26  EBITDA margin 4% weak (5/14 pts); Free cash flow negative (-3,876,000, -0% margin, 0/10 pts); Liquidity 0.06× thin (9/9 pts); Cash flow to debt 16% weak (11/15 pts); Maturity wall: 38% of debt due within 3 years (1/6 pts)
+2012-12-29          0.79      6.96        6.7       0.05     24  EBITDA margin 6% weak (4/14 pts); Liquidity 0.05× thin (9/9 pts); Cash flow to debt 16% weak (10/15 pts); Maturity wall: 34% of debt due within 3 years (0/6 pts)
+2011-12-31          1.05      5.38      -22.9       0.02     31  EBITDA margin 4% weak (5/14 pts); Free cash flow negative (-22,904,000, -2% margin, 2/10 pts); Liquidity 0.02× thin (9/9 pts); Cash flow to debt -3% weak (15/15 pts)
+2011-01-01          0.83      4.95      -18.1       0.03     30  EBITDA margin 5% weak (4/14 pts); Free cash flow negative (-18,064,000, -2% margin, 2/10 pts); Liquidity 0.03× thin (9/9 pts); Cash flow to debt 1% weak (15/15 pts)
+==========================================================================================
+
+  Leverage audit (2026-01-03):
+    total_debt: 250,719,000  [us-gaap/LongTermDebt]
+    cash: 169,000  [us-gaap/CashAndCashEquivalentsAtCarryingValue]
+    operating_income: 39,686,000  [us-gaap/OperatingIncomeLoss]
+    depreciation: 39,534,000  [us-gaap/DepreciationDepletionAndAmortization]
+[11/81] 0000351834 ok   (ok=4 fail=7)
+Tracking ECF...
+  CIK: 0000793040
+[12/81] ECF      FAIL   (ok=4 fail=8)
+Tracking 0000794619...
+  CIK: 0000794619
+  Extracting ratios for 15 periods...
+
+==========================================================================================
+  0000794619 — Credit Ratio Summary
+==========================================================================================
+Period          Leverage  Coverage   FCF ($M)  Liquidity  Score  Alerts
+------------------------------------------------------------------------------------------
+2025-04-30          1.62    525.87       68.7       6.29      1  Cash flow to debt 29% weak (1/15 pts)
+2024-04-30          1.18   1188.99      139.7      32.11      0  —
+2023-04-30          1.42   2191.39      156.2      18.44      0  —
+2022-04-30          3.65   1252.50      -19.7       9.86     22  EBITDA margin 7% weak (3/14 pts); Leverage 3.6× elevated (4/17 pts); Free cash flow negative (-19,677,000, -1% margin, 1/10 pts); Cash flow to debt 5% weak (15/15 pts)
+2021-04-30          1.99   2903.68      116.0      10.94      1  Cash flow to debt 29% weak (1/15 pts)
+2020-04-30          2.16   1125.73      145.9      43.80      0  Cash flow to debt 30% weak (0/15 pts)
+2019-04-30          2.67   6576.25      158.7      25.22      4  Cash flow to debt 28% weak (2/15 pts); Debt to assets 45% elevated (2/9 pts)
+2018-04-30          4.79     63.63       39.2      18.93     28  Leverage 4.8× elevated (10/17 pts); Cash flow to debt 11% weak (14/15 pts); Debt to assets 49% elevated (3/9 pts)
+2017-04-30         -1.27    143.41       55.3     110.75      0  —
+2016-04-30         -1.39    289.99       43.1     110.84      0  —
+2015-04-30         -1.85    134.41       38.7     102.64      2  EBITDA margin 8% weak (2/14 pts)
+2014-04-30         -2.37     66.80       32.6     118.41      3  EBITDA margin 7% weak (3/14 pts)
+2013-04-30         -2.28     49.23       15.7      83.96      8  EBITDA margin 5% weak (5/14 pts); Maturity wall: 55% of debt due within 3 years (3/6 pts)
+2012-04-30          4.26    -19.09        9.4      76.14     42  EBITDA margin -2% weak (11/14 pts); Leverage rule maxed: negative EBITDA — debt unservable from earnings (17/17 pts); Coverage rule maxed: negative EBITDA — interest uncovered by earnings (14/14 pts)
+2011-04-30          7.07     -7.61        8.2      59.72     41  EBITDA margin -1% weak (10/14 pts); Leverage rule maxed: negative EBITDA — debt unservable from earnings (17/17 pts); Coverage rule maxed: negative EBITDA — interest uncovered by earnings (14/14 pts)
+==========================================================================================
+
+  Leverage audit (2025-04-30):
+    total_debt: 365,825,000  [us-gaap/LongTermDebtAndCapitalLeaseObligations]
+    cash: 48,195,000  [us-gaap/CashAndCashEquivalentsAtCarryingValue]
+    operating_income: 140,239,000  [us-gaap/OperatingIncomeLoss]
+    depreciation: 55,912,000  [us-gaap/DepreciationDepletionAndAmortization]
+[13/81] 0000794619 ok   (ok=5 fail=8)
+Tracking GAB...
+  CIK: 0000794685
+[14/81] GAB      FAIL   (ok=5 fail=9)
+Tracking CFNBD...
+[15/81] CFNBD    FAIL   (ok=5 fail=10)
+Tracking ATPL...
+[16/81] ATPL     FAIL   (ok=5 fail=11)
+Tracking FRBKQ...
+[17/81] FRBKQ    FAIL   (ok=5 fail=12)
+Tracking GRRP...
+[18/81] GRRP     FAIL   (ok=5 fail=13)
+Tracking 0000858470...
+  CIK: 0000858470
+  Extracting ratios for 18 periods...
+
+==========================================================================================
+  0000858470 — Credit Ratio Summary
+==========================================================================================
+Period          Leverage  Coverage   FCF ($M)  Liquidity  Score  Alerts
+------------------------------------------------------------------------------------------
+2025-12-31          0.77     26.35        N/A       0.46      7  Liquidity 0.46× thin (6/9 pts); Maturity wall: 34% of debt due within 3 years (0/6 pts)
+2024-12-31          0.46     32.62     2778.0      N/A        0  —
+2023-12-31          0.32     51.99     3648.0       1.66      0  —
+2022-12-31          0.22     62.22     5446.0      N/A        0  —
+2021-12-31          0.93     36.40     1662.0      N/A        2  Maturity wall: 47% of debt due within 3 years (2/6 pts)
+2020-12-31          1.45     14.01      772.2       0.75      3  Liquidity 0.75× thin (3/9 pts)
+2019-12-31          0.75     23.69        N/A       2.30      0  —
+2018-12-31          1.03     14.85        N/A      N/A        6  Maturity wall: 82% of debt due within 3 years (6/6 pts)
+2017-12-31          2.50      5.23      898.2       1.58      3  Maturity wall: 53% of debt due within 3 years (3/6 pts)
+2016-12-31         43.35      0.27      392.4      N/A       44  EBITDA margin 2% weak (8/14 pts); Leverage 43.4× elevated (17/17 pts); Interest coverage 0.3× thin (14/14 pts); Cash flow to debt 26% weak (3/15 pts); Maturity wall: 53% of debt due within 3 years (3/6 pts)
+2015-12-31          3.79      5.73      724.4       0.03     19  Leverage 3.8× elevated (4/17 pts); Liquidity 0.03× thin (9/9 pts); Maturity wall: 77% of debt due within 3 years (6/6 pts)
+2014-12-31          2.34     12.63     1021.7      N/A        0  —
+2013-12-31          0.94     18.99      877.6      N/A        0  —
+2012-12-31          1.30     11.66      487.2       0.41     13  Liquidity 0.41× thin (7/9 pts); Maturity wall: 79% of debt due within 3 years (6/6 pts)
+2011-12-31          1.42     10.42      363.7      N/A        6  Maturity wall: 79% of debt due within 3 years (6/6 pts)
+2010-12-31          1.55      9.22      338.1      N/A        0  —
+2009-12-31          1.52      8.54      613.7      N/A        0  —
+2008-12-31          1.44     15.32       28.7       0.78      3  Liquidity 0.78× thin (3/9 pts)
+==========================================================================================
+
+  Leverage audit (2025-12-31):
+    total_debt: 3,818,000,000  [us-gaap/LongTermDebt]
+    cash: 114,000,000  [us-gaap/CashAndCashEquivalentsAtCarryingValue]
+    operating_income: 2,452,000,000  [us-gaap/OperatingIncomeLoss]
+    depreciation: 2,370,000,000  [us-gaap/DepreciationDepletionAndAmortization]
+[19/81] 0000858470 ok   (ok=6 fail=13)
+Tracking TUEMQ...
+[20/81] TUEMQ    FAIL   (ok=6 fail=14)
+Tracking EDMCQ...
+[21/81] EDMCQ    FAIL   (ok=6 fail=15)
+Tracking MYN...
+  CIK: 0000882150
+[22/81] MYN      FAIL   (ok=6 fail=16)
+Tracking MQY...
+  CIK: 0000890196
+  No annual periods found in XBRL data.
+[23/81] MQY      ok   (ok=7 fail=16)
+Tracking MIY...
+  CIK: 0000890393
+  No annual periods found in XBRL data.
+[24/81] MIY      ok   (ok=8 fail=16)
+Tracking MPA...
+  CIK: 0000891038
+  No annual periods found in XBRL data.
+[25/81] MPA      ok   (ok=9 fail=16)
+Tracking NPV...
+  CIK: 0000897421
+  No annual periods found in XBRL data.
+[26/81] NPV      ok   (ok=10 fail=16)
+Tracking LFPI...
+[27/81] LFPI     FAIL   (ok=10 fail=17)
+Tracking 0000917470...
+  CIK: 0000917470
+  Extracting ratios for 15 periods...
+
+==========================================================================================
+  0000917470 — Credit Ratio Summary
+==========================================================================================
+Period          Leverage  Coverage   FCF ($M)  Liquidity  Score  Alerts
+------------------------------------------------------------------------------------------
+2024-12-31          3.31      4.79        4.2      N/A       26  EBITDA margin 4% weak (6/14 pts); Leverage 3.3× elevated (2/17 pts); Cash flow to debt 12% weak (13/15 pts); Maturity wall: 100% of debt due within 3 years (6/6 pts)
+2023-12-31          1.69      6.55      153.8      N/A       11  EBITDA margin 5% weak (5/14 pts); Maturity wall: 100% of debt due within 3 years (6/6 pts)
+2022-12-31          1.00     15.27      166.0      N/A        4  EBITDA margin 6% weak (4/14 pts)
+2021-12-31          1.64     25.35     -157.4      N/A       23  EBITDA margin 8% weak (2/14 pts); Free cash flow negative (-157,385,000, -7% margin, 7/10 pts); Cash flow to debt -45% weak (15/15 pts)
+2020-12-31          7.53      2.78       51.8      N/A       36  EBITDA margin 2% weak (8/14 pts); Leverage 7.5× elevated (17/17 pts); Interest coverage 2.8× thin (6/14 pts); Maturity wall: 100% of debt due within 3 years (6/6 pts)
+2019-12-31          5.18      3.20      119.4      N/A       29  EBITDA margin 2% weak (7/14 pts); Leverage 5.2× elevated (12/17 pts); Interest coverage 3.2× thin (4/14 pts); Maturity wall: 100% of debt due within 3 years (6/6 pts)
+2018-12-31          3.90      7.03      -76.2      N/A       30  EBITDA margin 4% weak (5/14 pts); Leverage 3.9× elevated (5/17 pts); Free cash flow negative (-76,216,000, -4% margin, 4/10 pts); Cash flow to debt -17% weak (15/15 pts)
+2017-12-31          4.56      5.66      -29.2       3.24     32  EBITDA margin 3% weak (6/14 pts); Leverage 4.6× elevated (9/17 pts); Free cash flow negative (-29,201,000, -2% margin, 2/10 pts); Cash flow to debt -10% weak (15/15 pts)
+2016-12-31          6.53      4.77      -16.6       1.27     47  EBITDA margin 2% weak (7/14 pts); Leverage 6.5× elevated (17/17 pts); Free cash flow negative (-16,637,000, -2% margin, 2/10 pts); Cash flow to debt -6% weak (15/15 pts); Maturity wall: 100% of debt due within 3 years (6/6 pts)
+2015-12-31        -18.58     -1.39      100.2       0.60     46  EBITDA margin -1% weak (10/14 pts); Leverage rule maxed: negative EBITDA — debt unservable from earnings (17/17 pts); Coverage rule maxed: negative EBITDA — interest uncovered by earnings (14/14 pts); Liquidity 0.60× thin (5/9 pts)
+2014-12-31         19.43      1.86      -47.4       0.63     58  EBITDA margin 1% weak (8/14 pts); Leverage 19.4× elevated (17/17 pts); Interest coverage 1.9× thin (10/14 pts); Free cash flow negative (-47,418,000, -3% margin, 3/10 pts); Liquidity 0.63× thin (4/9 pts); Cash flow to debt -16% weak (15/15 pts) *** STRESS ***
+2013-12-31          0.85      6.45       38.6       0.24     21  EBITDA margin 3% weak (6/14 pts); Liquidity 0.24× thin (9/9 pts); Maturity wall: 99% of debt due within 3 years (6/6 pts)
+2012-12-31          1.12      4.86       25.9       0.71     10  EBITDA margin 3% weak (7/14 pts); Liquidity 0.71× thin (4/9 pts)
+2011-12-31          0.93     10.28      -23.6       0.77     16  EBITDA margin 5% weak (5/14 pts); Free cash flow negative (-23,647,000, -2% margin, 2/10 pts); Liquidity 0.77× thin (3/9 pts); Cash flow to debt 21% weak (6/15 pts)
+2010-12-31         -0.07      8.67      -56.6      N/A       14  EBITDA margin 2% weak (7/14 pts); Free cash flow negative (-56,630,000, -7% margin, 7/10 pts)
+==========================================================================================
+
+  Leverage audit (2024-12-31):
+    total_debt: 272,456,000  [us-gaap/LongTermDebt]
+    cash: 11,912,000  [us-gaap/CashAndCashEquivalentsAtCarryingValue]
+    operating_income: 47,859,000  [us-gaap/OperatingIncomeLoss]
+    depreciation: 30,913,000  [us-gaap/DepreciationDepletionAndAmortization]
+[28/81] 0000917470 ok   (ok=11 fail=17)
+Tracking GGT...
+  CIK: 0000921671
+  No annual periods found in XBRL data.
+[29/81] GGT      ok   (ok=12 fail=17)
+Tracking 0000923139...
+  CIK: 0000923139
+  Extracting ratios for 16 periods...
+
+==========================================================================================
+  0000923139 — Credit Ratio Summary
+==========================================================================================
+Period          Leverage  Coverage   FCF ($M)  Liquidity  Score  Alerts
+------------------------------------------------------------------------------------------
+2025-12-31          9.00      0.16       55.8      N/A       44  Leverage 9.0× elevated (17/17 pts); Interest coverage 0.2× thin (14/14 pts); Cash flow to debt 13% weak (13/15 pts)
+2024-12-31        -17.95     -0.62       10.1      N/A       60  EBITDA margin -612% weak (14/14 pts); Leverage rule maxed: negative EBITDA — debt unservable from earnings (17/17 pts); Coverage rule maxed: negative EBITDA — interest uncovered by earnings (14/14 pts); Cash flow to debt 1% weak (15/15 pts); Distress escalation: 4 core signals severe (profitability, leverage>5x, coverage<2x, cash_flow_to_debt<30%) — score floored at 60 *** STRESS ***
+2023-12-31         14.61      0.21       29.1      N/A       46  Leverage 14.6× elevated (17/17 pts); Interest coverage 0.2× thin (14/14 pts); Cash flow to debt 4% weak (15/15 pts)
+2022-12-31          8.14      1.52       81.4      N/A       44  Leverage 8.1× elevated (17/17 pts); Interest coverage 1.5× thin (12/14 pts); Cash flow to debt 8% weak (15/15 pts)
+2021-12-31          6.34      2.85       84.9      N/A       37  Leverage 6.3× elevated (17/17 pts); Interest coverage 2.9× thin (5/14 pts); Cash flow to debt 11% weak (14/15 pts)
+2020-12-31         16.80      0.74       68.8       0.15     60  Leverage 16.8× elevated (17/17 pts); Interest coverage 0.7× thin (14/14 pts); Liquidity 0.15× thin (9/9 pts); Cash flow to debt 3% weak (15/15 pts); Distress escalation: 4 core signals severe (leverage>5x, coverage<2x, cash_flow_to_debt<30%, liquidity<1x) — score floored at 60 *** STRESS ***
+2019-12-31         20.04      0.51       59.6       0.09     60  Leverage 20.0× elevated (17/17 pts); Interest coverage 0.5× thin (14/14 pts); Liquidity 0.09× thin (9/9 pts); Cash flow to debt 4% weak (15/15 pts); Distress escalation: 4 core signals severe (leverage>5x, coverage<2x, cash_flow_to_debt<30%, liquidity<1x) — score floored at 60 *** STRESS ***
+2018-12-31         15.89      0.80       71.9       0.27     60  Leverage 15.9× elevated (17/17 pts); Interest coverage 0.8× thin (14/14 pts); Liquidity 0.27× thin (9/9 pts); Cash flow to debt 5% weak (15/15 pts); Distress escalation: 4 core signals severe (leverage>5x, coverage<2x, cash_flow_to_debt<30%, liquidity<1x) — score floored at 60 *** STRESS ***
+2017-12-31         17.73      1.15       74.1       0.12     60  Leverage 17.7× elevated (17/17 pts); Interest coverage 1.2× thin (13/14 pts); Liquidity 0.12× thin (9/9 pts); Cash flow to debt 5% weak (15/15 pts); Distress escalation: 4 core signals severe (leverage>5x, coverage<2x, cash_flow_to_debt<30%, liquidity<1x) — score floored at 60 *** STRESS ***
+2016-12-31         11.14      2.05       35.7      N/A       41  Leverage 11.1× elevated (17/17 pts); Interest coverage 2.0× thin (9/14 pts); Cash flow to debt 3% weak (15/15 pts)
+2015-12-31         14.47      1.55       33.6      N/A       43  Leverage 14.5× elevated (17/17 pts); Interest coverage 1.5× thin (11/14 pts); Cash flow to debt 4% weak (15/15 pts)
+2014-12-31         11.98      1.38       53.1      N/A       44  Leverage 12.0× elevated (17/17 pts); Interest coverage 1.4× thin (12/14 pts); Cash flow to debt 6% weak (15/15 pts)
+2013-12-31         12.93      1.16       73.6      N/A       45  Leverage 12.9× elevated (17/17 pts); Interest coverage 1.2× thin (13/14 pts); Cash flow to debt 9% weak (15/15 pts)
+2012-12-31         N/A        0.94       69.8      N/A       14  Interest coverage 0.9× thin (14/14 pts)
+2011-12-31         N/A        0.81       60.2      N/A       14  Interest coverage 0.8× thin (14/14 pts)
+2010-12-31         N/A        0.63       64.2      N/A       14  Interest coverage 0.6× thin (14/14 pts)
+==========================================================================================
+
+  Leverage audit (2025-12-31):
+    total_debt: 484,653,000  [us-gaap/DebtAndCapitalLeaseObligations]
+    cash: 126,076,000  [us-gaap/CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents]
+    operating_income: 34,519,000  [us-gaap/IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest]
+    depreciation: 5,339,000  [us-gaap/DepreciationAndAmortization]
+[30/81] 0000923139 ok   (ok=13 fail=17)
+Tracking PMIR...
+[31/81] PMIR     FAIL   (ok=13 fail=18)
+Tracking TXCCQ...
+[32/81] TXCCQ    FAIL   (ok=13 fail=19)
+Tracking 0001005757...
+  CIK: 0001005757
+  Extracting ratios for 16 periods...
+
+==========================================================================================
+  0001005757 — Credit Ratio Summary
+==========================================================================================
+Period          Leverage  Coverage   FCF ($M)  Liquidity  Score  Alerts
+------------------------------------------------------------------------------------------
+2025-12-31          2.61    508.22      141.4      N/A        6  Cash flow to debt 29% weak (1/15 pts); Maturity wall: 77% of debt due within 3 years (6/6 pts)
+2024-12-31          2.46     N/A        113.3      21.57      4  Cash flow to debt 25% weak (4/15 pts)
+2023-12-31          2.42     N/A        103.9      24.84      4  Cash flow to debt 24% weak (4/15 pts)
+2022-12-31          2.46      5.83       26.6       4.01     12  EBITDA margin 10% weak (0/14 pts); Cash flow to debt 14% weak (12/15 pts)
+2021-12-31          1.13     11.57      113.7       0.87     13  Liquidity 0.87× thin (2/9 pts); Cash flow to debt 23% weak (5/15 pts); Debt to assets 44% elevated (2/9 pts); Maturity wall: 67% of debt due within 3 years (4/6 pts)
+2020-12-31          1.26      9.39      143.6      13.42      6  Maturity wall: 100% of debt due within 3 years (6/6 pts)
+2019-12-31          1.36      9.18      113.8      15.18      5  Maturity wall: 73% of debt due within 3 years (5/6 pts)
+2018-12-31          1.79      6.98       86.2      18.57      5  Maturity wall: 70% of debt due within 3 years (5/6 pts)
+2017-12-31          1.76      7.09       98.3       5.43      0  Maturity wall: 34% of debt due within 3 years (0/6 pts)
+2016-12-31          1.71      8.99       69.9       2.56     14  Cash flow to debt 20% weak (8/15 pts); Debt to assets 48% elevated (3/9 pts); Maturity wall: 56% of debt due within 3 years (3/6 pts)
+2015-12-31          1.19     11.66      118.1       0.89      9  Liquidity 0.89× thin (1/9 pts); Debt to assets 49% elevated (3/9 pts); Maturity wall: 67% of debt due within 3 years (4/6 pts)
+2014-12-31          1.94      8.59       57.7       3.63      6  Maturity wall: 100% of debt due within 3 years (6/6 pts)
+2013-12-31          1.91      8.20       96.6       5.51      0  —
+2012-12-31          1.16      7.44       94.3       9.10      0  —
+2011-12-31          1.34      7.15       38.8       5.43      9  Cash flow to debt 18% weak (9/15 pts); Debt to assets 41% elevated (0/9 pts)
+2010-12-31          1.11     13.87      107.0       2.85      1  Debt to assets 43% elevated (1/9 pts)
+==========================================================================================
+
+  Leverage audit (2025-12-31):
+    total_debt: 539,452,000  [us-gaap/LongTermDebt]
+    cash: 180,011,000  [us-gaap/CashAndCashEquivalentsAtCarryingValue]
+    operating_income: 118,749,000  [us-gaap/OperatingIncomeLoss]
+    depreciation: 18,979,000  [us-gaap/Depreciation]
+[33/81] 0001005757 ok   (ok=14 fail=19)
+Tracking MHD...
+  CIK: 0001034665
+[34/81] MHD      FAIL   (ok=14 fail=20)
+Tracking MUC...
+  CIK: 0001051004
+  No annual periods found in XBRL data.
+[35/81] MUC      ok   (ok=15 fail=20)
+Tracking NASB...
+[36/81] NASB     FAIL   (ok=15 fail=21)
+Tracking EVF...
+  CIK: 0001070732
+  No annual periods found in XBRL data.
+[37/81] EVF      ok   (ok=16 fail=21)
+Tracking BOYD...
+[38/81] BOYD     FAIL   (ok=16 fail=22)
+Tracking NAC...
+  CIK: 0001074952
+  No annual periods found in XBRL data.
+[39/81] NAC      ok   (ok=17 fail=22)
+Tracking GUT...
+  CIK: 0001080720
+[40/81] GUT      FAIL   (ok=17 fail=23)
+Tracking NVG...
+  CIK: 0001090116
+[41/81] NVG      FAIL   (ok=17 fail=24)
+Tracking 0001178879...
+  CIK: 0001178879
+  Extracting ratios for 16 periods...
+
+==========================================================================================
+  0001178879 — Credit Ratio Summary
+==========================================================================================
+Period          Leverage  Coverage   FCF ($M)  Liquidity  Score  Alerts
+------------------------------------------------------------------------------------------
+2025-12-31          4.44      0.92       29.8      N/A       41  EBITDA margin 6% weak (3/14 pts); Leverage 4.4× elevated (8/17 pts); Interest coverage 0.9× thin (14/14 pts); Cash flow to debt 8% weak (15/15 pts); Debt to assets 41% elevated (0/9 pts)
+2024-12-31          5.28      0.71      -37.4      N/A       56  EBITDA margin 6% weak (3/14 pts); Leverage 5.3× elevated (13/17 pts); Interest coverage 0.7× thin (14/14 pts); Free cash flow negative (-37,444,000, -7% margin, 7/10 pts); Cash flow to debt -9% weak (15/15 pts); Debt to assets 50% elevated (4/9 pts) *** STRESS ***
+2023-12-31         -2.03     -1.38      -76.5      N/A       74  EBITDA margin -17% weak (14/14 pts); Leverage rule maxed: negative EBITDA — debt unservable from earnings (17/17 pts); Coverage rule maxed: negative EBITDA — interest uncovered by earnings (14/14 pts); Free cash flow negative (-76,531,000, -19% margin, 10/10 pts); Cash flow to debt -18% weak (15/15 pts); Debt to assets 50% elevated (4/9 pts); Distress escalation: 5 core signals severe (profitability, leverage>5x, coverage<2x, cash_flow_to_debt<30%, fcf_negative) — score floored at 60 *** STRESS ***
+2022-12-31         -1.18     -5.57     -170.3      N/A       75  EBITDA margin -63% weak (14/14 pts); Leverage rule maxed: negative EBITDA — debt unservable from earnings (17/17 pts); Coverage rule maxed: negative EBITDA — interest uncovered by earnings (14/14 pts); Free cash flow negative (-170,341,000, -52% margin, 10/10 pts); Cash flow to debt -42% weak (15/15 pts); Debt to assets 54% elevated (5/9 pts); Distress escalation: 5 core signals severe (profitability, leverage>5x, coverage<2x, cash_flow_to_debt<30%, fcf_negative) — score floored at 60 *** STRESS ***
+2021-12-31         -0.72     -6.17     -206.4      N/A       71  EBITDA margin -66% weak (14/14 pts); Leverage rule maxed: negative EBITDA — debt unservable from earnings (17/17 pts); Coverage rule maxed: negative EBITDA — interest uncovered by earnings (14/14 pts); Free cash flow negative (-206,375,000, -68% margin, 10/10 pts); Cash flow to debt -52% weak (15/15 pts); Debt to assets 43% elevated (1/9 pts); Distress escalation: 5 core signals severe (profitability, leverage>5x, coverage<2x, cash_flow_to_debt<30%, fcf_negative) — score floored at 60 *** STRESS ***
+2020-12-31         -0.95    -10.62     -236.5      N/A       71  EBITDA margin -91% weak (14/14 pts); Leverage rule maxed: negative EBITDA — debt unservable from earnings (17/17 pts); Coverage rule maxed: negative EBITDA — interest uncovered by earnings (14/14 pts); Free cash flow negative (-236,517,000, -91% margin, 10/10 pts); Cash flow to debt -60% weak (15/15 pts); Debt to assets 44% elevated (1/9 pts); Distress escalation: 5 core signals severe (profitability, leverage>5x, coverage<2x, cash_flow_to_debt<30%, fcf_negative) — score floored at 60 *** STRESS ***
+2019-12-31         -0.02    -15.86     -270.4      N/A       70  EBITDA margin -164% weak (14/14 pts); Leverage rule maxed: negative EBITDA — debt unservable from earnings (17/17 pts); Coverage rule maxed: negative EBITDA — interest uncovered by earnings (14/14 pts); Free cash flow negative (-270,428,000, -148% margin, 10/10 pts); Cash flow to debt -167% weak (15/15 pts); Distress escalation: 5 core signals severe (profitability, leverage>5x, coverage<2x, cash_flow_to_debt<30%, fcf_negative) — score floored at 60 *** STRESS ***
+2018-12-31         N/A      -14.49     -306.3      N/A       60  EBITDA margin -356% weak (14/14 pts); Leverage rule maxed: negative EBITDA — debt unservable from earnings (17/17 pts); Coverage rule maxed: negative EBITDA — interest uncovered by earnings (14/14 pts); Free cash flow negative (-306,263,000, -336% margin, 10/10 pts); Distress escalation: 4 core signals severe (profitability, leverage>5x, coverage<2x, fcf_negative) — score floored at 60 *** STRESS ***
+2017-12-31         N/A      -25.43     -220.0      N/A       60  EBITDA margin -1187% weak (14/14 pts); Leverage rule maxed: negative EBITDA — debt unservable from earnings (17/17 pts); Coverage rule maxed: negative EBITDA — interest uncovered by earnings (14/14 pts); Free cash flow negative (-220,011,000, -596% margin, 10/10 pts); Distress escalation: 4 core signals severe (profitability, leverage>5x, coverage<2x, fcf_negative) — score floored at 60 *** STRESS ***
+2016-12-31         N/A      -33.10     -156.5      N/A       60  EBITDA margin -3603% weak (14/14 pts); Leverage rule maxed: negative EBITDA — debt unservable from earnings (17/17 pts); Coverage rule maxed: negative EBITDA — interest uncovered by earnings (14/14 pts); Free cash flow negative (-156,485,000, -3156% margin, 10/10 pts); Distress escalation: 4 core signals severe (profitability, leverage>5x, coverage<2x, fcf_negative) — score floored at 60 *** STRESS ***
+2015-12-31          0.15    -81.50     -105.0      N/A       46  Leverage rule maxed: negative EBITDA — debt unservable from earnings (17/17 pts); Coverage rule maxed: negative EBITDA — interest uncovered by earnings (14/14 pts); Cash flow to debt -200% weak (15/15 pts)
+2014-12-31          0.14    -45.25      -51.9       6.27     76  EBITDA margin -5486% weak (14/14 pts); Leverage rule maxed: negative EBITDA — debt unservable from earnings (17/17 pts); Coverage rule maxed: negative EBITDA — interest uncovered by earnings (14/14 pts); Free cash flow negative (-51,907,000, -4241% margin, 10/10 pts); Cash flow to debt -274% weak (15/15 pts); Maturity wall: 100% of debt due within 3 years (6/6 pts); Distress escalation: 6 core signals severe (profitability, leverage>5x, coverage<2x, cash_flow_to_debt<30%, fcf_negative, maturity_wall) — score floored at 60 *** STRESS ***
+2013-12-31          0.07   -158.86     -293.1     145.95     74  EBITDA margin -321% weak (14/14 pts); Leverage rule maxed: negative EBITDA — debt unservable from earnings (17/17 pts); Coverage rule maxed: negative EBITDA — interest uncovered by earnings (14/14 pts); Free cash flow negative (-293,054,000, -240% margin, 10/10 pts); Cash flow to debt -1758% weak (15/15 pts); Maturity wall: 64% of debt due within 3 years (4/6 pts); Distress escalation: 5 core signals severe (profitability, leverage>5x, coverage<2x, cash_flow_to_debt<30%, fcf_negative) — score floored at 60 *** STRESS ***
+2012-12-31          0.10   -136.09     -246.6      85.35     70  EBITDA margin -270% weak (14/14 pts); Leverage rule maxed: negative EBITDA — debt unservable from earnings (17/17 pts); Coverage rule maxed: negative EBITDA — interest uncovered by earnings (14/14 pts); Free cash flow negative (-246,565,000, -202% margin, 10/10 pts); Cash flow to debt -20854% weak (15/15 pts); Distress escalation: 5 core signals severe (profitability, leverage>5x, coverage<2x, cash_flow_to_debt<30%, fcf_negative) — score floored at 60 *** STRESS ***
+2011-12-31         N/A     -119.32     -208.5      24.59     60  EBITDA margin -269% weak (14/14 pts); Leverage rule maxed: negative EBITDA — debt unservable from earnings (17/17 pts); Coverage rule maxed: negative EBITDA — interest uncovered by earnings (14/14 pts); Free cash flow negative (-208,494,000, -202% margin, 10/10 pts); Distress escalation: 4 core signals severe (profitability, leverage>5x, coverage<2x, fcf_negative) — score floored at 60 *** STRESS ***
+2010-12-31         N/A     -206.85      -14.4      23.60     60  EBITDA margin -5833% weak (14/14 pts); Leverage rule maxed: negative EBITDA — debt unservable from earnings (17/17 pts); Coverage rule maxed: negative EBITDA — interest uncovered by earnings (14/14 pts); Free cash flow negative (-14,367,000, -1558% margin, 10/10 pts); Distress escalation: 4 core signals severe (profitability, leverage>5x, coverage<2x, fcf_negative) — score floored at 60 *** STRESS ***
+==========================================================================================
+
+  Leverage audit (2025-12-31):
+    total_debt: 392,660,000  [us-gaap/LongTermDebt]
+    cash: 214,010,000  [us-gaap/CashAndCashEquivalentsAtCarryingValue]
+    operating_income: 32,789,000  [us-gaap/OperatingIncomeLoss]
+    depreciation: 7,460,000  [us-gaap/DepreciationDepletionAndAmortization]
+[42/81] 0001178879 ok   (ok=18 fail=24)
+Tracking SPCX...
+  CIK: 0001181412
+  No annual periods found in XBRL data.
+[43/81] SPCX     ok   (ok=19 fail=24)
+Tracking NEA...
+  CIK: 0001195737
+  No annual periods found in XBRL data.
+[44/81] NEA      ok   (ok=20 fail=24)
+Tracking NRK...
+  CIK: 0001195739
+  No annual periods found in XBRL data.
+[45/81] NRK      ok   (ok=21 fail=24)
+Tracking JPC...
+  CIK: 0001216583
+  No annual periods found in XBRL data.
+[46/81] JPC      ok   (ok=22 fail=24)
+Tracking 0001220754...
+  CIK: 0001220754
+  Extracting ratios for 15 periods...
+
+==========================================================================================
+  0001220754 — Credit Ratio Summary
+==========================================================================================
+Period          Leverage  Coverage   FCF ($M)  Liquidity  Score  Alerts
+------------------------------------------------------------------------------------------
+2024-12-31         70.68      0.22      -34.0       0.41     72  EBITDA margin 1% weak (9/14 pts); Leverage 70.7× elevated (17/17 pts); Interest coverage 0.2× thin (14/14 pts); Free cash flow negative (-34,038,000, -1% margin, 1/10 pts); Liquidity 0.41× thin (7/9 pts); Cash flow to debt -0% weak (15/15 pts); Debt to assets 95% elevated (9/9 pts); Distress escalation: 4 core signals severe (leverage>5x, coverage<2x, cash_flow_to_debt<30%, debt_to_assets>40%) — score floored at 60 *** STRESS ***
+2023-12-31        -27.97     -0.56     -125.3       0.02     81  EBITDA margin -1% weak (10/14 pts); Leverage rule maxed: negative EBITDA — debt unservable from earnings (17/17 pts); Coverage rule maxed: negative EBITDA — interest uncovered by earnings (14/14 pts); Free cash flow negative (-125,259,000, -5% margin, 5/10 pts); Liquidity 0.02× thin (9/9 pts); Cash flow to debt -7% weak (15/15 pts); Debt to assets 63% elevated (8/9 pts); Maturity wall: 50% of debt due within 3 years (2/6 pts); Distress escalation: 5 core signals severe (leverage>5x, coverage<2x, cash_flow_to_debt<30%, liquidity<1x, debt_to_assets>40%) — score floored at 60 *** STRESS ***
+2022-12-31          6.26      2.65      -43.4      N/A       50  EBITDA margin 6% weak (4/14 pts); Leverage 6.3× elevated (17/17 pts); Interest coverage 2.7× thin (6/14 pts); Free cash flow negative (-43,446,000, -2% margin, 2/10 pts); Cash flow to debt -1% weak (15/15 pts); Debt to assets 51% elevated (4/9 pts); Maturity wall: 50% of debt due within 3 years (2/6 pts) *** STRESS ***
+2021-12-31          5.74      4.56      165.5      N/A       29  EBITDA margin 7% weak (2/14 pts); Leverage 5.7× elevated (16/17 pts); Cash flow to debt 19% weak (8/15 pts); Debt to assets 48% elevated (3/9 pts)
+2020-12-31          2.03     68.13      336.3      N/A        0  —
+2019-12-31         -1.48     32.95       50.1     199.24      7  EBITDA margin 3% weak (7/14 pts)
+2018-12-31         -0.13     34.50       -9.6       7.91     13  EBITDA margin 3% weak (7/14 pts); Free cash flow negative (-9,622,000, -1% margin, 1/10 pts); Maturity wall: 100% of debt due within 3 years (6/6 pts)
+2017-12-31         -1.52     63.33       35.1      39.71     11  EBITDA margin 5% weak (5/14 pts); Maturity wall: 100% of debt due within 3 years (6/6 pts)
+2016-12-31         -2.00     N/A          0.3      41.99     13  EBITDA margin 3% weak (7/14 pts); Maturity wall: 100% of debt due within 3 years (6/6 pts)
+2015-12-31          2.83     N/A        -21.8       2.70     27  EBITDA margin 5% weak (5/14 pts); Free cash flow negative (-21,832,000, -1% margin, 1/10 pts); Cash flow to debt 4% weak (15/15 pts); Maturity wall: 100% of debt due within 3 years (6/6 pts)
+2014-12-31          5.78     N/A         32.0       6.37     40  EBITDA margin 5% weak (5/14 pts); Leverage 5.8× elevated (16/17 pts); Cash flow to debt 9% weak (15/15 pts); Debt to assets 52% elevated (4/9 pts)
+2013-12-31          0.46      7.61       45.1       2.05      7  EBITDA margin 5% weak (5/14 pts); Debt to assets 40% elevated (0/9 pts); Maturity wall: 46% of debt due within 3 years (2/6 pts)
+2012-12-31          1.89      5.13       33.0       3.99     11  EBITDA margin 4% weak (6/14 pts); Cash flow to debt 30% weak (0/15 pts); Maturity wall: 70% of debt due within 3 years (5/6 pts)
+2011-12-31          2.13      4.93       19.7       4.32     13  EBITDA margin 5% weak (4/14 pts); Cash flow to debt 19% weak (8/15 pts); Debt to assets 42% elevated (1/9 pts)
+2010-12-31          1.47      4.30       33.8       3.38      9  EBITDA margin 8% weak (2/14 pts); Cash flow to debt 24% weak (4/15 pts); Debt to assets 47% elevated (3/9 pts)
+==========================================================================================
+
+  Leverage audit (2024-12-31):
+    total_debt: 1,291,375,000  [us-gaap/LongTermDebt]
+    cash: 112,581,000  [us-gaap/CashAndCashEquivalentsAtCarryingValue]
+    operating_income: -92,787,000  [us-gaap/OperatingIncomeLoss]
+    depreciation: 109,465,000  [us-gaap/DepreciationAndAmortization]
+[47/81] 0001220754 ok   (ok=23 fail=24)
+Tracking EVV...
+  CIK: 0001222922
+  No annual periods found in XBRL data.
+[48/81] EVV      ok   (ok=24 fail=24)
+Tracking EFR...
+  CIK: 0001258623
+  No annual periods found in XBRL data.
+[49/81] EFR      ok   (ok=25 fail=24)
+Tracking GDV...
+  CIK: 0001260729
+[50/81] GDV      FAIL   (ok=25 fail=25)
+Tracking NMZ...
+  CIK: 0001266585
+[51/81] NMZ      FAIL   (ok=25 fail=26)
+Tracking JFR...
+  CIK: 0001276533
+[52/81] JFR      FAIL   (ok=25 fail=27)
+Tracking SBNY...
+  CIK: 0001288784
+[53/81] SBNY     FAIL   (ok=25 fail=28)
+Tracking EFT...
+  CIK: 0001288992
+  No annual periods found in XBRL data.
+[54/81] EFT      ok   (ok=26 fail=28)
+Tracking SICP...
+[55/81] SICP     FAIL   (ok=26 fail=29)
+Tracking GGN...
+  CIK: 0001313510
+  No annual periods found in XBRL data.
+[56/81] GGN      ok   (ok=27 fail=29)
+Tracking ELC...
+  CIK: 0001348952
+  No annual periods found in XBRL data.
+[57/81] ELC      ok   (ok=28 fail=29)
+Tracking 0001398987...
+  CIK: 0001398987
+  Extracting ratios for 18 periods...
+
+==========================================================================================
+  0001398987 — Credit Ratio Summary
+==========================================================================================
+Period          Leverage  Coverage   FCF ($M)  Liquidity  Score  Alerts
+------------------------------------------------------------------------------------------
+2024-12-31        -70.85     -0.18       26.0       0.24     70  EBITDA margin -0% weak (10/14 pts); Leverage rule maxed: negative EBITDA — debt unservable from earnings (17/17 pts); Coverage rule maxed: negative EBITDA — interest uncovered by earnings (14/14 pts); Liquidity 0.24× thin (9/9 pts); Cash flow to debt 4% weak (15/15 pts); Debt to assets 45% elevated (2/9 pts); Maturity wall: 62% of debt due within 3 years (4/6 pts); Distress escalation: 4 core signals severe (leverage>5x, coverage<2x, cash_flow_to_debt<30%, liquidity<1x) — score floored at 60 *** STRESS ***
+2023-12-31       -133.06     -0.11      115.0       0.35     71  EBITDA margin -0% weak (10/14 pts); Leverage rule maxed: negative EBITDA — debt unservable from earnings (17/17 pts); Coverage rule maxed: negative EBITDA — interest uncovered by earnings (14/14 pts); Liquidity 0.35× thin (8/9 pts); Cash flow to debt 7% weak (15/15 pts); Debt to assets 44% elevated (1/9 pts); Maturity wall: 100% of debt due within 3 years (6/6 pts); Distress escalation: 5 core signals severe (leverage>5x, coverage<2x, cash_flow_to_debt<30%, liquidity<1x, maturity_wall) — score floored at 60 *** STRESS ***
+2022-12-31        -11.07     -1.81     -201.0       0.58     71  EBITDA margin -3% weak (12/14 pts); Leverage rule maxed: negative EBITDA — debt unservable from earnings (17/17 pts); Coverage rule maxed: negative EBITDA — interest uncovered by earnings (14/14 pts); Free cash flow negative (-201,000,000, -3% margin, 3/10 pts); Liquidity 0.58× thin (5/9 pts); Cash flow to debt -3% weak (15/15 pts); Debt to assets 45% elevated (2/9 pts); Maturity wall: 59% of debt due within 3 years (3/6 pts); Distress escalation: 4 core signals severe (profitability, leverage>5x, coverage<2x, cash_flow_to_debt<30%) — score floored at 60 *** STRESS ***
+2021-12-31          3.76      3.08      542.0      73.50     18  EBITDA margin 7% weak (2/14 pts); Leverage 3.8× elevated (4/17 pts); Interest coverage 3.1× thin (4/14 pts); Cash flow to debt 22% weak (6/15 pts); Debt to assets 41% elevated (0/9 pts)
+2020-12-31         -7.39     -1.44      653.0       8.39     54  EBITDA margin -6% weak (14/14 pts); Leverage rule maxed: negative EBITDA — debt unservable from earnings (17/17 pts); Coverage rule maxed: negative EBITDA — interest uncovered by earnings (14/14 pts); Cash flow to debt 23% weak (5/15 pts); Debt to assets 46% elevated (2/9 pts); Maturity wall: 42% of debt due within 3 years (1/6 pts) *** STRESS ***
+2019-12-31        -64.20     -0.20      263.0       1.00     62  EBITDA margin -1% weak (10/14 pts); Leverage rule maxed: negative EBITDA — debt unservable from earnings (17/17 pts); Coverage rule maxed: negative EBITDA — interest uncovered by earnings (14/14 pts); Cash flow to debt 10% weak (15/15 pts); Debt to assets 49% elevated (3/9 pts); Maturity wall: 48% of debt due within 3 years (2/6 pts) *** STRESS ***
+2019-09-30        129.15      0.13      152.0       0.88     63  EBITDA margin 1% weak (9/14 pts); Leverage 129.1× elevated (17/17 pts); Interest coverage 0.1× thin (14/14 pts); Liquidity 0.88× thin (2/9 pts); Cash flow to debt 6% weak (15/15 pts); Debt to assets 53% elevated (4/9 pts); Maturity wall: 47% of debt due within 3 years (2/6 pts) *** STRESS ***
+2019-01-01         N/A       N/A          N/A      N/A        0  —
+2018-12-31         11.85      1.58      289.0       0.30     67  EBITDA margin 5% weak (5/14 pts); Leverage 11.8× elevated (17/17 pts); Interest coverage 1.6× thin (11/14 pts); Liquidity 0.30× thin (8/9 pts); Cash flow to debt 9% weak (15/15 pts); Debt to assets 62% elevated (8/9 pts); Maturity wall: 55% of debt due within 3 years (3/6 pts); Distress escalation: 5 core signals severe (leverage>5x, coverage<2x, cash_flow_to_debt<30%, liquidity<1x, debt_to_assets>40%) — score floored at 60 *** STRESS ***
+2018-01-01         N/A       N/A          N/A      N/A        0  —
+2017-12-31          7.18      2.92      568.0       1.79     37  EBITDA margin 8% weak (2/14 pts); Leverage 7.2× elevated (17/17 pts); Interest coverage 2.9× thin (5/14 pts); Cash flow to debt 18% weak (9/15 pts); Debt to assets 50% elevated (4/9 pts); Maturity wall: 35% of debt due within 3 years (1/6 pts)
+2016-12-31          7.71      2.56      500.0       1.13     43  EBITDA margin 8% weak (2/14 pts); Leverage 7.7× elevated (17/17 pts); Interest coverage 2.6× thin (7/14 pts); Cash flow to debt 15% weak (11/15 pts); Debt to assets 53% elevated (5/9 pts); Maturity wall: 41% of debt due within 3 years (1/6 pts)
+2015-12-31          6.96      1.58      460.0       0.56     52  EBITDA margin 6% weak (3/14 pts); Leverage 7.0× elevated (17/17 pts); Interest coverage 1.6× thin (11/14 pts); Liquidity 0.56× thin (5/9 pts); Cash flow to debt 15% weak (12/15 pts); Debt to assets 49% elevated (3/9 pts) *** STRESS ***
+2014-12-31         12.03      1.12      352.0      16.47     56  EBITDA margin 6% weak (4/14 pts); Leverage 12.0× elevated (17/17 pts); Interest coverage 1.1× thin (13/14 pts); Cash flow to debt 11% weak (14/15 pts); Debt to assets 52% elevated (4/9 pts); Maturity wall: 53% of debt due within 3 years (3/6 pts) *** STRESS ***
+2013-12-31         15.08      0.86      430.0      12.42     54  EBITDA margin 5% weak (5/14 pts); Leverage 15.1× elevated (17/17 pts); Interest coverage 0.9× thin (14/14 pts); Cash flow to debt 13% weak (13/15 pts); Debt to assets 53% elevated (5/9 pts) *** STRESS ***
+2012-12-31         -8.01     -0.94     -157.0       3.42     71  EBITDA margin -11% weak (14/14 pts); Leverage rule maxed: negative EBITDA — debt unservable from earnings (17/17 pts); Coverage rule maxed: negative EBITDA — interest uncovered by earnings (14/14 pts); Free cash flow negative (-157,000,000, -3% margin, 3/10 pts); Cash flow to debt -2% weak (15/15 pts); Debt to assets 60% elevated (7/9 pts); Distress escalation: 5 core signals severe (profitability, leverage>5x, coverage<2x, cash_flow_to_debt<30%, debt_to_assets>40%) — score floored at 60 *** STRESS ***
+2011-12-31        -19.52     -0.54     -241.0       0.44     82  EBITDA margin -9% weak (14/14 pts); Leverage rule maxed: negative EBITDA — debt unservable from earnings (17/17 pts); Coverage rule maxed: negative EBITDA — interest uncovered by earnings (14/14 pts); Free cash flow negative (-241,000,000, -6% margin, 6/10 pts); Liquidity 0.44× thin (7/9 pts); Cash flow to debt -3% weak (15/15 pts); Debt to assets 102% elevated (9/9 pts); Distress escalation: 5 core signals severe (profitability, leverage>5x, coverage<2x, cash_flow_to_debt<30%, debt_to_assets>40%) — score floored at 60 *** STRESS ***
+2010-12-31         70.72      0.15     -167.0       0.99     66  EBITDA margin 2% weak (7/14 pts); Leverage 70.7× elevated (17/17 pts); Interest coverage 0.2× thin (14/14 pts); Free cash flow negative (-167,000,000, -4% margin, 4/10 pts); Liquidity 0.99× thin (0/9 pts); Cash flow to debt -2% weak (15/15 pts); Debt to assets 91% elevated (9/9 pts); Distress escalation: 4 core signals severe (leverage>5x, coverage<2x, cash_flow_to_debt<30%, debt_to_assets>40%) — score floored at 60 *** STRESS ***
+==========================================================================================
+
+  Leverage audit (2024-12-31):
+    total_debt: 2,031,000,000  [us-gaap/LongTermDebtNoncurrent]
+    cash: 118,000,000  [us-gaap/CashAndCashEquivalentsAtCarryingValue]
+    operating_income: -136,000,000  [us-gaap/IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments]
+    depreciation: 109,000,000  [us-gaap/DepreciationDepletionAndAmortization]
+[58/81] 0001398987 ok   (ok=29 fail=29)
+Tracking NORNQ...
+[59/81] NORNQ    FAIL   (ok=29 fail=30)
+Tracking GNT...
+  CIK: 0001438893
+[60/81] GNT      FAIL   (ok=29 fail=31)
+Tracking 0001456772...
+  CIK: 0001456772
+  Extracting ratios for 16 periods...
+
+==========================================================================================
+  0001456772 — Credit Ratio Summary
+==========================================================================================
+Period          Leverage  Coverage   FCF ($M)  Liquidity  Score  Alerts
+------------------------------------------------------------------------------------------
+2025-12-31        -24.55     -0.48      -24.6      N/A       77  EBITDA margin -22% weak (14/14 pts); Leverage rule maxed: negative EBITDA — debt unservable from earnings (17/17 pts); Coverage rule maxed: negative EBITDA — interest uncovered by earnings (14/14 pts); Free cash flow negative (-24,647,000, -6% margin, 6/10 pts); Cash flow to debt -0% weak (15/15 pts); Debt to assets 69% elevated (9/9 pts); Maturity wall: 49% of debt due within 3 years (2/6 pts); Distress escalation: 5 core signals severe (profitability, leverage>5x, coverage<2x, cash_flow_to_debt<30%, debt_to_assets>40%) — score floored at 60 *** STRESS ***
+2024-12-31         38.15      0.36       50.4      N/A       60  Leverage 38.1× elevated (17/17 pts); Interest coverage 0.4× thin (14/14 pts); Cash flow to debt 3% weak (15/15 pts); Debt to assets 66% elevated (9/9 pts); Maturity wall: 48% of debt due within 3 years (2/6 pts); Distress escalation: 4 core signals severe (leverage>5x, coverage<2x, cash_flow_to_debt<30%, debt_to_assets>40%) — score floored at 60 *** STRESS ***
+2023-12-31         15.77      1.47      109.5      N/A       60  Leverage 15.8× elevated (17/17 pts); Interest coverage 1.5× thin (12/14 pts); Cash flow to debt 6% weak (15/15 pts); Debt to assets 64% elevated (9/9 pts); Maturity wall: 58% of debt due within 3 years (3/6 pts); Distress escalation: 4 core signals severe (leverage>5x, coverage<2x, cash_flow_to_debt<30%, debt_to_assets>40%) — score floored at 60 *** STRESS ***
+2022-12-31         10.99      2.13      149.8      N/A       51  Leverage 11.0× elevated (17/17 pts); Interest coverage 2.1× thin (9/14 pts); Cash flow to debt 8% weak (15/15 pts); Debt to assets 61% elevated (8/9 pts); Maturity wall: 51% of debt due within 3 years (2/6 pts) *** STRESS ***
+2021-12-31         10.57      2.10      203.0      N/A       48  Leverage 10.6× elevated (17/17 pts); Interest coverage 2.1× thin (9/14 pts); Cash flow to debt 9% weak (15/15 pts); Debt to assets 61% elevated (8/9 pts)
+2020-12-31          8.32      2.40      221.6      N/A       45  Leverage 8.3× elevated (17/17 pts); Interest coverage 2.4× thin (8/14 pts); Cash flow to debt 11% weak (14/15 pts); Debt to assets 56% elevated (6/9 pts); Maturity wall: 34% of debt due within 3 years (0/6 pts)
+2019-12-31          6.97      2.39      203.9      N/A       47  Leverage 7.0× elevated (17/17 pts); Interest coverage 2.4× thin (8/14 pts); Cash flow to debt 9% weak (15/15 pts); Debt to assets 56% elevated (6/9 pts); Maturity wall: 47% of debt due within 3 years (2/6 pts)
+2018-12-31         23.45      1.53      135.6      N/A       60  Leverage 23.5× elevated (17/17 pts); Interest coverage 1.5× thin (12/14 pts); Cash flow to debt 4% weak (15/15 pts); Debt to assets 62% elevated (8/9 pts); Maturity wall: 35% of debt due within 3 years (1/6 pts); Distress escalation: 4 core signals severe (leverage>5x, coverage<2x, cash_flow_to_debt<30%, debt_to_assets>40%) — score floored at 60 *** STRESS ***
+2017-12-31         13.60      2.51       87.1      N/A       50  Leverage 13.6× elevated (17/17 pts); Interest coverage 2.5× thin (7/14 pts); Cash flow to debt 6% weak (15/15 pts); Debt to assets 61% elevated (7/9 pts); Maturity wall: 56% of debt due within 3 years (3/6 pts)
+2016-12-31          9.67      3.10       91.3      N/A       44  Leverage 9.7× elevated (17/17 pts); Interest coverage 3.1× thin (4/14 pts); Cash flow to debt 9% weak (15/15 pts); Debt to assets 58% elevated (6/9 pts); Maturity wall: 37% of debt due within 3 years (1/6 pts)
+2015-12-31          3.23      2.84       96.2      N/A        7  Leverage 3.2× elevated (1/17 pts); Interest coverage 2.8× thin (5/14 pts)
+2014-12-31          3.06      3.89      109.1      N/A        1  Leverage 3.1× elevated (0/17 pts); Interest coverage 3.9× thin (0/14 pts)
+2013-12-31          5.51      6.35       85.1      N/A       24  Leverage 5.5× elevated (14/17 pts); Cash flow to debt 18% weak (9/15 pts); Maturity wall: 39% of debt due within 3 years (1/6 pts)
+2012-12-31          4.90      5.86        N/A      N/A       18  Leverage 4.9× elevated (11/17 pts); Cash flow to debt 20% weak (7/15 pts)
+2011-12-31          5.12      7.04     -307.0      N/A       21  Leverage 5.1× elevated (12/17 pts); Cash flow to debt 18% weak (9/15 pts)
+2010-12-31          0.76      7.91     -329.2      N/A        0  —
+==========================================================================================
+
+  Leverage audit (2025-12-31):
+    total_debt: 2,408,626,000  [us-gaap/LongTermDebt]
+    cash: 29,486,000  [us-gaap/CashAndCashEquivalentsAtCarryingValue]
+    operating_income: -271,853,000  [us-gaap/IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments]
+    depreciation: 174,957,000  [us-gaap/DepreciationAndAmortization]
+[61/81] 0001456772 ok   (ok=30 fail=31)
+Tracking VDI...
+[62/81] VDI      FAIL   (ok=30 fail=32)
+Tracking 0001487712...
+  CIK: 0001487712
+  Extracting ratios for 16 periods...
+
+==========================================================================================
+  0001487712 — Credit Ratio Summary
+==========================================================================================
+Period          Leverage  Coverage   FCF ($M)  Liquidity  Score  Alerts
+------------------------------------------------------------------------------------------
+2025-12-31          7.43      2.94     1496.9      N/A       60  Leverage 7.4× elevated (17/17 pts); Interest coverage 2.9× thin (5/14 pts); Cash flow to debt 9% weak (15/15 pts); Debt to assets 60% elevated (7/9 pts); Maturity wall: 76% of debt due within 3 years (6/6 pts); Distress escalation: 4 core signals severe (leverage>5x, cash_flow_to_debt<30%, debt_to_assets>40%, maturity_wall) — score floored at 60 *** STRESS ***
+2024-12-31         11.77      2.03     1289.8      N/A       53  Leverage 11.8× elevated (17/17 pts); Interest coverage 2.0× thin (9/14 pts); Cash flow to debt 8% weak (15/15 pts); Debt to assets 63% elevated (8/9 pts); Maturity wall: 61% of debt due within 3 years (4/6 pts) *** STRESS ***
+2023-12-31         10.27      2.57     1441.5      N/A       50  Leverage 10.3× elevated (17/17 pts); Interest coverage 2.6× thin (7/14 pts); Cash flow to debt 9% weak (15/15 pts); Debt to assets 63% elevated (8/9 pts); Maturity wall: 52% of debt due within 3 years (3/6 pts)
+2022-12-31         21.61      1.51     1165.5      N/A       60  Leverage 21.6× elevated (17/17 pts); Interest coverage 1.5× thin (12/14 pts); Cash flow to debt 7% weak (15/15 pts); Debt to assets 66% elevated (9/9 pts); Maturity wall: 42% of debt due within 3 years (1/6 pts); Distress escalation: 4 core signals severe (leverage>5x, coverage<2x, cash_flow_to_debt<30%, debt_to_assets>40%) — score floored at 60 *** STRESS ***
+2021-12-31         11.19      2.77     1147.2      N/A       48  Leverage 11.2× elevated (17/17 pts); Interest coverage 2.8× thin (6/14 pts); Cash flow to debt 8% weak (15/15 pts); Debt to assets 63% elevated (8/9 pts); Maturity wall: 44% of debt due within 3 years (2/6 pts)
+2020-12-31         10.36      3.01      929.2      N/A       47  Leverage 10.4× elevated (17/17 pts); Interest coverage 3.0× thin (5/14 pts); Cash flow to debt 7% weak (15/15 pts); Debt to assets 66% elevated (9/9 pts); Maturity wall: 43% of debt due within 3 years (2/6 pts)
+2019-12-31          9.22      3.31     1101.2      N/A       45  Leverage 9.2× elevated (17/17 pts); Interest coverage 3.3× thin (3/14 pts); Cash flow to debt 10% weak (15/15 pts); Debt to assets 63% elevated (8/9 pts); Maturity wall: 45% of debt due within 3 years (2/6 pts)
+2018-12-31          9.20      3.57      966.6      N/A       42  Leverage 9.2× elevated (17/17 pts); Interest coverage 3.6× thin (2/14 pts); Cash flow to debt 11% weak (14/15 pts); Debt to assets 62% elevated (8/9 pts); Maturity wall: 34% of debt due within 3 years (0/6 pts)
+2017-12-31          8.41      3.89      882.3      N/A       41  Leverage 8.4× elevated (17/17 pts); Interest coverage 3.9× thin (0/14 pts); Cash flow to debt 11% weak (14/15 pts); Debt to assets 62% elevated (8/9 pts); Maturity wall: 39% of debt due within 3 years (1/6 pts)
+2016-12-31          8.17      3.61      808.7      N/A       42  Leverage 8.2× elevated (17/17 pts); Interest coverage 3.6× thin (2/14 pts); Cash flow to debt 12% weak (14/15 pts); Debt to assets 62% elevated (8/9 pts); Maturity wall: 45% of debt due within 3 years (2/6 pts)
+2015-12-31          9.56      2.97      620.1      N/A       46  Leverage 9.6× elevated (17/17 pts); Interest coverage 3.0× thin (5/14 pts); Cash flow to debt 11% weak (14/15 pts); Debt to assets 62% elevated (8/9 pts); Maturity wall: 49% of debt due within 3 years (2/6 pts)
+2014-12-31          8.79      3.32      529.6      N/A       43  Leverage 8.8× elevated (17/17 pts); Interest coverage 3.3× thin (3/14 pts); Cash flow to debt 11% weak (14/15 pts); Debt to assets 62% elevated (8/9 pts); Maturity wall: 37% of debt due within 3 years (1/6 pts)
+2013-12-31          9.74      2.98        N/A      N/A       44  Leverage 9.7× elevated (17/17 pts); Interest coverage 3.0× thin (5/14 pts); Cash flow to debt 11% weak (14/15 pts); Debt to assets 63% elevated (8/9 pts)
+2012-12-31          9.89      2.85        N/A      N/A       44  Leverage 9.9× elevated (17/17 pts); Interest coverage 2.9× thin (5/14 pts); Cash flow to debt 11% weak (14/15 pts); Debt to assets 60% elevated (7/9 pts); Maturity wall: 35% of debt due within 3 years (1/6 pts)
+2011-12-31         11.89      3.38        N/A      N/A       38  Leverage 11.9× elevated (17/17 pts); Interest coverage 3.4× thin (3/14 pts); Cash flow to debt 10% weak (15/15 pts); Debt to assets 50% elevated (4/9 pts)
+2010-12-31        -14.00     -0.80        N/A      N/A       60  EBITDA margin -71% weak (14/14 pts); Leverage rule maxed: negative EBITDA — debt unservable from earnings (17/17 pts); Coverage rule maxed: negative EBITDA — interest uncovered by earnings (14/14 pts); Cash flow to debt 5% weak (15/15 pts); Distress escalation: 4 core signals severe (profitability, leverage>5x, coverage<2x, cash_flow_to_debt<30%) — score floored at 60 *** STRESS ***
+==========================================================================================
+
+  Leverage audit (2025-12-31):
+    total_debt: 19,730,129,000  [us-gaap/LongTermDebt]
+    cash: 466,410,000  [us-gaap/CashAndCashEquivalentsAtCarryingValue]
+    operating_income: 1,369,693,000  [us-gaap/IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest]
+    depreciation: 1,223,532,000  [us-gaap/Depreciation]
+[63/81] 0001487712 ok   (ok=31 fail=32)
+Tracking EKSN...
+[64/81] EKSN     FAIL   (ok=31 fail=33)
+Tracking PFBC...
+  CIK: 0001492165
+[65/81] PFBC     FAIL   (ok=31 fail=34)
+Tracking RIV...
+  CIK: 0001501072
+  No annual periods found in XBRL data.
+[66/81] RIV      ok   (ok=32 fail=34)
+Tracking ACP...
+  CIK: 0001503290
+  No annual periods found in XBRL data.
+[67/81] ACP      ok   (ok=33 fail=34)
+Tracking ATH PR A...
+[68/81] ATH PR A FAIL   (ok=33 fail=35)
+Tracking OZK...
+  CIK: 0001569650
+[69/81] OZK      FAIL   (ok=33 fail=36)
+Tracking ECC...
+  CIK: 0001604174
+  No annual periods found in XBRL data.
+[70/81] ECC      ok   (ok=34 fail=36)
+Tracking OPP...
+  CIK: 0001678130
+  No annual periods found in XBRL data.
+[71/81] OPP      ok   (ok=35 fail=36)
+Tracking HFRO...
+  CIK: 0001710680
+  No annual periods found in XBRL data.
+[72/81] HFRO     ok   (ok=36 fail=36)
+Tracking RVLPQ...
+[73/81] RVLPQ    FAIL   (ok=36 fail=37)
+Tracking CCFLU...
+[74/81] CCFLU    FAIL   (ok=36 fail=38)
+Tracking 0001772695...
+  CIK: 0001772695
+  Extracting ratios for 7 periods...
+
+==========================================================================================
+  0001772695 — Credit Ratio Summary
+==========================================================================================
+Period          Leverage  Coverage   FCF ($M)  Liquidity  Score  Alerts
+------------------------------------------------------------------------------------------
+2024-12-31       -808.25    -38.01    -1953.7       0.65     81  EBITDA margin -1% weak (10/14 pts); Leverage rule maxed: negative EBITDA — debt unservable from earnings (17/17 pts); Coverage rule maxed: negative EBITDA — interest uncovered by earnings (14/14 pts); Free cash flow negative (-1,953,686,000, -233% margin, 10/10 pts); Liquidity 0.65× thin (4/9 pts); Cash flow to debt -3% weak (15/15 pts); Debt to assets 68% elevated (9/9 pts); Maturity wall: 37% of debt due within 3 years (1/6 pts); Distress escalation: 5 core signals severe (leverage>5x, coverage<2x, cash_flow_to_debt<30%, fcf_negative, debt_to_assets>40%) — score floored at 60 *** STRESS ***
+2023-12-31        -83.32   -826.13    -2070.3       0.44     88  EBITDA margin -12% weak (14/14 pts); Leverage rule maxed: negative EBITDA — debt unservable from earnings (17/17 pts); Coverage rule maxed: negative EBITDA — interest uncovered by earnings (14/14 pts); Free cash flow negative (-2,070,276,000, -287% margin, 10/10 pts); Liquidity 0.44× thin (7/9 pts); Cash flow to debt -3% weak (15/15 pts); Debt to assets 72% elevated (9/9 pts); Maturity wall: 45% of debt due within 3 years (2/6 pts); Distress escalation: 6 core signals severe (profitability, leverage>5x, coverage<2x, cash_flow_to_debt<30%, fcf_negative, debt_to_assets>40%) — score floored at 60 *** STRESS ***
+2022-12-31        194.24    444.38    -1201.6       1.68     60  EBITDA margin 5% weak (5/14 pts); Leverage 194.2× elevated (17/17 pts); Free cash flow negative (-1,201,634,000, -215% margin, 10/10 pts); Cash flow to debt -6% weak (15/15 pts); Debt to assets 69% elevated (9/9 pts); Distress escalation: 4 core signals severe (leverage>5x, cash_flow_to_debt<30%, fcf_negative, debt_to_assets>40%) — score floored at 60 *** STRESS ***
+2021-12-31        100.99      0.26     -763.8       1.87     64  Leverage 101.0× elevated (17/17 pts); Interest coverage 0.3× thin (14/14 pts); Free cash flow negative (-763,771,000, -316% margin, 10/10 pts); Cash flow to debt -6% weak (15/15 pts); Debt to assets 63% elevated (8/9 pts); Distress escalation: 5 core signals severe (leverage>5x, coverage<2x, cash_flow_to_debt<30%, fcf_negative, debt_to_assets>40%) — score floored at 60 *** STRESS ***
+2020-12-31         57.62      0.20     -709.8       3.41     64  Leverage 57.6× elevated (17/17 pts); Interest coverage 0.2× thin (14/14 pts); Free cash flow negative (-709,835,000, -441% margin, 10/10 pts); Cash flow to debt -6% weak (15/15 pts); Debt to assets 62% elevated (8/9 pts); Maturity wall: 34% of debt due within 3 years (0/6 pts); Distress escalation: 5 core signals severe (leverage>5x, coverage<2x, cash_flow_to_debt<30%, fcf_negative, debt_to_assets>40%) — score floored at 60 *** STRESS ***
+2019-12-31         49.81      0.25     -601.1       1.54     67  Leverage 49.8× elevated (17/17 pts); Interest coverage 0.3× thin (14/14 pts); Free cash flow negative (-601,084,000, -457% margin, 10/10 pts); Cash flow to debt -11% weak (15/15 pts); Debt to assets 64% elevated (9/9 pts); Maturity wall: 50% of debt due within 3 years (2/6 pts); Distress escalation: 5 core signals severe (leverage>5x, coverage<2x, cash_flow_to_debt<30%, fcf_negative, debt_to_assets>40%) — score floored at 60 *** STRESS ***
+2018-12-31         32.45      0.50     -264.2       2.00     62  Leverage 32.4× elevated (17/17 pts); Interest coverage 0.5× thin (14/14 pts); Free cash flow negative (-264,188,000, -253% margin, 10/10 pts); Cash flow to debt -1% weak (15/15 pts); Debt to assets 58% elevated (6/9 pts); Distress escalation: 4 core signals severe (leverage>5x, coverage<2x, cash_flow_to_debt<30%, fcf_negative) — score floored at 60 *** STRESS ***
+==========================================================================================
+
+  Leverage audit (2024-12-31):
+    total_debt: 8,721,212,000  [us-gaap/LongTermDebt]
+    cash: 211,192,000  [us-gaap/CashAndCashEquivalentsAtCarryingValue]
+    operating_income: -239,541,000  [us-gaap/OperatingIncomeLoss]
+    depreciation: 229,012,000  [us-gaap/Depreciation]
+[75/81] 0001772695 ok   (ok=37 fail=38)
+Tracking NMCO...
+  CIK: 0001774342
+  No annual periods found in XBRL data.
+[76/81] NMCO     ok   (ok=38 fail=38)
+Tracking FIRY...
+[77/81] FIRY     FAIL   (ok=38 fail=39)
+Tracking LFTO...
+  CIK: 0001850351
+  No annual periods found in XBRL data.
+[78/81] LFTO     ok   (ok=39 fail=39)
+Tracking 0001868778...
+  CIK: 0001868778
+  Extracting ratios for 5 periods...
+
+==========================================================================================
+  0001868778 — Credit Ratio Summary
+==========================================================================================
+Period          Leverage  Coverage   FCF ($M)  Liquidity  Score  Alerts
+------------------------------------------------------------------------------------------
+2024-12-31          6.38      0.97      405.9      48.66     38  EBITDA margin 9% weak (1/14 pts); Leverage 6.4× elevated (17/17 pts); Interest coverage 1.0× thin (14/14 pts); Cash flow to debt 22% weak (6/15 pts)
+2023-12-31         21.39      0.34      259.8      39.06     49  EBITDA margin 3% weak (6/14 pts); Leverage 21.4× elevated (17/17 pts); Interest coverage 0.3× thin (14/14 pts); Cash flow to debt 14% weak (12/15 pts)
+2022-12-31         28.68      0.60      194.6      26.55     52  EBITDA margin 3% weak (6/14 pts); Leverage 28.7× elevated (17/17 pts); Interest coverage 0.6× thin (14/14 pts); Cash flow to debt 11% weak (14/15 pts) *** STRESS ***
+2021-12-31         16.44      0.64      217.9      32.45     48  EBITDA margin 6% weak (4/14 pts); Leverage 16.4× elevated (17/17 pts); Interest coverage 0.6× thin (14/14 pts); Cash flow to debt 12% weak (13/15 pts)
+2020-12-31         50.90      0.32      153.9      14.47     58  EBITDA margin 4% weak (6/14 pts); Leverage 50.9× elevated (17/17 pts); Interest coverage 0.3× thin (14/14 pts); Cash flow to debt 6% weak (15/15 pts); Debt to assets 56% elevated (6/9 pts) *** STRESS ***
+==========================================================================================
+
+  Leverage audit (2024-12-31):
+    total_debt: 1,809,151,000  [us-gaap/LongTermDebt]
+    cash: 912,460,000  [us-gaap/CashAndCashEquivalentsAtCarryingValue]
+    operating_income: 127,048,000  [us-gaap/OperatingIncomeLoss]
+    depreciation: 13,544,000  [us-gaap/DepreciationDepletionAndAmortization]
+[79/81] 0001868778 ok   (ok=40 fail=39)
+Tracking FSSL...
+  CIK: 0002065812
+  No annual periods found in XBRL data.
+[80/81] FSSL     ok   (ok=41 fail=39)
+Tracking FDXF...
+  CIK: 0002082247
+  No annual periods found in XBRL data.
+[81/81] FDXF     ok   (ok=42 fail=39)
+
+Done this pass: 42 tracked, 39 failed/skipped.
+Failures (companies with no usable US filings, expected for foreign/delisted):
+  - AILLP (0000018654): HTTPError: 404 Client Error: Not Found for url: https://data.sec.gov/api/xbrl/companyfacts/CIK0000018654.json
+  - CRD.B (0000025475): ValueError: Ticker 'CRD.B' not found in SEC company tickers list or EDGAR browse fallback. If the company is delisted, look up its C
+  - GAM (0000040417): HTTPError: 404 Client Error: Not Found for url: https://data.sec.gov/api/xbrl/companyfacts/CIK0000040417.json
+  - MOG.A (0000067887): ValueError: Ticker 'MOG.A' not found in SEC company tickers list or EDGAR browse fallback. If the company is delisted, look up its C
+  - CMS PR B (0000201533): ValueError: Ticker 'CMS PR B' not found in SEC company tickers list or EDGAR browse fallback. If the company is delisted, look up it
+  - TRCY (0000313337): ValueError: Ticker 'TRCY' not found in SEC company tickers list or EDGAR browse fallback. If the company is delisted, look up its CI
+  - EXCE (0000316300): ValueError: Ticker 'EXCE' not found in SEC company tickers list or EDGAR browse fallback. If the company is delisted, look up its CI
+  - ECF (0000793040): HTTPError: 404 Client Error: Not Found for url: https://data.sec.gov/api/xbrl/companyfacts/CIK0000793040.json
+  - GAB (0000794685): HTTPError: 404 Client Error: Not Found for url: https://data.sec.gov/api/xbrl/companyfacts/CIK0000794685.json
+  - CFNBD (0000803016): ValueError: Ticker 'CFNBD' not found in SEC company tickers list or EDGAR browse fallback. If the company is delisted, look up its C
+  - ATPL (0000811828): ValueError: Ticker 'ATPL' not found in SEC company tickers list or EDGAR browse fallback. If the company is delisted, look up its CI
+  - FRBKQ (0000834285): ValueError: Ticker 'FRBKQ' not found in SEC company tickers list or EDGAR browse fallback. If the company is delisted, look up its C
+  - GRRP (0000839621): ValueError: Ticker 'GRRP' not found in SEC company tickers list or EDGAR browse fallback. If the company is delisted, look up its CI
+  - TUEMQ (0000878726): ValueError: Ticker 'TUEMQ' not found in SEC company tickers list or EDGAR browse fallback. If the company is delisted, look up its C
+  - EDMCQ (0000880059): ValueError: Ticker 'EDMCQ' not found in SEC company tickers list or EDGAR browse fallback. If the company is delisted, look up its C
+  - MYN (0000882150): HTTPError: 404 Client Error: Not Found for url: https://data.sec.gov/api/xbrl/companyfacts/CIK0000882150.json
+  - LFPI (0000910523): ValueError: Ticker 'LFPI' not found in SEC company tickers list or EDGAR browse fallback. If the company is delisted, look up its CI
+  - PMIR (0000935724): ValueError: Ticker 'PMIR' not found in SEC company tickers list or EDGAR browse fallback. If the company is delisted, look up its CI
+  - TXCCQ (0000944739): ValueError: Ticker 'TXCCQ' not found in SEC company tickers list or EDGAR browse fallback. If the company is delisted, look up its C
+  - MHD (0001034665): HTTPError: 404 Client Error: Not Found for url: https://data.sec.gov/api/xbrl/companyfacts/CIK0001034665.json
+  - NASB (0001059131): ValueError: Ticker 'NASB' not found in SEC company tickers list or EDGAR browse fallback. If the company is delisted, look up its CI
+  - BOYD (0001074530): ValueError: Ticker 'BOYD' not found in SEC company tickers list or EDGAR browse fallback. If the company is delisted, look up its CI
+  - GUT (0001080720): HTTPError: 404 Client Error: Not Found for url: https://data.sec.gov/api/xbrl/companyfacts/CIK0001080720.json
+  - NVG (0001090116): HTTPError: 404 Client Error: Not Found for url: https://data.sec.gov/api/xbrl/companyfacts/CIK0001090116.json
+  - GDV (0001260729): HTTPError: 404 Client Error: Not Found for url: https://data.sec.gov/api/xbrl/companyfacts/CIK0001260729.json
+  - NMZ (0001266585): HTTPError: 404 Client Error: Not Found for url: https://data.sec.gov/api/xbrl/companyfacts/CIK0001266585.json
+  - JFR (0001276533): HTTPError: 404 Client Error: Not Found for url: https://data.sec.gov/api/xbrl/companyfacts/CIK0001276533.json
+  - SBNY (0001288784): HTTPError: 404 Client Error: Not Found for url: https://data.sec.gov/api/xbrl/companyfacts/CIK0001288784.json
+  - SICP (0001312109): ValueError: Ticker 'SICP' not found in SEC company tickers list or EDGAR browse fallback. If the company is delisted, look up its CI
+  - NORNQ (0001422105): ValueError: Ticker 'NORNQ' not found in SEC company tickers list or EDGAR browse fallback. If the company is delisted, look up its C
+  - GNT (0001438893): HTTPError: 404 Client Error: Not Found for url: https://data.sec.gov/api/xbrl/companyfacts/CIK0001438893.json
+  - VDI (0001465872): ValueError: Ticker 'VDI' not found in SEC company tickers list or EDGAR browse fallback. If the company is delisted, look up its CIK
+  - EKSN (0001490165): ValueError: Ticker 'EKSN' not found in SEC company tickers list or EDGAR browse fallback. If the company is delisted, look up its CI
+  - PFBC (0001492165): HTTPError: 404 Client Error: Not Found for url: https://data.sec.gov/api/xbrl/companyfacts/CIK0001492165.json
+  - ATH PR A (0001527469): ValueError: Ticker 'ATH PR A' not found in SEC company tickers list or EDGAR browse fallback. If the company is delisted, look up it
+  - OZK (0001569650): HTTPError: 404 Client Error: Not Found for url: https://data.sec.gov/api/xbrl/companyfacts/CIK0001569650.json
+  - RVLPQ (0001739426): ValueError: Ticker 'RVLPQ' not found in SEC company tickers list or EDGAR browse fallback. If the company is delisted, look up its C
+  - CCFLU (0001766682): ValueError: Ticker 'CCFLU' not found in SEC company tickers list or EDGAR browse fallback. If the company is delisted, look up its C
+  - FIRY (0001801661): ValueError: Ticker 'FIRY' not found in SEC company tickers list or EDGAR browse fallback. If the company is delisted, look up its CI
+
+Trainable so far (CIKs with ratios): 1627. Re-run to continue; build_labels + train next.
