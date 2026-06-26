@@ -47,8 +47,8 @@ const TREND_METRICS: {
   threshold?: number
   reversed?: boolean   // invert the Y-axis (used by Implied Rating so AAA sits at top)
 }[] = [
-  { key: 'score',             label: 'Stress Score',      accessor: p => p.score,                       fmt: v => `${Math.round(v)}`, domain: [0, 100], threshold: 50 },
   { key: 'implied_rating',    label: 'Implied Rating',    accessor: p => p.implied_rating?.rating_index, fmt: v => ratingFromIndex(v), domain: [0, RATING_SCALE.length - 1], reversed: true },
+  { key: 'score',             label: 'Stress Score',      accessor: p => p.score,                       fmt: v => `${Math.round(v)}`, domain: [0, 100], threshold: 50 },
   { key: 'ebitda_margin',     label: 'EBITDA Margin',     accessor: p => p.ratios.ebitda_margin?.value,     fmt: fmtPct },
   { key: 'leverage',          label: 'Leverage',          accessor: p => p.ratios.leverage?.value,          fmt: fmtRatio },
   { key: 'interest_coverage', label: 'Interest Coverage', accessor: p => p.ratios.interest_coverage?.value, fmt: fmtRatio },
@@ -92,14 +92,35 @@ export default function IssuerPage() {
   const [page, setPage] = useState(0)
 
   // Which metric the trend chart is currently plotting (a key from TREND_METRICS).
-  // Defaults to the stress score so the chart looks unchanged on load.
+  // Seeded with the stress score, but on first load for an issuer the default is
+  // set to the Implied Rating when the issuer has one (see the effect below).
   const [selectedMetric, setSelectedMetric] = useState('score')
+
+  // Tracks whether we've applied the data-driven default metric for the current
+  // issuer yet. Reset on ticker change so navigation re-defaults; the flag keeps
+  // later reloads (refresh, LLM review) from clobbering the user's tab choice.
+  const metricDefaultedRef = useRef(false)
 
 
   // ── Data loading ────────────────────────────────────────────────────────────
 
   // Re-fetch whenever the ticker changes (handles browser back/forward navigation).
   useEffect(() => { load() }, [ticker])
+
+  // Re-arm the default-metric guard on every ticker change so each newly-opened
+  // issuer gets its own data-driven default applied once.
+  useEffect(() => { metricDefaultedRef.current = false }, [ticker])
+
+  // When a new issuer's data first arrives, default the trend chart to the
+  // Implied Rating (the headline view) when the issuer has one, else the Stress
+  // Score. Guarded by the ref so later reloads (refresh / LLM review) don't reset
+  // a tab the user has since switched to.
+  useEffect(() => {
+    if (!data || metricDefaultedRef.current) return
+    const hasImplied = data.periods.some(p => p.implied_rating?.rating_index != null)
+    setSelectedMetric(hasImplied ? 'implied_rating' : 'score')
+    metricDefaultedRef.current = true
+  }, [data])
 
   // On mount / ticker change, restore the LLM-review UI if a review is already
   // running for this issuer (e.g. the user navigated away and back mid-run).
@@ -198,7 +219,15 @@ export default function IssuerPage() {
   // [...data.periods] creates a shallow copy so we don't mutate the state array.
   // The metric the chart is plotting, and its values per period (chronological).
   // A missing ratio in a period maps to null; connectNulls bridges the gap.
-  const metric = TREND_METRICS.find(m => m.key === selectedMetric) ?? TREND_METRICS[0]
+  //
+  // Implied Rating leads (and is the default) when the issuer has one; when it
+  // has no implied rating at all we drop that tab entirely and fall back to the
+  // Stress Score, so visibleMetrics drives both the tab bar and the fallback.
+  const hasImpliedRating = !!data?.periods.some(p => p.implied_rating?.rating_index != null)
+  const visibleMetrics = hasImpliedRating
+    ? TREND_METRICS
+    : TREND_METRICS.filter(m => m.key !== 'implied_rating')
+  const metric = visibleMetrics.find(m => m.key === selectedMetric) ?? visibleMetrics[0]
   // On the Implied Rating tab, overlay the primary agency's actual rating (same
   // index axis) so the implied-vs-agency gap is visible.
   const showAgencyOverlay =
@@ -317,9 +346,10 @@ export default function IssuerPage() {
               )}
             </div>
 
-            {/* Tab bar — switches which metric the chart below plots. */}
+            {/* Tab bar — switches which metric the chart below plots. The
+                Implied Rating tab is omitted when the issuer has no implied rating. */}
             <div className="flex flex-wrap gap-1.5 mb-4">
-              {TREND_METRICS.map(m => (
+              {visibleMetrics.map(m => (
                 <button
                   key={m.key}
                   onClick={() => setSelectedMetric(m.key)}
@@ -1262,7 +1292,7 @@ function AgencyRatingHistorySection({
 
   return (
     <CollapsibleCard
-      title="Agency Rating History"
+      title="Agency Rating Change History"
       description={
         <>
           Real long-term issuer ratings (Moody&apos;s / Fitch / Egan-Jones), newest first.
