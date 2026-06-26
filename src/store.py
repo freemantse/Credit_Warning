@@ -130,6 +130,29 @@ def _fetch_all(build_query, *, page_size: int = 1000) -> list[dict[str, Any]]:
         start += page_size
 
 
+def _scope_ciks(q, cik: str | None, ciks: list[str] | None):
+    """
+    Apply a CIK filter to a grouped-read query builder.
+
+    The grouped reads serve three callers with very different scope:
+      • detail page  — one issuer        → `cik` set, `.eq`
+      • portfolio    — the watchlist set → `ciks` set, `.in_`
+      • cron/pipeline— everything        → neither, unfiltered
+
+    `cik` and `ciks` are mutually exclusive; `cik` wins if both are passed. The
+    `ciks` path is what keeps the dashboard from full-scanning a table that holds
+    every issuer tracked solely to TRAIN the model — without it, get_ratios_grouped()
+    alone pages through ~95k rows on one connection and the Supabase edge drops it
+    mid-stream (RemoteProtocolError). Callers must avoid an empty `ciks` list (it
+    would build `cik=in.()`); list_issuers short-circuits before reaching here.
+    """
+    if cik is not None:
+        return q.eq("cik", cik.zfill(10))
+    if ciks is not None:
+        return q.in_("cik", [c.zfill(10) for c in ciks])
+    return q
+
+
 # ── Company identity ─────────────────────────────────────────────────────────
 
 def save_company(info: dict[str, Any], **_) -> None:
@@ -645,7 +668,9 @@ def clear_migration_predictions(**_) -> None:
     _delete_all_rows("migration_predictions")
 
 
-def get_migration_predictions_grouped(cik: str | None = None, **_) -> dict[str, dict[str, dict]]:
+def get_migration_predictions_grouped(
+    cik: str | None = None, ciks: list[str] | None = None, **_
+) -> dict[str, dict[str, dict]]:
     """
     Fetch migration predictions in ONE query, grouped as cik → period_end → row.
 
@@ -659,7 +684,7 @@ def get_migration_predictions_grouped(cik: str | None = None, **_) -> dict[str, 
             .select(",".join(_MIGRATION_PREDICTION_COLUMNS))
             .order("cik").order("period_end")
         )
-        return q.eq("cik", cik.zfill(10)) if cik is not None else q
+        return _scope_ciks(q, cik, ciks)
 
     out: dict[str, dict[str, dict]] = {}
     try:
@@ -1008,13 +1033,17 @@ def get_findings(cik: str, period_end: str, **_) -> list[dict]:
     return list(res.data)
 
 
-def get_ratios_grouped(cik: str | None = None, **_) -> dict[str, dict[str, dict[str, dict]]]:
+def get_ratios_grouped(
+    cik: str | None = None, ciks: list[str] | None = None, **_
+) -> dict[str, dict[str, dict[str, dict]]]:
     """
     Fetch ratios in ONE query and group them as cik → period_end → ratio_name → data.
 
     This replaces the per-period get_full_ratios() loop that caused an N+1 query
     storm (a detail page issued ~18×2 round-trips). Pass a cik to scope to one
-    company (detail page); omit it to fetch every issuer at once (portfolio list).
+    company (detail page), `ciks` to scope to the portfolio watchlist (the list
+    endpoint — avoids scanning every model-training issuer), or neither to fetch
+    everything (cron/pipeline).
 
     `data` is {value, inputs, source_tags} — the same shape get_full_ratios returns.
     """
@@ -1025,7 +1054,7 @@ def get_ratios_grouped(cik: str | None = None, **_) -> dict[str, dict[str, dict[
             .select("cik, period_end, ratio_name, value, inputs_json, source_tags_json, missing_json")
             .order("cik").order("period_end").order("ratio_name")  # stable order for paging
         )
-        return q.eq("cik", cik.zfill(10)) if cik is not None else q
+        return _scope_ciks(q, cik, ciks)
 
     out: dict[str, dict[str, dict[str, dict]]] = {}
     for row in _fetch_all(build):
@@ -1035,7 +1064,9 @@ def get_ratios_grouped(cik: str | None = None, **_) -> dict[str, dict[str, dict[
     return out
 
 
-def get_findings_grouped(cik: str | None = None, **_) -> dict[str, dict[str, list[dict]]]:
+def get_findings_grouped(
+    cik: str | None = None, ciks: list[str] | None = None, **_
+) -> dict[str, dict[str, list[dict]]]:
     """
     Fetch findings in ONE query and group them as cik → period_end → [findings].
 
@@ -1051,7 +1082,7 @@ def get_findings_grouped(cik: str | None = None, **_) -> dict[str, dict[str, lis
             .select("cik, period_end, concern, severity, evidence_quote, source, source_url")
             .order("id")  # stable order for paging (BIGSERIAL primary key)
         )
-        return q.eq("cik", cik.zfill(10)) if cik is not None else q
+        return _scope_ciks(q, cik, ciks)
 
     out: dict[str, dict[str, list[dict]]] = {}
     for row in _fetch_all(build):
@@ -1065,7 +1096,9 @@ def get_findings_grouped(cik: str | None = None, **_) -> dict[str, dict[str, lis
     return out
 
 
-def get_maturities_grouped(cik: str | None = None, **_) -> dict[str, dict[str, dict]]:
+def get_maturities_grouped(
+    cik: str | None = None, ciks: list[str] | None = None, **_
+) -> dict[str, dict[str, dict]]:
     """
     Fetch maturity rows in ONE query, grouped as cik → period_end → schedule dict.
 
@@ -1081,7 +1114,7 @@ def get_maturities_grouped(cik: str | None = None, **_) -> dict[str, dict[str, d
             .select("cik, period_end, bucket, value, source_tag")
             .order("cik").order("period_end").order("bucket")  # stable order for paging
         )
-        return q.eq("cik", cik.zfill(10)) if cik is not None else q
+        return _scope_ciks(q, cik, ciks)
 
     # First gather raw buckets per (cik, period_end).
     raw: dict[str, dict[str, dict]] = {}
@@ -1109,7 +1142,9 @@ def get_maturities_grouped(cik: str | None = None, **_) -> dict[str, dict[str, d
     return out
 
 
-def get_implied_ratings_grouped(cik: str | None = None, **_) -> dict[str, dict[str, dict]]:
+def get_implied_ratings_grouped(
+    cik: str | None = None, ciks: list[str] | None = None, **_
+) -> dict[str, dict[str, dict]]:
     """
     Fetch implied ratings in ONE query, grouped as cik → period_end → rating dict.
 
@@ -1129,7 +1164,7 @@ def get_implied_ratings_grouped(cik: str | None = None, **_) -> dict[str, dict[s
             )
             .order("cik").order("period_end")  # stable order for paging
         )
-        return q.eq("cik", cik.zfill(10)) if cik is not None else q
+        return _scope_ciks(q, cik, ciks)
 
     out: dict[str, dict[str, dict]] = {}
     for row in _fetch_all(build):
@@ -1146,7 +1181,9 @@ def get_implied_ratings_grouped(cik: str | None = None, **_) -> dict[str, dict[s
     return out
 
 
-def get_covenants_grouped(cik: str | None = None, **_) -> dict[str, dict[str, list[dict]]]:
+def get_covenants_grouped(
+    cik: str | None = None, ciks: list[str] | None = None, **_
+) -> dict[str, dict[str, list[dict]]]:
     """Fetch covenants in ONE query, grouped as cik → period_end → [covenants]."""
     def build():
         q = (
@@ -1158,7 +1195,7 @@ def get_covenants_grouped(cik: str | None = None, **_) -> dict[str, dict[str, li
             )
             .order("id")  # stable order for paging (BIGSERIAL primary key)
         )
-        return q.eq("cik", cik.zfill(10)) if cik is not None else q
+        return _scope_ciks(q, cik, ciks)
 
     out: dict[str, dict[str, list[dict]]] = {}
     for row in _fetch_all(build):
@@ -1174,7 +1211,9 @@ def get_covenants_grouped(cik: str | None = None, **_) -> dict[str, dict[str, li
     return out
 
 
-def get_loss_provisions_grouped(cik: str | None = None, **_) -> dict[str, dict[str, list[dict]]]:
+def get_loss_provisions_grouped(
+    cik: str | None = None, ciks: list[str] | None = None, **_
+) -> dict[str, dict[str, list[dict]]]:
     """Fetch loss provisions in ONE query, grouped as cik → period_end → [provisions]."""
     def build():
         q = (
@@ -1186,7 +1225,7 @@ def get_loss_provisions_grouped(cik: str | None = None, **_) -> dict[str, dict[s
             )
             .order("id")  # stable order for paging (BIGSERIAL primary key)
         )
-        return q.eq("cik", cik.zfill(10)) if cik is not None else q
+        return _scope_ciks(q, cik, ciks)
 
     out: dict[str, dict[str, list[dict]]] = {}
     for row in _fetch_all(build):

@@ -329,18 +329,28 @@ def list_issuers():
     Each row includes the five key ratios and a stress score so the dashboard
     table can render without a separate per-issuer API call.
     """
-    # Fetch identity, all ratios, and all findings in a fixed handful of queries
-    # (instead of ~3 per issuer). Grouped dicts are keyed by cik → period → ….
     # portfolio_only: the dashboard shows the curated watchlist, NOT every issuer
     # tracked solely to train the model (those stay in_portfolio=FALSE).
     issuers = get_issuers(portfolio_only=True)
-    ratios_by_cik = get_ratios_grouped()       # 1 query for every issuer's ratios
-    findings_by_cik = get_findings_grouped()   # 1 query for every issuer's findings
-    maturities_by_cik = get_maturities_grouped()       # 1 query for every issuer's maturities
-    covenants_by_cik = get_covenants_grouped()         # 1 query for every issuer's covenants
-    provisions_by_cik = get_loss_provisions_grouped()  # 1 query for every issuer's provisions
-    ratings_by_cik = get_implied_ratings_grouped()     # 1 query for every issuer's implied ratings
-    predictions_by_cik = get_migration_predictions_grouped()  # resilient → {} if untrained/undeployed
+    if not issuers:
+        # Empty watchlist → nothing to render. Return immediately rather than
+        # issue 7 unscoped grouped reads: those would each full-scan tables that
+        # hold every model-training issuer (ratios alone is ~95k rows), and the
+        # ratios scan's ~95 sequential pages on one connection trip the Supabase
+        # edge into dropping it mid-stream (RemoteProtocolError → 500).
+        return []
+
+    # Fetch identity, ratios, and findings for the watchlist in a fixed handful of
+    # queries (instead of ~3 per issuer), each SCOPED to the portfolio CIKs so we
+    # never page the model-training rows. Grouped dicts are keyed by cik → period → ….
+    port_ciks = [issuer["cik"] for issuer in issuers]
+    ratios_by_cik = get_ratios_grouped(ciks=port_ciks)       # 1 query for every issuer's ratios
+    findings_by_cik = get_findings_grouped(ciks=port_ciks)   # 1 query for every issuer's findings
+    maturities_by_cik = get_maturities_grouped(ciks=port_ciks)       # 1 query for every issuer's maturities
+    covenants_by_cik = get_covenants_grouped(ciks=port_ciks)         # 1 query for every issuer's covenants
+    provisions_by_cik = get_loss_provisions_grouped(ciks=port_ciks)  # 1 query for every issuer's provisions
+    ratings_by_cik = get_implied_ratings_grouped(ciks=port_ciks)     # 1 query for every issuer's implied ratings
+    predictions_by_cik = get_migration_predictions_grouped(ciks=port_ciks)  # resilient → {} if untrained/undeployed
     active = _active_config()                           # model-learned (or default) weights, read once
 
     result = []
