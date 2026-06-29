@@ -266,3 +266,45 @@ CREATE INDEX IF NOT EXISTS idx_going_concern_cik ON going_concern (cik, period_e
 ALTER TABLE going_concern ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Public read going_concern" ON going_concern;
 CREATE POLICY "Public read going_concern" ON going_concern FOR SELECT USING (true);
+
+
+-- ── llm_jobs ───────────────────────────────────────────────────────────────────
+-- Durable work queue for off-Vercel LLM extraction. The LLM passes (review_filing)
+-- take minutes per filing — far past Vercel's 60 s function limit — so an
+-- always-on worker (src/worker.py, run as `python -m src.worker`) drains this
+-- queue instead: it claims a pending job atomically, runs the full review_filing
+-- pipeline, saves to the existing tables (llm_findings / covenants /
+-- loss_provisions / going_concern), and marks the job done or failed. The fast
+-- /api/jobs endpoints only INSERT/SELECT here (serverless-safe); no LLM runs on
+-- Vercel. `part` reserves the future per-part split (going_concern / covenants /
+-- breach); only 'full' (the whole pipeline) is wired now.
+--
+-- Atomic claim (no DB function): the worker does an optimistic guarded UPDATE —
+--   UPDATE llm_jobs SET status='running', started_at=now()
+--   WHERE id = <one pending id> AND status='pending'
+-- The `AND status='pending'` guard + Postgres row locking guarantee two workers
+-- never run the same job (the loser's UPDATE matches 0 rows and re-selects).
+-- NOTE: run this in the Supabase SQL Editor before the worker / endpoints use it.
+CREATE TABLE IF NOT EXISTS llm_jobs (
+  id           BIGSERIAL PRIMARY KEY,
+  cik          TEXT NOT NULL,
+  period_end   TEXT NOT NULL,
+  part         TEXT NOT NULL DEFAULT 'full'
+               CHECK (part   IN ('going_concern','covenants','breach','full')),  -- only 'full' wired now
+  status       TEXT NOT NULL DEFAULT 'pending'
+               CHECK (status IN ('pending','running','done','failed')),
+  attempts     INT  NOT NULL DEFAULT 0,                 -- incremented on each failed run; 'failed' at MAX_ATTEMPTS
+  error        TEXT,                                     -- last failure message (NULL while healthy)
+  requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),       -- enqueue time; FIFO claim order
+  started_at   TIMESTAMPTZ,                              -- when a worker claimed it (reset_stuck checks this)
+  finished_at  TIMESTAMPTZ,                              -- when it reached done/failed
+  UNIQUE (cik, period_end, part)                         -- one job per (issuer, period, part); enables dedupe
+);
+
+-- Claim path filters status='pending' and orders by requested_at (FIFO); the
+-- composite index serves both. Also covers reset_stuck's status='running' scan.
+CREATE INDEX IF NOT EXISTS idx_llm_jobs_status ON llm_jobs (status, requested_at);
+
+ALTER TABLE llm_jobs ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Public read llm_jobs" ON llm_jobs;
+CREATE POLICY "Public read llm_jobs" ON llm_jobs FOR SELECT USING (true);

@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -898,3 +899,159 @@ def delete_issuer(cik: str, **_) -> None:
             f"No company row deleted for CIK {cik} — "
             "verify SUPABASE_SERVICE_ROLE_KEY is set (anon key cannot DELETE with RLS enabled)"
         )
+
+
+# ── LLM job queue (llm_jobs) ─────────────────────────────────────────────────
+# Durable work queue drained by an off-Vercel worker (src/worker.py). All access
+# goes through the shared _client() (service-role key, bypasses RLS), matching
+# every other write here. PostgREST cannot express UPDATE ... WHERE id =
+# (SELECT ... LIMIT 1), so claim_job uses an optimistic guarded UPDATE instead
+# (see claim_job). Timestamps are written from Python as ISO-8601 UTC strings,
+# since PostgREST does not evaluate now() inside a sent value.
+
+def _utcnow_iso() -> str:
+    """Current UTC time as an ISO-8601 string for TIMESTAMPTZ columns."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def insert_job(cik: str, period_end: str, part: str = "full", **_) -> dict[str, Any]:
+    """
+    Insert a new pending job and return the row. Assumes the caller has already
+    handled dedupe (see get_job); a UNIQUE (cik, period_end, part) violation here
+    means a concurrent insert raced us — the caller should re-read with get_job.
+    """
+    cik = cik.zfill(10)
+    resp = (
+        _client()
+        .table("llm_jobs")
+        .insert({"cik": cik, "period_end": period_end, "part": part})
+        .execute()
+    )
+    return resp.data[0]
+
+
+def get_job(
+    job_id: int | None = None,
+    *,
+    cik: str | None = None,
+    period_end: str | None = None,
+    part: str = "full",
+    **_,
+) -> dict[str, Any] | None:
+    """
+    Fetch one job by id, or by its natural key (cik, period_end, part). Returns
+    the row dict or None. Used by GET /api/jobs and by the POST dedupe path.
+    """
+    q = _client().table("llm_jobs").select("*")
+    if job_id is not None:
+        q = q.eq("id", job_id)
+    else:
+        if cik is None or period_end is None:
+            raise ValueError("get_job needs either job_id or (cik, period_end)")
+        q = q.eq("cik", cik.zfill(10)).eq("period_end", period_end).eq("part", part)
+    res = q.limit(1).execute()
+    return res.data[0] if res.data else None
+
+
+def requeue_job(job_id: int, **_) -> dict[str, Any] | None:
+    """
+    Reset a job to pending (used to re-queue a previously 'failed' job from the
+    POST endpoint). Clears error and the run timestamps; leaves attempts as-is so
+    the failure history is visible. Returns the updated row.
+    """
+    res = (
+        _client()
+        .table("llm_jobs")
+        .update({"status": "pending", "error": None, "started_at": None, "finished_at": None})
+        .eq("id", job_id)
+        .execute()
+    )
+    return res.data[0] if res.data else None
+
+
+def claim_job(**_) -> dict[str, Any] | None:
+    """
+    Atomically claim the oldest pending job (B1 — optimistic guarded update, no DB
+    function). Returns the claimed row (now status='running'), or None if the
+    queue is empty.
+
+    Two-step, safe under concurrency:
+      1. SELECT the oldest pending id (ORDER BY requested_at).
+      2. UPDATE ... SET status='running', started_at=now()
+         WHERE id=<that id> AND status='pending'      ← the guard
+    Postgres row-locking serializes step 2 across workers: only the winner's
+    UPDATE matches (status still 'pending') and returns a row; a loser matches 0
+    rows and we retry the select. Bounded retry loop avoids spinning forever if
+    the queue drains under us.
+    """
+    client = _client()
+    for _attempt in range(10):
+        sel = (
+            client.table("llm_jobs")
+            .select("id")
+            .eq("status", "pending")
+            .order("requested_at")
+            .limit(1)
+            .execute()
+        )
+        if not sel.data:
+            return None  # queue empty
+        job_id = sel.data[0]["id"]
+        upd = (
+            client.table("llm_jobs")
+            .update({"status": "running", "started_at": _utcnow_iso()})
+            .eq("id", job_id)
+            .eq("status", "pending")          # guard: only flip if still pending
+            .execute()
+        )
+        if upd.data:
+            return upd.data[0]                # we won the row
+        # else another worker claimed it between our SELECT and UPDATE — retry
+    return None
+
+
+def mark_done(job_id: int, **_) -> None:
+    """Mark a job complete: status='done', finished_at=now(), error cleared."""
+    (
+        _client()
+        .table("llm_jobs")
+        .update({"status": "done", "finished_at": _utcnow_iso(), "error": None})
+        .eq("id", job_id)
+        .execute()
+    )
+
+
+def mark_failed(job_id: int, error: str, attempts: int, max_attempts: int = 3, **_) -> None:
+    """
+    Record a failed run. `attempts` is the NEW count (already incremented by the
+    caller). If attempts >= max_attempts the job is terminal ('failed' with the
+    error and finished_at); otherwise it is re-queued ('pending') so the worker
+    retries it later. The error is stored either way for visibility.
+    """
+    row: dict[str, Any] = {"attempts": attempts, "error": error[:2000]}
+    if attempts >= max_attempts:
+        row["status"] = "failed"
+        row["finished_at"] = _utcnow_iso()
+    else:
+        row["status"] = "pending"            # re-queue for another attempt
+        row["started_at"] = None
+    _client().table("llm_jobs").update(row).eq("id", job_id).execute()
+
+
+def reset_stuck(minutes: int = 30, **_) -> int:
+    """
+    Re-queue jobs stuck in 'running' longer than `minutes` (a worker died mid-run,
+    or was killed). Returns how many were reset. The threshold must exceed a
+    legitimate full run on the low rate tier (which can exceed 15 min), so it
+    defaults to 30 — high enough not to falsely reset a still-running job.
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+    res = (
+        _client()
+        .table("llm_jobs")
+        .update({"status": "pending", "started_at": None})
+        .eq("status", "running")
+        .lt("started_at", cutoff)
+        .execute()
+    )
+    return len(res.data or [])

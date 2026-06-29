@@ -63,11 +63,14 @@ from src.store import (
     get_covenants_grouped,
     get_findings_grouped,
     get_issuers,
+    get_job,
     get_loss_provisions_grouped,
     get_maturities_grouped,
     get_ratios_grouped,
     get_score_config,
+    insert_job,
     list_cases,
+    requeue_job,
     save_company,
     save_covenants,
     save_findings,
@@ -568,6 +571,74 @@ def llm_review_status(ticker: str):
     return _llm_review_status.get(
         cik, {"running": False, "error": None, "periods_done": 0, "periods_total": 0}
     )
+
+
+# ── LLM job queue (durable, off-Vercel worker drains it) ─────────────────────
+# These two endpoints are fast, DB-only, and serverless-safe (<60s): they just
+# INSERT/SELECT in llm_jobs. The actual LLM work runs in src/worker.py, an
+# always-on process outside Vercel — never in these requests. The frontend
+# enqueues with POST /api/jobs and polls GET /api/jobs for status.
+
+class CreateJobRequest(BaseModel):
+    ticker_or_cik: str        # resolved against the LOCAL companies table (must be tracked)
+    period_end: str           # fiscal year-end, e.g. "2023-09-30"
+    part: str = "full"        # only 'full' is wired in the worker today
+
+
+@app.post("/api/jobs")
+def create_job(req: CreateJobRequest):
+    """
+    Enqueue an LLM extraction job for an already-tracked issuer (the worker runs
+    it off-Vercel). Resolution uses the local companies table — no EDGAR round
+    trip — and 404s if the issuer isn't tracked yet (POST /api/track first).
+
+    Dedupe on the natural key (cik, period_end, part):
+      - done            → return the existing row (do NOT re-queue);
+      - failed          → reset to pending and return it (re-queue);
+      - pending/running → return the existing row (already queued);
+      - none            → insert a new pending job and return it.
+    """
+    cik = _resolve_cik_for_read(req.ticker_or_cik)
+    if not get_company(cik):
+        raise HTTPException(
+            404, f"{req.ticker_or_cik} is not tracked. POST /api/track first."
+        )
+
+    existing = get_job(cik=cik, period_end=req.period_end, part=req.part)
+    if existing:
+        if existing["status"] == "failed":
+            return requeue_job(existing["id"]) or existing   # re-queue a failed job
+        return existing                                       # done / pending / running
+
+    try:
+        return insert_job(cik, req.period_end, req.part)
+    except Exception:
+        # A concurrent insert raced us to the UNIQUE key — re-read and return it.
+        row = get_job(cik=cik, period_end=req.period_end, part=req.part)
+        if row:
+            return row
+        raise
+
+
+@app.get("/api/jobs")
+def get_job_status(
+    id: int | None = None,
+    cik: str | None = None,
+    period_end: str | None = None,
+    part: str = "full",
+):
+    """
+    Return one job's row (status, attempts, error, timestamps) — what the frontend
+    polls. Query by `id`, or by the natural key `cik` + `period_end` (+ `part`).
+    `cik` may be a ticker or a CIK; it's resolved the same way as the read routes.
+    """
+    if id is None and (cik is None or period_end is None):
+        raise HTTPException(400, "provide ?id= or ?cik=&period_end=")
+    resolved_cik = _resolve_cik_for_read(cik) if cik else None
+    job = get_job(job_id=id, cik=resolved_cik, period_end=period_end, part=part)
+    if job is None:
+        raise HTTPException(404, "job not found")
+    return job
 
 
 # ── Backtest (long-running background task) ──────────────────────────────────
