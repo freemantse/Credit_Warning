@@ -231,6 +231,68 @@ def walk_forward_eval(df, split_dates: list[str], **train_kwargs) -> dict[str, A
     }
 
 
+# ── Per-head hyperparameter / constraint sweep ──────────────────────────────────
+
+# A modest grid — each entry is a full 3-split walk-forward, so keep it small. Each
+# `kwargs` is passed straight to walk_forward_eval → train_all. The sweep reports mean
+# PR-AUC PER HEAD so the winning config can differ per head (e.g. a balanced distress
+# head). It does NOT auto-apply: fold the winners into train_all's defaults/overrides.
+SWEEP_GRID = [
+    {"label": "baseline", "kwargs": {}},
+    {"label": "lr0.03_iter500", "kwargs": {"booster_params": {"learning_rate": 0.03, "max_iter": 500}}},
+    {"label": "leaves63", "kwargs": {"booster_params": {"max_leaf_nodes": 63}}},
+    {"label": "l2_0.1", "kwargs": {"booster_params": {"l2_regularization": 0.1}}},
+    {"label": "leaf50", "kwargs": {"booster_params": {"min_samples_leaf": 50}}},
+    {"label": "relax", "kwargs": {"relax_secondary_constraints": True}},
+    {"label": "relax_leaves63", "kwargs": {"relax_secondary_constraints": True,
+                                           "booster_params": {"max_leaf_nodes": 63}}},
+    {"label": "distress_balanced", "kwargs": {"head_overrides": {"distress": {"class_weight": "balanced"}}}},
+    {"label": "relax_distress_balanced", "kwargs": {"relax_secondary_constraints": True,
+                                                    "head_overrides": {"distress": {"class_weight": "balanced"}}}},
+]
+
+
+def run_sweep(df, split_dates: list[str], grid: list[dict] | None = None) -> dict[str, Any]:
+    """
+    Run each config in `grid` through the full walk-forward and collect mean test
+    PR-AUC per head. Returns {results:[{label, kwargs, pr_auc:{head:val}}...],
+    best:{head:{label, pr_auc}}}. Pure measurement — nothing is applied.
+    """
+    grid = grid or SWEEP_GRID
+    results: list[dict[str, Any]] = []
+    for i, combo in enumerate(grid, 1):
+        print(f"[sweep {i}/{len(grid)}] {combo['label']} …")
+        res = walk_forward_eval(df, split_dates, **combo["kwargs"])
+        agg = res["aggregate"]
+        results.append({
+            "label": combo["label"],
+            "kwargs": combo["kwargs"],
+            "pr_auc": {h: agg[h].get("mean_pr_auc_model") for h in agg},
+        })
+
+    heads = list(results[0]["pr_auc"]) if results else []
+    best = {}
+    for h in heads:
+        scored = [(r["label"], r["pr_auc"].get(h)) for r in results if r["pr_auc"].get(h) is not None]
+        if scored:
+            label, val = max(scored, key=lambda t: t[1])
+            best[h] = {"label": label, "pr_auc": val}
+    return {"results": results, "best": best, "heads": heads}
+
+
+def print_sweep(sweep: dict[str, Any]) -> None:
+    heads = sweep["heads"]
+    fmt = lambda x: f"{x:.4f}" if isinstance(x, (int, float)) else "—"
+    print(f"\nPer-head sweep — mean PR-AUC (higher is better):")
+    print(f"  {'config':<26}" + "".join(f"{h:>12}" for h in heads))
+    for r in sweep["results"]:
+        print(f"  {r['label']:<26}" + "".join(f"{fmt(r['pr_auc'].get(h)):>12}" for h in heads))
+    print("\nBest config per head:")
+    for h in heads:
+        b = sweep["best"].get(h)
+        print(f"  {h:<20}{b['label'] if b else '—':<26}{fmt(b['pr_auc']) if b else '—'}")
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -254,6 +316,10 @@ if __name__ == "__main__":
     parser.add_argument("--downgrade-op", type=float, default=0.14,
                         help="downgrade-head operating point (balanced catch/false-alarm); "
                              "its precision is ~flat so this is a product choice, not a fit")
+    parser.add_argument("--sweep", action="store_true",
+                        help="run the per-head hyperparameter/constraint grid and report the "
+                             "best config per head (does not retrain or write the scorecard)")
+    parser.add_argument("--sweep-out", default="data/migration_sweep.json")
     args = parser.parse_args()
 
     if args.matrix:
@@ -263,6 +329,17 @@ if __name__ == "__main__":
         from src.model.features import load_training_matrix
         df = load_training_matrix()
 
+    split_dates = [s.strip() for s in args.splits.split(",")]
+
+    if args.sweep:
+        from pathlib import Path
+        sweep = run_sweep(df, split_dates)
+        Path(args.sweep_out).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.sweep_out).write_text(json.dumps(sweep, indent=2))
+        print_sweep(sweep)
+        print(f"\nSweep results → {args.sweep_out}")
+        raise SystemExit(0)
+
     train_kwargs: dict[str, Any] = {}
     if args.class_weight is not None:
         train_kwargs["class_weight"] = None if args.class_weight == "none" else args.class_weight
@@ -271,7 +348,7 @@ if __name__ == "__main__":
     if args.calibration_frac is not None:
         train_kwargs["calibration_frac"] = args.calibration_frac
 
-    result = walk_forward_eval(df, [s.strip() for s in args.splits.split(",")], **train_kwargs)
+    result = walk_forward_eval(df, split_dates, **train_kwargs)
 
     # Prefer thresholds tuned on the VINTAGE models the backtest actually scores with
     # (data/model_vintages/). The eval-split thresholds are kept for reference — the
@@ -289,5 +366,20 @@ if __name__ == "__main__":
 
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(json.dumps({"migration": result}, indent=2))
-    print(json.dumps(result["aggregate"], indent=2))
+
+    # Modeler-facing scorecard — this is the view that used to live on the /backtest
+    # page; it's CLI-only now. Mean PR-AUC per head, model vs. logistic baseline,
+    # judged against the no-skill floor (the event's base rate). Higher is better.
+    # The full machine-readable report is the JSON written above.
+    agg = result["aggregate"]
+    labels = {"downgrade": "Downgrade", "upgrade": "Upgrade", "distress": "Distress (default)"}
+    n_splits = max((agg[h].get("n_splits_scored") or 0 for h in agg), default=0)
+    fmt = lambda x: f"{x:.4f}" if isinstance(x, (int, float)) else "—"
+    print(f"\nWalk-forward accuracy (out-of-time) — mean PR-AUC across {n_splits} splits:")
+    print(f"  {'Head':<20}{'PR-AUC':>9}{'baseline':>11}{'no-skill':>11}{'splits':>8}")
+    for head in agg:
+        a = agg[head]
+        print(f"  {labels.get(head, head.title()):<20}{fmt(a.get('mean_pr_auc_model')):>9}"
+              f"{fmt(a.get('mean_pr_auc_baseline')):>11}{fmt(a.get('mean_base_rate')):>11}"
+              f"{(a.get('n_splits_scored') or 0):>8}")
     print(f"\nFull report → {args.out}")

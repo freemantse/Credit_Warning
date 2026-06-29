@@ -30,6 +30,21 @@ def test_monotone_signs_per_head():
     assert len(down) == len(FEATURE_COLUMNS)
 
 
+def test_monotone_constraints_relax_secondary():
+    from src.model.features import CORE_CONSTRAINED_FEATURES
+
+    base = monotone_constraints("downgrade")
+    relaxed = monotone_constraints("downgrade", relax_secondary=True)
+    assert len(relaxed) == len(FEATURE_COLUMNS)
+    for i, col in enumerate(FEATURE_COLUMNS):
+        if col in CORE_CONSTRAINED_FEATURES:
+            assert relaxed[i] == base[i]          # core keeps its credit-coherent direction
+        else:
+            assert relaxed[i] == 0                # everything else is unconstrained
+    assert relaxed[FEATURE_COLUMNS.index("leverage")] == 1               # core stays
+    assert relaxed[FEATURE_COLUMNS.index("implied_vs_agency_gap")] == 0  # secondary freed
+
+
 def test_time_split_respects_label_window():
     df = pd.DataFrame([
         _row("2018-12-31", label_12m=1),

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from src.model.features import FEATURE_COLUMNS, FEATURE_DIRECTIONS
+from src.model.features import FEATURE_COLUMNS, FEATURE_DIRECTIONS, CORE_CONSTRAINED_FEATURES
 from src.ratings.labels import add_months
 
 
@@ -39,10 +39,22 @@ HEADS: dict[str, dict[str, Any]] = {
 HORIZON_MONTHS = 12
 
 
-def monotone_constraints(head: str) -> list[int]:
-    """Per-feature monotone constraint array (in FEATURE_COLUMNS order) for a head."""
+def monotone_constraints(head: str, *, relax_secondary: bool = False) -> list[int]:
+    """
+    Per-feature monotone constraint array (in FEATURE_COLUMNS order) for a head.
+
+    With relax_secondary=True (the Lever-4 sweep), only CORE_CONSTRAINED_FEATURES keep
+    their credit-coherent direction; all other features are left unconstrained (0) so
+    the booster can learn interactions there.
+    """
     sign = HEADS[head]["monotone_sign"]
-    return [sign * FEATURE_DIRECTIONS.get(col, 0) for col in FEATURE_COLUMNS]
+    out = []
+    for col in FEATURE_COLUMNS:
+        d = FEATURE_DIRECTIONS.get(col, 0)
+        if relax_secondary and col not in CORE_CONSTRAINED_FEATURES:
+            d = 0
+        out.append(sign * d)
+    return out
 
 
 def observed(df):

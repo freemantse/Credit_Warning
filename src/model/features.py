@@ -72,6 +72,17 @@ for _r in RATIO_FEATURES:
 FEATURE_DIRECTIONS["implied_rating_index_yoy"] = 1
 FEATURE_DIRECTIONS["stress_score_yoy"] = 1
 
+# The fundamentals whose credit-coherent monotone direction is ALWAYS enforced for
+# auditability. The Lever-4 relax sweep (dataset.monotone_constraints(relax_secondary=))
+# may unconstrain everything else (agency rating, gap, time-in-rating, maturity,
+# covenants, provisions, outlook) to let the booster learn interactions there.
+CORE_CONSTRAINED_FEATURES = frozenset(
+    set(RATIO_FEATURES)
+    | {f"{r}_yoy" for r in RATIO_FEATURES}
+    | {"implied_rating_index", "implied_rating_index_yoy", "financial_risk_index",
+       "stress_score", "stress_score_yoy"}
+)
+
 
 def _ratio_value(period_ratios: dict[str, Any], name: str) -> float | None:
     """Pull a ratio's value from a stored grouped dict ({name: {value, ...}}), or None."""

@@ -14,9 +14,11 @@
 //   • Healthy controls have no event — any flag is a false positive.
 //
 // The run is a background task: POST /api/migration/backtest starts it, then the
-// page polls GET /api/migration/backtest/status every 3 s until it finishes. A
-// read-only walk-forward accuracy panel (PR-AUC vs. a logistic baseline) is loaded
-// alongside from /api/migration/scorecard.
+// page polls GET /api/migration/backtest/status every 3 s until it finishes. The
+// read-only scorecard (/api/migration/scorecard) is still loaded alongside for the
+// active-model provenance and the "model trained?" gate — but the walk-forward
+// accuracy breakdown (PR-AUC vs. a logistic baseline) is CLI-only: it prints from
+// `python -m src.model.evaluate` for modelers, not on this page.
 //
 // Inert until the model is trained: run `python -m scripts.seed_demo` (ingests
 // agency ratings → builds labels → trains the model + walk-forward vintages).
@@ -269,39 +271,10 @@ export default function BacktestPage() {
         </div>
       )}
 
-      {/* ── Walk-forward accuracy (read-only, out-of-time) ── */}
-      {agg && (
-        <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
-          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">
-            Walk-forward accuracy (out-of-time)
-            <InfoTip text="Each split trains only on the past and scores the future (never random K-fold, which would leak). These are out-of-time results." />
-          </p>
-          <p className="text-xs text-slate-400 mb-3">
-            Mean PR-AUC across walk-forward splits — the model vs. a logistic baseline. Higher is better.
-          </p>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            {/* The third head is the model's "distress" head; a default is a CCC+/default transition. */}
-            {([['downgrade', 'Downgrade'], ['upgrade', 'Upgrade'], ['distress', 'Distress (default)']] as const).map(([h, label]) => {
-              const base = agg[h]?.mean_base_rate
-              return (
-                <div key={h} className="rounded-lg border border-gray-200 p-3">
-                  <p className="text-xs text-slate-400 tracking-wide">
-                    {label} PR-AUC
-                    <InfoTip text="Precision-Recall AUC (0–1): how well the model ranks soon-to-event issuers above the rest. Judge it against the no-skill floor (the event's base rate), not as a percent of 100." />
-                  </p>
-                  <p className="text-xl font-bold text-slate-800 mt-1">{agg[h]?.mean_pr_auc_model ?? '—'}</p>
-                  <p className="text-[11px] text-slate-400 mt-0.5">
-                    baseline {agg[h]?.mean_pr_auc_baseline ?? '—'}
-                    <InfoTip text="A plain logistic regression on the same data. Beating it shows the model adds lift over a simple linear model." />
-                    {base != null && <> · vs no-skill {base.toFixed(3)}</>}
-                    {' · '}{agg[h]?.n_splits_scored ?? 0} splits
-                  </p>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      )}
+      {/* Walk-forward accuracy (PR-AUC per head, model vs. logistic baseline) is a
+          modeler-facing diagnostic — it lives on the CLI only now, printed by
+          `python -m src.model.evaluate`. The scorecard is still fetched above for
+          the active-model provenance and the "model trained?" gate. */}
 
       {/* ── Per-case results ── */}
       {result && result.cases.length > 0 && (

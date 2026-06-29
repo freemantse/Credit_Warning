@@ -38,21 +38,27 @@ _VALIDATION_FRACTION = 0.15
 
 
 def _build_booster(monotone: list[int], random_state: int, *, early_stopping: bool = True,
-                   class_weight: str | None = None):
+                   class_weight: str | None = None,
+                   learning_rate: float = 0.05, max_iter: int = 300,
+                   max_leaf_nodes: int = 31, l2_regularization: float = 1.0,
+                   min_samples_leaf: int = 20):
     """
     Histogram gradient booster for one head. `class_weight` controls the rare-class
     handling: "balanced" up-weights rare downgrades/defaults for recall but inflates
     probabilities; None lets the booster learn the true prior (better calibrated).
-    The shipped value is chosen by the walk-forward calibration eval (evaluate.py).
+    The remaining knobs (learning_rate / max_iter / max_leaf_nodes / l2 / min_samples_leaf)
+    default to the shipped config; the walk-forward sweep (evaluate.py --sweep) explores
+    them per head and the winner is folded back in here.
     """
     from sklearn.ensemble import HistGradientBoostingClassifier
 
     return HistGradientBoostingClassifier(
         loss="log_loss",
-        learning_rate=0.05,
-        max_iter=300,
-        max_leaf_nodes=31,
-        l2_regularization=1.0,
+        learning_rate=learning_rate,
+        max_iter=max_iter,
+        max_leaf_nodes=max_leaf_nodes,
+        l2_regularization=l2_regularization,
+        min_samples_leaf=min_samples_leaf,
         early_stopping=early_stopping,
         validation_fraction=_VALIDATION_FRACTION if early_stopping else None,
         monotonic_cst=monotone,           # auditability-first: credit-coherent directions
@@ -113,6 +119,9 @@ def train_all(
     version: str = "dev",
     class_weight: str | None = None,
     calib_method: str = "sigmoid",
+    relax_secondary_constraints: bool = False,
+    booster_params: dict[str, Any] | None = None,
+    head_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """
     Train all heads on a walk-forward split and return (bundle, metrics).
@@ -125,6 +134,12 @@ def train_all(
     The residual is temporal base-rate drift (e.g. the post-2020 downgrade-rate
     drop), which calibration on past data cannot fully anticipate.
 
+    `booster_params` overrides booster hyperparameters globally; `head_overrides`
+    (head → {class_weight | hyperparameter: value}) layers per-head overrides on top —
+    e.g. {"distress": {"class_weight": "balanced", "max_iter": 500}} for the rare head.
+    `relax_secondary_constraints` unconstrains the non-core features (see
+    dataset.monotone_constraints). All three are explored by evaluate.py --sweep.
+
     bundle = {version, horizon_months, feature_columns, baseline_medians,
               heads:{head:{estimator, baseline, calibrated}}}. metrics carries the
       out-of-time (test) PR-AUC/recall/calibration for the model AND the baseline.
@@ -132,6 +147,9 @@ def train_all(
     """
     import logging
     import numpy as np
+
+    booster_params = booster_params or {}
+    head_overrides = head_overrides or {}
 
     log = logging.getLogger("model.train")
     train_df, test_df = time_split(df, split_date)
@@ -168,10 +186,15 @@ def train_all(
             continue
 
         early_stop = _can_early_stop(y_fit)
+        # Per-head config: the global class_weight/booster_params, with this head's
+        # overrides layered on top (e.g. a "balanced" distress head).
+        ov = dict(head_overrides.get(head, {}))
+        head_cw = ov.pop("class_weight", class_weight)
+        head_bp = {**booster_params, **ov}
         log.info("  head '%s': fitting (%d positives, early_stop=%s)...", head, int(y_fit.sum()), early_stop)
         booster = _build_booster(
-            monotone_constraints(head), random_state, early_stopping=early_stop,
-            class_weight=class_weight,
+            monotone_constraints(head, relax_secondary=relax_secondary_constraints),
+            random_state, early_stopping=early_stop, class_weight=head_cw, **head_bp,
         ).fit(X_fit, y_fit)
         X_cal, y_cal, _ = make_xy(cal_df, head) if not cal_df.empty else (None, None, [])
         calibrated = _calibrate(booster, X_cal, y_cal, method=calib_method)
