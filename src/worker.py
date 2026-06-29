@@ -47,46 +47,72 @@ IDLE_SLECONDS = 5
 
 def _run_job(job: dict) -> None:
     """
-    Execute one claimed job. Only part='full' is wired now (the whole
-    review_filing pipeline); other parts are reserved for a later per-part split.
+    Execute one claimed job. Wired parts:
+      - 'full'      → the whole review_filing pipeline (all five passes).
+      - 'covenants' → covenant-only pipeline (Stage 2c A∪B + breach/waiver) via
+                      run_covenants; saves to the covenants table only.
+    'breach' (and any other value) is reserved and raises NotImplementedError.
 
-    footnote_review is imported lazily HERE (not at module top) so `import
-    src.worker` stays free of the anthropic/HTTP stack — matching the deferred
-    imports in api/main.py and track.py.
+    footnote_review is imported lazily inside each branch (not at module top) so
+    `import src.worker` stays free of the anthropic/HTTP stack — matching the
+    deferred imports in api/main.py and track.py.
     """
     part = job.get("part", "full")
-    if part != "full":
-        raise NotImplementedError(f"job part {part!r} not implemented yet (only 'full')")
-
     cik = job["cik"]
     period_end = job["period_end"]
 
-    from src.ingest import get_filings
-    from src.footnote_review import review_filing
-    from src.store import (
-        save_covenants,
-        save_findings,
-        save_going_concern,
-        save_loss_provisions,
-    )
+    if part == "full":
+        from src.ingest import get_filings
+        from src.footnote_review import review_filing
+        from src.store import (
+            save_covenants,
+            save_findings,
+            save_going_concern,
+            save_loss_provisions,
+        )
 
-    # Mirror track.py / _run_llm_review_task exactly: fetch the 10-K list once,
-    # run the 5-pass pipeline (retry-aware client built inside review_filing), and
-    # persist via the existing savers. The 5th return (orphan breaches) is logged
-    # inside review_filing; not persisted here (REVIEW_FLAGS deferred).
-    filings = get_filings(cik, ["10-K"])
-    findings, covenants, provisions, going_concern, _orphans = review_filing(
-        cik, period_end, filings
-    )
-    save_findings(cik, period_end, findings)
-    save_covenants(cik, period_end, covenants)
-    save_loss_provisions(cik, period_end, provisions)
-    save_going_concern(cik, period_end, going_concern)
-    logger.info(
-        "job %s done: cik=%s period=%s findings=%d covenants=%d provisions=%d gc=%d",
-        job["id"], cik, period_end,
-        len(findings), len(covenants), len(provisions), len(going_concern),
-    )
+        # Mirror track.py / _run_llm_review_task exactly: fetch the 10-K list once,
+        # run the 5-pass pipeline (retry-aware client built inside review_filing),
+        # and persist via the existing savers. The 5th return (orphan breaches) is
+        # logged inside review_filing; not persisted here (REVIEW_FLAGS deferred).
+        filings = get_filings(cik, ["10-K"])
+        findings, covenants, provisions, going_concern, _orphans = review_filing(
+            cik, period_end, filings
+        )
+        save_findings(cik, period_end, findings)
+        save_covenants(cik, period_end, covenants)
+        save_loss_provisions(cik, period_end, provisions)
+        save_going_concern(cik, period_end, going_concern)
+        logger.info(
+            "job %s done: cik=%s period=%s findings=%d covenants=%d provisions=%d gc=%d",
+            job["id"], cik, period_end,
+            len(findings), len(covenants), len(provisions), len(going_concern),
+        )
+        return
+
+    if part == "covenants":
+        # Covenant-only pipeline (Stage 2c A∪B + breach/waiver) — NO going-concern /
+        # contingencies / qualitative passes. run_covenants builds the same
+        # retry-aware client and yields byte-for-byte the same covenant rows as a
+        # full run for this filing. Only save_covenants is needed: the covenants
+        # table holds both the 2c-i covenant fields and the 2c-iii breach/near-limit
+        # fields. Orphan breaches are logged inside run_covenants (REVIEW_FLAGS
+        # deferred). Lazy-imported here to keep `import src.worker` light.
+        from src.ingest import get_filings
+        from src.footnote_review import run_covenants
+        from src.store import save_covenants
+
+        filings = get_filings(cik, ["10-K"])
+        covenants, orphans = run_covenants(cik, period_end, filings)
+        save_covenants(cik, period_end, covenants)
+        logger.info(
+            "job %s done (covenants): cik=%s period=%s covenants=%d orphans=%d",
+            job["id"], cik, period_end, len(covenants), len(orphans),
+        )
+        return
+
+    # 'breach' and any other part values are reserved/unwired for now.
+    raise NotImplementedError(f"job part {part!r} not implemented yet")
 
 
 def run_forever(idle_seconds: int = IDLE_SLECONDS) -> None:

@@ -1552,6 +1552,86 @@ def _apply_breach_findings(
     return orphans
 
 
+def run_covenants(
+    cik: str,
+    period: str,
+    filings: list[dict],
+    client: anthropic.Anthropic | None = None,
+) -> tuple[list[Covenant], list[CovenantBreach]]:
+    """
+    Covenant-only pipeline for one filing (Stage 2c A∪B + breach/waiver), composed
+    from the SAME functions review_filing uses — and NOTHING else: no qualitative
+    MD&A, no contingencies, no going-concern passes. This is the part='covenants'
+    worker job's entry point; review_filing is left fully unchanged.
+
+    Mirrors review_filing's covenant + breach steps EXACTLY — identical
+    section→stage mapping, filing-label strings, order, and dedupe — so the
+    covenant rows produced here are byte-for-byte the same as a full run for the
+    same filing. The only differences are the omitted passes.
+
+    Returns (covenants, orphan_breaches). Orphans (a disclosed breach mapping to no
+    extracted covenant) are logged here verbatim as in review_filing and returned
+    for the caller; REVIEW_FLAGS persistence is deferred. Returns ([], []) when no
+    matching filing is found (same early-return contract as review_filing).
+    """
+    from src.ingest import find_filing_for_period, get_filing_text
+    from src.sections import locate_sections, section_confidence
+
+    filing = find_filing_for_period(filings, period)
+    if filing is None:
+        return [], []
+
+    # One retry-aware client reused across all covenant + breach passes — identical
+    # to review_filing (rides out 429/5xx with backoff; no-op when not throttled).
+    # Built only after the filing is located so the no-match early-return constructs
+    # none. A caller-supplied client (e.g. a test MagicMock) is kept as-is.
+    if client is None:
+        client = anthropic.Anthropic(max_retries=8)
+
+    text = get_filing_text(cik, filing["accessionNumber"], filing["primaryDocument"])
+    sections = locate_sections(text)
+
+    # Covenants: Stage A (debt footnote, precise) ∪ Stage B (MD&A + risk-factors
+    # recall sweep), deduped to one row per covenant — identical to review_filing.
+    covenants_a: list[Covenant] = []
+    if sections["debt"] is not None:
+        covenants_a = extract_debt_footnote(
+            sections["debt"].text, f"10-K {period}, Debt", client,
+            section_conf=section_confidence(sections["debt"]), period_end=period,
+        )
+    covenants_b: list[Covenant] = []
+    for _key, _label in (("mdna", "MD&A"), ("risk_factors", "Risk Factors")):
+        _sec = sections.get(_key)
+        if _sec is not None:
+            covenants_b += extract_covenants_broad(
+                _sec.text, f"10-K {period}, {_label} (covenants)", client,
+                section_label=_label, section_conf=section_confidence(_sec),
+                period_end=period,
+            )
+    covenants = _dedupe_covenants(covenants_a, covenants_b)
+
+    # Breach / waiver over the debt footnote + MD&A ONLY (risk-factors excluded),
+    # mapped onto the matched covenant — identical to review_filing's 2c-iii step.
+    breach_findings: list[CovenantBreach] = []
+    for _key, _label in (("debt", "Debt footnote"), ("mdna", "MD&A")):
+        _sec = sections.get(_key)
+        if _sec is not None:
+            breach_findings += extract_covenant_breach(
+                _sec.text, f"10-K {period}, {_label} (breach/waiver)", client,
+                section_label=_label, section_conf=section_confidence(_sec),
+                period_end=period,
+            )
+    orphan_breaches = _apply_breach_findings(covenants, breach_findings)
+    for _orphan in orphan_breaches:
+        logger.warning(
+            "Covenant breach/waiver disclosed but no matching covenant extracted "
+            "(orphan — surfaced for review): cik=%s period=%s section=%s status=%s quote=%r",
+            cik, period, _orphan.section, _orphan.status, _orphan.evidence_quote[:200],
+        )
+
+    return covenants, orphan_breaches
+
+
 def review_filing(
     cik: str,
     period: str,
