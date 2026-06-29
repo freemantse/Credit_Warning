@@ -8,10 +8,12 @@ For each head (downgrade / upgrade / default) it fits, on a walk-forward split:
     it. (Swap in LightGBM here later with no interface change.)
   - an interpretable LogisticRegression BASELINE (imputed + scaled) — the floor the
     booster must beat, reported side by side.
-  - isotonic CALIBRATION on a time-respecting recent holdout, so the reported
+  - sigmoid (Platt) CALIBRATION on a time-respecting recent holdout, so the reported
     probability means what it says.
 
-Class imbalance is handled with class_weight="balanced"; metrics are rare-event
+Class imbalance is left to the loss + calibration (class_weight defaults to None):
+the walk-forward sweep found balancing inflated probabilities without improving
+calibration, while sigmoid on a 0.35 holdout calibrates best. Metrics are rare-event
 focused (PR-AUC / recall@k / calibration), never bare accuracy.
 
 The fitted bundle is a plain dict of sklearn estimators + the feature list + the
@@ -35,7 +37,14 @@ from src.score import DEFAULT_CONFIG
 _VALIDATION_FRACTION = 0.15
 
 
-def _build_booster(monotone: list[int], random_state: int, *, early_stopping: bool = True):
+def _build_booster(monotone: list[int], random_state: int, *, early_stopping: bool = True,
+                   class_weight: str | None = None):
+    """
+    Histogram gradient booster for one head. `class_weight` controls the rare-class
+    handling: "balanced" up-weights rare downgrades/defaults for recall but inflates
+    probabilities; None lets the booster learn the true prior (better calibrated).
+    The shipped value is chosen by the walk-forward calibration eval (evaluate.py).
+    """
     from sklearn.ensemble import HistGradientBoostingClassifier
 
     return HistGradientBoostingClassifier(
@@ -47,7 +56,7 @@ def _build_booster(monotone: list[int], random_state: int, *, early_stopping: bo
         early_stopping=early_stopping,
         validation_fraction=_VALIDATION_FRACTION if early_stopping else None,
         monotonic_cst=monotone,           # auditability-first: credit-coherent directions
-        class_weight="balanced",          # rare downgrades/defaults up-weighted
+        class_weight=class_weight,        # None: native prior (calibrated); "balanced": recall-first
         random_state=random_state,
     )
 
@@ -78,13 +87,19 @@ def _build_baseline():
     ])
 
 
-def _calibrate(booster, X_cal, y_cal):
-    """Isotonic-calibrate a prefit booster on the recent holdout; None if not possible."""
+def _calibrate(booster, X_cal, y_cal, *, method: str = "isotonic"):
+    """
+    Calibrate a prefit booster on the recent holdout; None if not possible.
+
+    `method="sigmoid"` (Platt) is robust to a small, regime-shifted calibration set;
+    `method="isotonic"` is non-parametric but overfits a tiny holdout (it produced
+    the step artifacts in the pre-recalibration reliability bins).
+    """
     from sklearn.calibration import CalibratedClassifierCV
 
     if X_cal is None or len(y_cal) == 0 or y_cal.nunique() < 2:
         return None
-    cal = CalibratedClassifierCV(booster, method="isotonic", cv="prefit")
+    cal = CalibratedClassifierCV(booster, method=method, cv="prefit")
     cal.fit(X_cal, y_cal)
     return cal
 
@@ -93,12 +108,22 @@ def train_all(
     df,
     split_date: str,
     *,
-    calibration_frac: float = 0.2,
+    calibration_frac: float = 0.35,
     random_state: int = 0,
     version: str = "dev",
+    class_weight: str | None = None,
+    calib_method: str = "sigmoid",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """
     Train all heads on a walk-forward split and return (bundle, metrics).
+
+    Defaults are the recalibration winner from the walk-forward sweep (evaluate.py):
+    class_weight=None + sigmoid (Platt) + a 0.35 calibration holdout. Vs the prior
+    balanced+isotonic+0.2 config this cut Brier ~6%, halved the isotonic step
+    artifacts, lifted recall@10%/PR-AUC ~18-20%, and reduced out-of-time
+    over-prediction (mean predicted / observed base rate) from ~1.81× to ~1.68×.
+    The residual is temporal base-rate drift (e.g. the post-2020 downgrade-rate
+    drop), which calibration on past data cannot fully anticipate.
 
     bundle = {version, horizon_months, feature_columns, baseline_medians,
               heads:{head:{estimator, baseline, calibrated}}}. metrics carries the
@@ -130,7 +155,8 @@ def train_all(
     }
     metrics: dict[str, Any] = {
         "version": version, "split_date": split_date,
-        "n_train": int(len(train_df)), "n_test": int(len(test_df)), "heads": {},
+        "n_train": int(len(train_df)), "n_test": int(len(test_df)),
+        "class_weight": class_weight, "calib_method": calib_method, "heads": {},
     }
 
     for head in HEADS:
@@ -145,9 +171,10 @@ def train_all(
         log.info("  head '%s': fitting (%d positives, early_stop=%s)...", head, int(y_fit.sum()), early_stop)
         booster = _build_booster(
             monotone_constraints(head), random_state, early_stopping=early_stop,
+            class_weight=class_weight,
         ).fit(X_fit, y_fit)
         X_cal, y_cal, _ = make_xy(cal_df, head) if not cal_df.empty else (None, None, [])
-        calibrated = _calibrate(booster, X_cal, y_cal)
+        calibrated = _calibrate(booster, X_cal, y_cal, method=calib_method)
         estimator = calibrated if calibrated is not None else booster
 
         baseline = _build_baseline().fit(X_all, y_all)
@@ -295,13 +322,27 @@ if __name__ == "__main__":
     parser.add_argument("--no-registry", action="store_true", help="skip writing model_registry")
     parser.add_argument("--no-score-config", action="store_true",
                         help="skip persisting the model-learned stress-score weights")
+    parser.add_argument("--class-weight", choices=["balanced", "none"], default=None,
+                        help="rare-class weighting (default: train_all's default)")
+    parser.add_argument("--calib-method", choices=["isotonic", "sigmoid"], default=None,
+                        help="probability calibration method (default: train_all's default)")
+    parser.add_argument("--calibration-frac", type=float, default=None,
+                        help="recent-holdout fraction for calibration (default: train_all's default)")
     args = parser.parse_args()
 
     cli_log.info("Loading training matrix%s...", "" if args.matrix is None else f" from {args.matrix}")
     df = _load_matrix(args.matrix)
     cli_log.info("Matrix: %d rows / %d issuers", len(df), df["cik"].nunique() if len(df) else 0)
     version = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    bundle, metrics = train_all(df, args.split_date, version=version)
+    # CLI overrides for the calibration knobs; omitted flags fall back to train_all's defaults.
+    overrides: dict[str, Any] = {}
+    if args.class_weight is not None:
+        overrides["class_weight"] = None if args.class_weight == "none" else args.class_weight
+    if args.calib_method is not None:
+        overrides["calib_method"] = args.calib_method
+    if args.calibration_frac is not None:
+        overrides["calibration_frac"] = args.calibration_frac
+    bundle, metrics = train_all(df, args.split_date, version=version, **overrides)
     path = save_model(bundle, args.out)
     print(json.dumps(metrics, indent=2))
     print(f"\nSaved model {version} → {path}")

@@ -188,6 +188,7 @@ export interface MigrationPrediction {
   reason?: string                       // plain-language "why" (server-built); present on issuer detail
   direction?: 'down' | 'stable' | 'up'
   source?: 'model' | 'outlook'
+  thresholds?: Record<string, number>   // per-head tuned flag cutoffs (downgrade/upgrade/distress); drives the headline bands
 }
 
 /**
@@ -356,8 +357,6 @@ export interface BacktestCaseInfo {
 
 export interface CaseLibrary {
   total: number
-  distressed: number
-  healthy: number
   cases: BacktestCaseInfo[]
 }
 
@@ -595,11 +594,14 @@ export interface MigrationCaseResult {
   early_warning?: boolean
   lead_months?: number | null
   fp_count?: number
+  flag_threshold?: number                        // the head's tuned cutoff used for this case
   trajectory?: {
     eval_date: string
     months_before_event: number
     prob: number | null
     flagged: boolean
+    rating?: string | null                       // real agency rating in effect at this snapshot
+    rating_index?: number | null
     score?: number | null                       // point-in-time stress score (0–100)
     ratios?: Record<string, number | null>      // ratio levels at that snapshot
   }[]
@@ -621,7 +623,9 @@ export interface MigrationBacktestStatus {
   running: boolean
   result: {
     run_at?: string
-    threshold?: number
+    threshold?: number                                // legacy single cutoff (downgrade head)
+    thresholds?: Record<string, number>               // per-head tuned cutoffs
+    max_lead_months?: number                          // flags older than this don't count
     by_event_type: Record<string, MigrationEventSummary>
     cases: MigrationCaseResult[]
     note?: string
@@ -634,6 +638,7 @@ export interface MigrationBacktestStatus {
 export interface MigrationHeadAgg {
   mean_pr_auc_model: number | null
   mean_pr_auc_baseline: number | null
+  mean_base_rate?: number | null                      // no-skill floor (event prevalence)
   n_splits_scored: number
 }
 

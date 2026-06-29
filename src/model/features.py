@@ -217,6 +217,40 @@ def _time_in_rating(events: list[dict] | None, period_end: str) -> int | None:
     return max(0, _months_between(last["effective_date"], period_end))
 
 
+def agency_features_asof(
+    timeline: list[dict] | None, period_end: str, implied_rating_index: float | None
+) -> dict[str, Any]:
+    """
+    The three agency-conditioning features as of `period_end`, derived from a
+    forward-filled agency-event `timeline` (one agency's events, ascending by
+    effective_date). This is the SINGLE source of truth so the SCORING path
+    (build_scoring_matrix / the migration backtest) computes them identically to the
+    TRAINING path (merge_labels) — without it those columns are NaN at serve time and
+    the model collapses (train/serve skew):
+
+      agency_rating_index   — the agency rating in effect (rating_asof), or None
+      implied_vs_agency_gap — implied_rating_index − agency_rating_index (None if either side missing)
+      time_in_rating_months — months since the last agency action ≤ period_end
+
+    Point-in-time and lookahead-free: only events on/before period_end are read.
+    """
+    from src.ratings.labels import rating_asof
+
+    if not timeline:
+        return {"agency_rating_index": None, "implied_vs_agency_gap": None,
+                "time_in_rating_months": None}
+    idx, _status = rating_asof(timeline, period_end)
+    gap = (implied_rating_index - idx) if (
+        implied_rating_index is not None and idx is not None
+        and not (isinstance(implied_rating_index, float) and implied_rating_index != implied_rating_index)
+    ) else None
+    return {
+        "agency_rating_index": idx,
+        "implied_vs_agency_gap": gap,
+        "time_in_rating_months": _time_in_rating(timeline, period_end),
+    }
+
+
 def merge_labels(
     features_by_cik: dict[str, dict[str, dict]],
     labels_grouped: dict[str, dict[str, dict[str, dict]]],
@@ -311,13 +345,28 @@ def load_training_matrix(config: dict | None = None):
     return to_dataframe(rows)
 
 
-def build_scoring_matrix():
+def _primary_agency_timeline(by_agency: dict[str, list[dict]] | None) -> list[dict]:
+    """The agency timeline to condition a scoring row on: the issuer's best-covered
+    (most-events) series. Empty when the issuer has no agency coverage."""
+    if not by_agency:
+        return []
+    return max(by_agency.values(), key=len)
+
+
+def build_scoring_matrix(agency_events: dict[str, dict[str, list[dict]]] | None = None,
+                         *, fill_agency_features: bool = True):
     """
     Assemble feature rows for every (cik, period_end) WITHOUT requiring labels — for
     live prediction and the migration event backtest. One row per period with the
-    financial features; the agency-conditioning columns (agency_rating_index,
-    implied_vs_agency_gap, time_in_rating_months) are left NaN (no specific agency
-    in the scoring context — the model handles missing values natively).
+    financial features.
+
+    The agency-conditioning columns (agency_rating_index, implied_vs_agency_gap,
+    time_in_rating_months) are populated POINT-IN-TIME from the issuer's best-covered
+    agency timeline via `agency_features_asof`, matching how merge_labels derives them
+    at training time. This closes the train/serve skew that otherwise leaves them NaN
+    at scoring (the model was trained with them present, so all-NaN at serve collapses
+    its resolution). `agency_events` defaults to a fresh get_agency_ratings_grouped()
+    read; pass `fill_agency_features=False` (or empty agency_events) to keep them NaN.
 
     Returns a DataFrame with columns [cik, period_end] + FEATURE_COLUMNS, computed
     with DEFAULT_CONFIG (the stress_score feature stays non-circular).
@@ -335,6 +384,10 @@ def build_scoring_matrix():
     maturities = get_maturities_grouped()
     covenants = get_covenants_grouped()
     provisions = get_loss_provisions_grouped()
+    if fill_agency_features and agency_events is None:
+        from src.store import get_agency_ratings_grouped
+        agency_events = get_agency_ratings_grouped()
+    agency_events = agency_events or {}
 
     rows: list[dict[str, Any]] = []
     for cik in set(ratios) | set(implied):
@@ -348,8 +401,12 @@ def build_scoring_matrix():
             provisions_by_period=provisions.get(cik, {}),
             config=cfg,
         )
+        timeline = _primary_agency_timeline(agency_events.get(cik)) if fill_agency_features else []
         for period_end, feat in feats.items():
-            rows.append({"cik": cik, "period_end": period_end, **feat})
+            row = {"cik": cik, "period_end": period_end, **feat}
+            if timeline:
+                row.update(agency_features_asof(timeline, period_end, feat.get("implied_rating_index")))
+            rows.append(row)
 
     cols = ["cik", "period_end"] + FEATURE_COLUMNS
     return pd.DataFrame(rows).reindex(columns=cols)

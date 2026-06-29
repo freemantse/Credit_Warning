@@ -237,14 +237,28 @@ def _prediction_summary(pred_row: dict | None, outlook, ratios_now: dict, ratios
         pd_ = pred_row.get("p_downgrade") or 0.0
         pu_ = pred_row.get("p_upgrade") or 0.0
         direction = "down" if pd_ - pu_ > 0.05 else "up" if pu_ - pd_ > 0.05 else "stable"
-        phrases = [_driver_phrase(d, ratios_now, ratios_prev)
-                   for d in (pred_row.get("drivers_json") or [])[:2]]
+        # Pick the drivers that match the CALL's direction so the "why" never explains a
+        # downgrade with risk-reducing factors. contribution > 0 raises downgrade risk,
+        # < 0 lowers it; drivers_json is pre-sorted by |contribution|. When none match
+        # (e.g. every top factor is protective), say so honestly instead of citing them.
+        drivers = pred_row.get("drivers_json") or []
+        if direction == "down":
+            picked = [d for d in drivers if (d.get("contribution") or 0) > 0][:2]
+            fallback = "elevated base-rate risk for this profile; fundamentals are mitigating"
+        elif direction == "up":
+            picked = [d for d in drivers if (d.get("contribution") or 0) < 0][:2]
+            fallback = "supported by the issuer's overall profile"
+        else:
+            picked = drivers[:2]
+            fallback = "balanced factors either way"
+        phrases = [_driver_phrase(d, ratios_now, ratios_prev) for d in picked]
+        reason = "; ".join(phrases) if phrases else (fallback if drivers else "model prediction")
         return {
             "direction": direction,
             "p_downgrade": pred_row.get("p_downgrade"),
             "p_upgrade": pred_row.get("p_upgrade"),
             "source": "model",
-            "reason": "; ".join(phrases) if phrases else "model prediction",
+            "reason": reason,
         }
     if outlook is not None:
         o = outlook.outlook
@@ -731,6 +745,10 @@ def get_issuer(ticker: str):
         filings = []
 
     active = _active_config()  # model-learned (or default) weights, read once
+    # Per-head tuned flag cutoffs (downgrade/upgrade/distress), so the headline bands
+    # key off the model's operating point rather than a hardcoded 0.5. May be {} until
+    # the walk-forward eval has run; the UI then falls back to a conservative default.
+    migration_thresholds = _load_migration_thresholds()
     _periods_asc = sorted(ratios_by_period)  # for prior-period lookup (YoY "why")
     period_data = []
     # Newest period first so the frontend chart/table show recent data at the top.
@@ -774,6 +792,8 @@ def get_issuer(ticker: str):
             if summary:
                 migration = {**migration, "reason": summary["reason"],
                              "direction": summary["direction"], "source": summary["source"]}
+            if migration_thresholds:
+                migration = {**migration, "thresholds": migration_thresholds}
 
         # As-of agency rating of the primary agency at this period_end — overlaid on
         # the implied-rating chart so the implied-vs-agency gap is visible. None until
@@ -1097,17 +1117,28 @@ def backtest_cases():
     except FileNotFoundError as e:
         raise HTTPException(404, str(e))
 
-    distressed = sum(1 for c in cases if (c.get("label") or "").strip() == "distressed")
-    healthy = sum(1 for c in cases if (c.get("label") or "").strip() == "healthy")
     return {
         "total": len(cases),
-        "distressed": distressed,
-        "healthy": healthy,
         "cases": cases,
     }
 
 
 # ── Case library CRUD ────────────────────────────────────────────────────────
+
+def _autoexport_cases() -> None:
+    """Best-effort mirror of the `cases` table → data/cases.csv after a UI mutation.
+
+    Supabase stays the source of truth; this keeps the committed CSV in sync without a
+    manual step. A failure (e.g. a read-only/ephemeral deploy filesystem) is logged and
+    swallowed — it must never fail the add/delete request.
+    """
+    import logging
+    try:
+        from src.store import export_cases_to_csv
+        export_cases_to_csv()
+    except Exception as e:
+        logging.getLogger("api.cases").warning("cases CSV auto-export skipped: %s", e)
+
 
 def _slugify_case_id(name: str, ticker: str, event_date: str, label: str) -> str:
     """
@@ -1202,7 +1233,7 @@ def create_case(req: AddCaseRequest):
     if get_case(case_id) is not None:
         raise HTTPException(409, f"case_id {case_id!r} already exists in the library")
 
-    return add_case({
+    saved = add_case({
         "case_id": case_id,
         "company_name": company_name,
         "ticker": ticker,
@@ -1213,6 +1244,8 @@ def create_case(req: AddCaseRequest):
         "event_date": event_date,
         "notes": (req.notes or "").strip(),
     })
+    _autoexport_cases()  # refresh the committed CSV mirror (best-effort)
+    return saved
 
 
 @app.delete("/api/cases/{case_id}")
@@ -1220,6 +1253,7 @@ def remove_case(case_id: str):
     """Delete one case from the backtest library by case_id."""
     if not delete_case(case_id):
         raise HTTPException(404, f"case_id {case_id!r} not found")
+    _autoexport_cases()  # refresh the committed CSV mirror (best-effort)
     return {"status": "deleted", "case_id": case_id}
 
 
@@ -1287,6 +1321,24 @@ def _load_vintages() -> list[dict[str, Any]]:
     )
 
 
+def _load_migration_thresholds() -> dict[str, float]:
+    """Per-head flag cutoffs tuned by src.model.evaluate (data/migration_eval.json).
+
+    Empty when the scorecard hasn't been generated yet — the backtest then falls
+    back to its own DEFAULT_THRESHOLD.
+    """
+    import json
+    p = _ROOT / "data" / "migration_eval.json"
+    if not p.exists():
+        return {}
+    try:
+        block = json.loads(p.read_text()).get("migration") or {}
+    except ValueError:
+        return {}
+    thr = block.get("thresholds") or {}
+    return {k: float(v) for k, v in thr.items() if isinstance(v, (int, float))}
+
+
 def _run_migration_backtest_task(steps: int):
     try:
         from src.backtest import load_cases
@@ -1300,7 +1352,9 @@ def _run_migration_backtest_task(steps: int):
         for rec in df.to_dict("records"):
             scoring_by_cik.setdefault(str(rec["cik"]).zfill(10), []).append(rec)
 
-        result = run_migration_backtest(cases, scoring_by_cik, vintages, steps=steps)
+        thresholds = _load_migration_thresholds()
+        result = run_migration_backtest(cases, scoring_by_cik, vintages,
+                                        steps=steps, thresholds=thresholds)
         if not vintages:
             result["note"] = ("No trained model vintages found (data/model_vintages/). "
                               "Train the model once agency ratings are ingested.")

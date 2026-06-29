@@ -29,6 +29,82 @@ from typing import Any
 from src.ratings.scale import DISTRESS_INDEX, STATUS_DEFAULT, STATUS_NOT_RATED
 
 
+# Agencies whose actions are issuer-paid and fundamentally anchored. Egan-Jones (EJR)
+# is investor-paid, broader, and faster — valuable for coverage but it assigns extreme
+# letters on earnings/market signals (e.g. CCC on cash-rich, debt-free growth names)
+# and reverses transient one-notch moves quickly (its COVID-2020 cuts). The label
+# policy keeps EJR for coverage but denoises those blips. SPI listed for forward-compat
+# even though the current dataset carries only MDY/FTC/EJR.
+ISSUER_PAID_AGENCIES = frozenset({"MDY", "FTC", "SPI"})
+
+# How the label/case pipelines may treat EJR events (see credible_events):
+#   "all"      — keep every event (legacy / baseline behaviour).
+#   "denoised" — keep issuer-paid as-is; for EJR keep an action only when it is a real
+#                default, a multi-notch (>= MULTI_NOTCH) move, or PERSISTENT (not
+#                reversed within PERSIST_MONTHS). Transient single-notch EJR blips are
+#                dropped, so a forward-fill never turns one into a spurious label.
+#   "big3"     — drop EJR entirely (label only on issuer-paid agencies).
+LABEL_POLICIES = ("all", "denoised", "big3")
+PERSIST_MONTHS = 12
+MULTI_NOTCH = 2
+
+
+def _months_diff(d_from: str, d_to: str) -> int:
+    a, b = date.fromisoformat(d_from), date.fromisoformat(d_to)
+    return (b.year - a.year) * 12 + (b.month - a.month)
+
+
+def credible_events(
+    evs: list[dict[str, Any]], agency: str, policy: str,
+    *, persist_months: int = PERSIST_MONTHS, multi_notch: int = MULTI_NOTCH,
+) -> list[dict[str, Any]]:
+    """
+    Filter one (cik, agency) event sequence (ascending by effective_date) to the
+    "credible" rating actions used for labeling / case selection, per `policy`.
+
+    The single source of truth for EJR denoising, shared by build_rating_labels (the
+    training-label source) and scripts.rebuild_cases (the backtest case pool), so both
+    apply ONE policy. Dropped events are simply omitted; rating_asof then forward-fills
+    the last credible rating across them, so a transient blip never creates a label.
+    """
+    if policy == "all" or agency in ISSUER_PAID_AGENCIES:
+        return evs
+    if policy == "big3":
+        return []
+    # policy == "denoised", agency == EJR.
+    kept: list[dict[str, Any]] = []
+    last_idx: int | None = None
+    n = len(evs)
+    for i, e in enumerate(evs):
+        idx = e.get("rating_index")
+        if e.get("rating_status") == STATUS_DEFAULT:
+            kept.append(e)
+            last_idx = idx if idx is not None else last_idx
+            continue
+        if idx is None:                      # withdrawal / not-rated: a status change, not a blip
+            kept.append(e)
+            continue
+        if last_idx is None or idx == last_idx:   # first notch (baseline) or affirmation
+            kept.append(e)
+            last_idx = idx
+            continue
+        move = idx - last_idx                 # + = downgrade (worse), - = upgrade
+        nxt = next((evs[j] for j in range(i + 1, n) if evs[j].get("rating_index") is not None), None)
+        persistent = True
+        if nxt is not None:
+            nxt_move = nxt["rating_index"] - idx
+            reversed_soon = (
+                _months_diff(e["effective_date"], nxt["effective_date"]) < persist_months
+                and nxt_move != 0 and (move > 0) != (nxt_move > 0)   # opposite direction
+            )
+            persistent = not reversed_soon
+        if abs(move) >= multi_notch or persistent:
+            kept.append(e)
+            last_idx = idx
+        # else: transient single-notch EJR blip → drop (last_idx unchanged)
+    return kept
+
+
 def add_months(date_str: str, months: int) -> str:
     """Add `months` to a 'YYYY-MM-DD' date (clamping the day to month length)."""
     d = date.fromisoformat(date_str)
@@ -91,6 +167,7 @@ def build_rating_labels(
     *,
     data_max_date: str,
     horizons: tuple[int, ...] = (3, 6, 12),
+    label_policy: str = "all",
 ) -> list[dict[str, Any]]:
     """
     Build rating_labels rows (grain: cik, period_end, agency).
@@ -112,6 +189,9 @@ def build_rating_labels(
     rows: list[dict[str, Any]] = []
 
     for (cik, agency), evs in grouped.items():
+        evs = credible_events(evs, agency, label_policy)   # denoise per the label policy
+        if not evs:                                        # e.g. EJR dropped under "big3"
+            continue
         for period_end in period_ends_by_cik.get(cik, []):
             idx_now, _status_now = rating_asof(evs, period_end)
 

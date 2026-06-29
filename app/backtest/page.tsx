@@ -35,6 +35,19 @@ import {
   fmtPct, fmtRatio, fmtFCF,
 } from '@/lib/api'
 
+// ── InfoTip ───────────────────────────────────────────────────────────────────
+// A small ⓘ that explains a metric on hover. Uses the native `title` tooltip the
+// rest of the app relies on (no popover lib), so it works everywhere with no deps.
+function InfoTip({ text }: { text: string }) {
+  return (
+    <span
+      title={text}
+      className="ml-1 inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-slate-300 text-slate-400 text-[9px] font-bold leading-none cursor-help align-middle select-none"
+      aria-label={text}
+    >i</span>
+  )
+}
+
 export default function BacktestPage() {
 
   // ── State ───────────────────────────────────────────────────────────────────
@@ -108,8 +121,18 @@ export default function BacktestPage() {
   const runError = status.error
   const byType = result?.by_event_type
   const threshold = result?.threshold ?? 0.5
+  const thresholds = result?.thresholds ?? {}
+  const maxLead = result?.max_lead_months ?? 24
   const agg = scorecard?.migration?.aggregate
   const model = scorecard?.model
+
+  // The flag cutoff for an event-type's head, as a "≥ NN%" string (UI heads:
+  // downgrade/upgrade map 1:1; "default" is scored by the model's distress head).
+  const headKey = (et: string) => (et === 'default' ? 'distress' : et)
+  const thrPct = (et: string) => {
+    const v = thresholds[headKey(et)] ?? threshold
+    return `${(v * 100).toFixed(0)}%`
+  }
 
   // Overall median lead across all caught events (one headline number).
   const allLeads = (result?.cases ?? [])
@@ -140,8 +163,8 @@ export default function BacktestPage() {
         <p className="font-medium text-slate-700">How the backtest works</p>
         <ul className="list-disc ml-4 space-y-1 text-xs">
           <li>Each case is an issuer with a known rating event — an <strong>upgrade</strong> (e.g. a BBB issuer rising), a <strong>downgrade</strong> (e.g. an A/AA/AAA issuer slipping), or a <strong>default</strong> — on a specific date. Healthy controls have no event.</li>
-          <li>The model is replayed backward from the event. Each snapshot is scored by a <strong>vintage trained strictly before that date</strong> — so the model never sees the future.</li>
-          <li>The probability for the event&apos;s head — P(upgrade) / P(downgrade) / P(default) — ≥ {(threshold * 100).toFixed(0)}% counts as a flag. <strong>Lead time</strong> = months from the first flag to the event; ≥ 6 months is an early warning.</li>
+          <li>The model is replayed backward from the event, but only over the <strong>{maxLead} months before it</strong> — a flag years out isn&apos;t a useful early warning. Each snapshot is scored by a <strong>vintage trained strictly before that date</strong>, so the model never sees the future.</li>
+          <li>A flag is the event&apos;s head probability clearing its <strong>tuned cutoff</strong> — P(upgrade) ≥ {thrPct('upgrade')}, P(downgrade) ≥ {thrPct('downgrade')}, or P(default) ≥ {thrPct('default')}. <em>P(default)</em> reads the model&apos;s <strong>distress</strong> head — a default is a transition into the CCC+/default tail within 12 months. Cutoffs are tuned per head (calibrated probabilities sit well below 50%). <strong>Lead time</strong> = months from the first flag to the event; ≥ 6 months is an early warning.</li>
           <li>A control that gets flagged is a <strong>false positive</strong>. A case with no usable point-in-time data (or no vintage that predates it) is a <em>data gap</em>, not a miss.</li>
         </ul>
       </div>
@@ -174,7 +197,7 @@ export default function BacktestPage() {
               className="w-40 accent-slate-700 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             />
             <span className="text-xs text-slate-400 tabular-nums whitespace-nowrap">
-              up to {steps} annual snapshots
+              up to {steps} snapshots/case · capped at {maxLead} mo before the event
             </span>
           </div>
         </div>
@@ -219,8 +242,9 @@ export default function BacktestPage() {
                 key={et}
                 label={`${label} caught`}
                 value={`${(s.catch_rate ?? 0).toFixed(0)}%`}
-                sub={`${s.caught ?? 0} of ${s.total} · ${(s.median_lead_months ?? 0).toFixed(0)} mo lead`}
+                sub={`${s.caught ?? 0} of ${s.total} · ${(s.median_lead_months ?? 0).toFixed(0)} mo lead · flags ≥ ${thrPct(et)}`}
                 good={(s.catch_rate ?? 0) >= 70}
+                tip={`Share of ${et} cases the model flagged ahead of time (flag = P(${et === 'default' ? 'distress' : et}) ≥ ${thrPct(et)}, the head's tuned cutoff). Higher is better.`}
               />
             )
           })}
@@ -230,6 +254,7 @@ export default function BacktestPage() {
               value={`${medianLead.toFixed(0)} mo`}
               sub="across all caught events"
               good={medianLead >= 3}
+              tip={`Typical months between the first flag and the event, across all caught cases. Capped at ${maxLead} months — flags earlier than that don't count as catches.`}
             />
           )}
           {byType.control && (
@@ -238,6 +263,7 @@ export default function BacktestPage() {
               value={`${(byType.control.fp_rate ?? 0).toFixed(0)}%`}
               sub={`${byType.control.false_positive ?? 0} of ${byType.control.total} controls flagged`}
               good={(byType.control.fp_rate ?? 0) <= 10}
+              tip="False-positive rate: share of healthy control issuers (no real event) the model wrongly flagged. Lower is better."
             />
           )}
         </div>
@@ -248,20 +274,31 @@ export default function BacktestPage() {
         <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
           <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">
             Walk-forward accuracy (out-of-time)
+            <InfoTip text="Each split trains only on the past and scores the future (never random K-fold, which would leak). These are out-of-time results." />
           </p>
           <p className="text-xs text-slate-400 mb-3">
             Mean PR-AUC across walk-forward splits — the model vs. a logistic baseline. Higher is better.
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            {(['downgrade', 'upgrade', 'default'] as const).map(h => (
-              <div key={h} className="rounded-lg border border-gray-200 p-3">
-                <p className="text-xs text-slate-400 tracking-wide capitalize">{h} PR-AUC</p>
-                <p className="text-xl font-bold text-slate-800 mt-1">{agg[h]?.mean_pr_auc_model ?? '—'}</p>
-                <p className="text-[11px] text-slate-400 mt-0.5">
-                  baseline {agg[h]?.mean_pr_auc_baseline ?? '—'} · {agg[h]?.n_splits_scored ?? 0} splits
-                </p>
-              </div>
-            ))}
+            {/* The third head is the model's "distress" head; a default is a CCC+/default transition. */}
+            {([['downgrade', 'Downgrade'], ['upgrade', 'Upgrade'], ['distress', 'Distress (default)']] as const).map(([h, label]) => {
+              const base = agg[h]?.mean_base_rate
+              return (
+                <div key={h} className="rounded-lg border border-gray-200 p-3">
+                  <p className="text-xs text-slate-400 tracking-wide">
+                    {label} PR-AUC
+                    <InfoTip text="Precision-Recall AUC (0–1): how well the model ranks soon-to-event issuers above the rest. Judge it against the no-skill floor (the event's base rate), not as a percent of 100." />
+                  </p>
+                  <p className="text-xl font-bold text-slate-800 mt-1">{agg[h]?.mean_pr_auc_model ?? '—'}</p>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    baseline {agg[h]?.mean_pr_auc_baseline ?? '—'}
+                    <InfoTip text="A plain logistic regression on the same data. Beating it shows the model adds lift over a simple linear model." />
+                    {base != null && <> · vs no-skill {base.toFixed(3)}</>}
+                    {' · '}{agg[h]?.n_splits_scored ?? 0} splits
+                  </p>
+                </div>
+              )
+            })}
           </div>
         </div>
       )}
@@ -281,8 +318,8 @@ export default function BacktestPage() {
                   <th className="px-4 py-3 text-left">Event</th>
                   <th className="px-4 py-3 text-left" title="Date of the rating event the model must flag ahead of time. Controls have none.">Event Date</th>
                   <th className="px-4 py-3 text-center">Result</th>
-                  <th className="px-4 py-3 text-center">P(event) Trajectory</th>
-                  <th className="px-6 py-3 text-right">Lead</th>
+                  <th className="px-4 py-3 text-center" title="The model's event probability at each snapshot (oldest left → event right). The dashed line is this head's flag cutoff.">P(event) Trajectory</th>
+                  <th className="px-6 py-3 text-right" title="Months from the first flag to the event (the early warning). Capped at the lead window.">Lead</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
@@ -311,16 +348,19 @@ export default function BacktestPage() {
 // or default slate (no judgment).
 
 function StatCard({
-  label, value, sub, good,
+  label, value, sub, good, tip,
 }: {
   label: string
   value: string
   sub?: string
   good?: boolean
+  tip?: string
 }) {
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-5 shadow-sm">
-      <p className="text-xs text-slate-400 uppercase tracking-wide font-medium">{label}</p>
+      <p className="text-xs text-slate-400 uppercase tracking-wide font-medium">
+        {label}{tip && <InfoTip text={tip} />}
+      </p>
       <p className={`text-2xl font-bold mt-1 ${
         good === true  ? 'text-green-600' :
         good === false ? 'text-red-600'   :
@@ -336,12 +376,15 @@ function StatCard({
 
 // ── Event-type styling ────────────────────────────────────────────────────────
 
-function eventBadge(eventType: string): { label: string; cls: string } {
+// `glyph` is the compact roster marker (avoids the Downgrade/Default "D" collision):
+// ↓ downgrade, ↑ upgrade, ✕ default/distress, • control. `label` is the full word for
+// the wider results-table and modal badges.
+function eventBadge(eventType: string): { label: string; glyph: string; cls: string } {
   switch (eventType) {
-    case 'downgrade': return { label: 'Downgrade', cls: 'bg-red-100 text-red-700' }
-    case 'upgrade':   return { label: 'Upgrade',   cls: 'bg-green-100 text-green-700' }
-    case 'default':   return { label: 'Default',   cls: 'bg-rose-200 text-rose-800' }
-    default:          return { label: 'Control',   cls: 'bg-slate-100 text-slate-600' }
+    case 'downgrade': return { label: 'Downgrade', glyph: '↓', cls: 'bg-red-100 text-red-700' }
+    case 'upgrade':   return { label: 'Upgrade',   glyph: '↑', cls: 'bg-green-100 text-green-700' }
+    case 'default':   return { label: 'Default',   glyph: '✕', cls: 'bg-rose-200 text-rose-800' }
+    default:          return { label: 'Control',   glyph: '•', cls: 'bg-slate-100 text-slate-600' }
   }
 }
 
@@ -416,7 +459,7 @@ function ProbHistory({ c }: { c: MigrationCaseResult }) {
   return (
     <div className="px-6 py-4 overflow-x-auto">
       <p className="text-xs font-medium text-slate-500 mb-2">
-        Model probability, stress score &amp; ratios at each snapshot{c.event_date ? ` (event: ${c.event_date})` : ''}
+        Model probability, real agency rating, stress score &amp; ratios at each snapshot{c.event_date ? ` (event: ${c.event_date})` : ''}
       </p>
       <table className="text-xs">
         <thead>
@@ -434,6 +477,13 @@ function ProbHistory({ c }: { c: MigrationCaseResult }) {
             <td className="pr-6 py-1.5 text-slate-500">Date</td>
             {traj.map((t, i) => (
               <td key={i} className="text-right px-3 py-1.5 font-mono text-slate-500">{t.eval_date.slice(0, 7)}</td>
+            ))}
+          </tr>
+          {/* Real agency rating in effect at each snapshot (point-in-time, forward-filled). */}
+          <tr className="border-t border-slate-100">
+            <td className="pr-6 py-1.5 text-slate-500">Rating</td>
+            {traj.map((t, i) => (
+              <td key={i} className="text-right px-3 py-1.5 font-mono text-slate-600">{t.rating ?? '—'}</td>
             ))}
           </tr>
           <tr className="border-t border-slate-100">
@@ -550,7 +600,7 @@ function MigrationCaseRow({ c, threshold }: { c: MigrationCaseResult; threshold:
         <td className="px-4 py-3"><span className={`text-xs px-2 py-1 rounded-full font-medium ${eb.cls}`}>{eb.label}</span></td>
         <td className="px-4 py-3 font-mono text-xs text-slate-500">{c.event_date ?? '—'}</td>
         <td className="px-4 py-3 text-center">{resultBadge}</td>
-        <td className="px-4 py-3"><ProbSparkline c={c} threshold={threshold} /></td>
+        <td className="px-4 py-3"><ProbSparkline c={c} threshold={c.flag_threshold ?? threshold} /></td>
         <td className="px-6 py-3 text-right font-mono text-sm text-slate-700">
           {isControl
             ? `${c.fp_count ?? 0} FP`
@@ -623,6 +673,14 @@ function CaseLibraryCard({ library, onChange }: { library: CaseLibrary; onChange
     }
   }
 
+  // Roster breakdown by event type (counted client-side from the case list) so the
+  // header shows the actual mix rather than the coarse distressed/healthy buckets.
+  const counts = library.cases.reduce((acc, c) => {
+    const et = c.event_type || (c.label === 'healthy' ? 'control' : 'downgrade')
+    acc[et] = (acc[et] ?? 0) + 1
+    return acc
+  }, {} as Record<string, number>)
+
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
       <button
@@ -634,7 +692,7 @@ function CaseLibraryCard({ library, onChange }: { library: CaseLibrary; onChange
           Case Library
         </span>
         <span className="text-sm text-slate-500">
-          {library.total} companies — {library.distressed} distressed, {library.healthy} healthy controls
+          {library.total} companies — {counts.upgrade ?? 0} upgrades, {counts.downgrade ?? 0} downgrades, {counts.default ?? 0} defaults, {counts.control ?? 0} controls
         </span>
       </button>
       {open && (
@@ -699,8 +757,8 @@ function CaseLibraryCard({ library, onChange }: { library: CaseLibrary; onChange
               const eb = eventBadge(c.event_type || (c.label === 'healthy' ? 'control' : 'downgrade'))
               return (
                 <div key={c.case_id || c.ticker} className="flex items-center gap-2 text-sm py-1 group">
-                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium shrink-0 ${eb.cls}`} title={eb.label}>
-                    {eb.label[0]}
+                  <span className={`inline-flex items-center justify-center w-4 h-4 text-[10px] rounded-full font-medium shrink-0 ${eb.cls}`} title={eb.label}>
+                    {eb.glyph}
                   </span>
                   <span className="font-mono font-bold text-slate-700 shrink-0">{c.ticker}</span>
                   <span className="text-slate-500 truncate">{c.company_name}</span>

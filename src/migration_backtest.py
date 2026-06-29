@@ -25,6 +25,8 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from src.model.train import select_vintage
+from src.ratings.labels import add_months, rating_asof
+from src.rating import RATING_SCALE
 
 # event_type → the model head (probability key) that should fire for it. A "default"
 # case routes to the broadened "distress" head (D ≥ CCC+ is a distress transition);
@@ -33,10 +35,16 @@ EVENT_HEAD = {"downgrade": "downgrade", "upgrade": "upgrade", "default": "distre
 
 # How many ~quarterly snapshots to walk back from the event (≈ this/4 years).
 DEFAULT_STEPS = 12
-# A probability at/above this flags the event.
+# A probability at/above this flags the event. Used only as a fallback when a
+# per-head tuned threshold (from data/migration_eval.json) isn't supplied — the
+# calibrated heads cluster well below 0.5, so the tuned cutoffs are far lower.
 DEFAULT_THRESHOLD = 0.5
 # An early warning is a catch with at least this much lead time.
 EARLY_MONTHS = 6
+# A flag only counts as a catch if it lands within this many months of the event.
+# The model's training horizon is 12 months, so a flag 3+ years out isn't a useful
+# early warning — it just inflates lead time. Snapshots older than this are dropped.
+DEFAULT_MAX_LEAD_MONTHS = 24
 
 
 def _months_between(d_from: str, d_to: str) -> float:
@@ -73,14 +81,62 @@ def _default_loader():
     return head_prob
 
 
-def _case_snapshots(rows, event_date: str, *, steps: int, controls: bool):
+def _default_rating_loader():
+    """Return events_for(cik) → {agency: [events asc by date]}, cached per cik.
+
+    Used to forward-fill the issuer's real agency rating onto each snapshot for the
+    expanded per-period view. Injectable so tests don't need a live store.
+    """
+    from src.store import get_agency_ratings_grouped
+    cache: dict[str, dict[str, list[dict]]] = {}
+
+    def events_for(cik: str) -> dict[str, list[dict]]:
+        key = cik.zfill(10)
+        if key not in cache:
+            cache[key] = get_agency_ratings_grouped(key).get(key, {})
+        return cache[key]
+
+    return events_for
+
+
+def _rating_timeline(events_by_agency: dict[str, list[dict]], agency: str) -> list[dict]:
+    """The rating-event timeline to read for a case: its own agency if present, else
+    the agency with the most events (the issuer's best-covered timeline)."""
+    if not events_by_agency:
+        return []
+    if agency and events_by_agency.get(agency):
+        return events_by_agency[agency]
+    return max(events_by_agency.values(), key=len)
+
+
+def _rating_at(timeline: list[dict], period: str) -> tuple[str | None, int | None]:
+    """The agency rating (letter, index) in effect as of `period`, forward-filled."""
+    if not timeline:
+        return (None, None)
+    idx, _status = rating_asof(timeline, period)
+    letter = RATING_SCALE[int(idx)] if idx is not None else None
+    return (letter, idx)
+
+
+def _case_snapshots(rows, event_date: str, *, steps: int, controls: bool, max_lead_months: int):
     """The (period_end, feature-row) snapshots to score for a case, newest-first.
 
-    For an event case: periods strictly before the event (the model must catch it
-    ahead of time). For a control: the most recent `steps` periods (any flag is a FP).
+    Both event cases AND controls use the SAME trailing `max_lead_months` window
+    anchored at `event_date` (a control's `event_date` is its pinned anchor) — so a
+    control is scored over the same handful of recent snapshots an event gets, not its
+    whole history. The old asymmetry (controls = full history ≈12 snaps, events ≈2)
+    gave controls ~6x more chances to trip the single-snapshot flag, inflating the FP
+    rate. Events use a STRICT cutoff (before the event, no lookahead); a control has no
+    event so its anchor period is included.
     """
     rows = sorted(rows, key=lambda r: r["period_end"])
-    usable = rows if controls else [r for r in rows if r["period_end"] < event_date]
+    if not event_date:
+        usable = rows
+    else:
+        earliest = add_months(event_date, -max_lead_months)
+        usable = [r for r in rows
+                  if (r["period_end"] <= event_date if controls else r["period_end"] < event_date)
+                  and r["period_end"] >= earliest]
     return list(reversed(usable[-steps:]))
 
 
@@ -90,9 +146,12 @@ def run_migration_backtest(
     vintages: list[dict[str, Any]],
     *,
     threshold: float = DEFAULT_THRESHOLD,
+    thresholds: dict[str, float] | None = None,
     steps: int = DEFAULT_STEPS,
     early_months: int = EARLY_MONTHS,
+    max_lead_months: int = DEFAULT_MAX_LEAD_MONTHS,
     head_prob_fn: Callable[[str, Any, str], float | None] | None = None,
+    agency_events_fn: Callable[[str], dict[str, list[dict]]] | None = None,
     feature_columns: list[str] | None = None,
 ) -> dict[str, Any]:
     """
@@ -101,13 +160,19 @@ def run_migration_backtest(
     from train_vintages. `head_prob_fn(path, X, head)` is injectable for testing;
     by default it loads the joblib vintage and runs the calibrated model.
 
-    Returns {threshold, by_event_type, cases}.
+    `thresholds` maps a model head (downgrade/upgrade/distress) → its tuned flag
+    cutoff; heads not listed fall back to `threshold`. A flag only counts when it
+    lands within `max_lead_months` of the event (older snapshots are dropped).
+
+    Returns {threshold, thresholds, by_event_type, cases}.
     """
     import pandas as pd
-    from src.model.features import FEATURE_COLUMNS, RATIO_FEATURES
+    from src.model.features import FEATURE_COLUMNS, RATIO_FEATURES, agency_features_asof
 
     feats = feature_columns or FEATURE_COLUMNS
     head_prob = head_prob_fn or _default_loader()
+    events_for = agency_events_fn or _default_rating_loader()
+    head_threshold = thresholds or {}
     results: list[dict[str, Any]] = []
 
     for case in cases:
@@ -125,7 +190,8 @@ def run_migration_backtest(
             results.append({**base, "status": "data_gap", "trajectory": []})
             continue
 
-        snaps = _case_snapshots(rows, event_date, steps=steps, controls=controls)
+        snaps = _case_snapshots(rows, event_date, steps=steps, controls=controls,
+                                max_lead_months=max_lead_months)
         if not snaps:
             results.append({**base, "status": "data_gap", "trajectory": []})
             continue
@@ -133,6 +199,11 @@ def run_migration_backtest(
         # Controls have no event; a false positive is the model wrongly flagging a
         # downgrade, so they are scored against the downgrade head.
         head = EVENT_HEAD.get(et) or ("downgrade" if controls else None)
+        # The flag cutoff for this case's head (tuned per head; falls back to the
+        # legacy single threshold for any head without a tuned value).
+        flag_threshold = head_threshold.get(head, threshold) if head else threshold
+        # The issuer's real agency-rating timeline, forward-filled onto each snapshot.
+        timeline = _rating_timeline(events_for(cik), (case.get("agency") or "").strip())
         trajectory: list[dict[str, Any]] = []
         earliest_flag: str | None = None
         flag_count = 0
@@ -141,21 +212,34 @@ def run_migration_backtest(
             period = row["period_end"]
             path = select_vintage(vintages, period)   # vintage trained strictly before T
             prob = None
+            # Point-in-time agency-conditioning features from the case's own agency
+            # timeline. build_scoring_matrix may already carry these (primary agency);
+            # here we OVERRIDE with the case's agency so the prediction is conditioned
+            # on the rating the event actually moved — and so they are never NaN, which
+            # was the train/serve skew that collapsed the model's resolution.
+            agency_feats = agency_features_asof(timeline, period, row.get("implied_rating_index"))
             if path is not None and head is not None:
                 scored_any = True
-                X = pd.DataFrame([{c: row.get(c) for c in feats}])
+                feat_row = {c: row.get(c) for c in feats}
+                feat_row.update({k: v for k, v in agency_feats.items() if k in feats})
+                X = pd.DataFrame([feat_row])
                 for c in feats:
                     X[c] = pd.to_numeric(X[c], errors="coerce")
                 prob = head_prob(path, X, head)
-            flagged = prob is not None and prob >= threshold
+            flagged = prob is not None and prob >= flag_threshold
             if flagged:
                 flag_count += 1
                 earliest_flag = period  # snaps are newest-first → ends on the oldest flag
+            rating_index = agency_feats["agency_rating_index"]
+            rating = RATING_SCALE[int(rating_index)] if rating_index is not None else None
             trajectory.append({
                 "eval_date": period,
                 "months_before_event": round(_months_between(period, event_date), 1) if event_date else None,
                 "prob": round(prob, 4) if prob is not None else None,
                 "flagged": flagged,
+                # The issuer's real agency rating in effect at this snapshot (point-in-time).
+                "rating": rating,
+                "rating_index": rating_index,
                 # Point-in-time stress score + ratio levels the model saw at this snapshot
                 # (lookahead-free), for the expanded per-period view on the backtest page.
                 "score": _num(row.get("stress_score")),
@@ -164,7 +248,8 @@ def run_migration_backtest(
 
         if controls:
             results.append({**base, "status": "clean" if flag_count == 0 else "false_positive",
-                            "fp_count": flag_count, "trajectory": trajectory})
+                            "fp_count": flag_count, "flag_threshold": flag_threshold,
+                            "trajectory": trajectory})
             continue
 
         if not scored_any:
@@ -183,11 +268,16 @@ def run_migration_backtest(
             "caught": caught,
             "lead_months": round(lead, 1) if lead is not None else None,
             "early_warning": bool(caught and lead is not None and lead >= early_months),
+            "flag_threshold": flag_threshold,
             "trajectory": trajectory,
         })
 
     return {
-        "threshold": threshold,
+        # Legacy single threshold (the downgrade head's cutoff if tuned) for older
+        # readers; `thresholds` carries the full per-head map.
+        "threshold": head_threshold.get("downgrade", threshold),
+        "thresholds": head_threshold,
+        "max_lead_months": max_lead_months,
         "by_event_type": _scorecard(results, early_months),
         "cases": results,
     }

@@ -74,23 +74,24 @@ def attribute(bundle: dict[str, Any], x_row, head: str = "downgrade", top_n: int
     return drivers[:top_n]
 
 
-def predict_rows(bundle: dict[str, Any], df, *, top_n: int = 5) -> list[dict]:
+def _iter_predict_rows(bundle: dict[str, Any], df, *, top_n: int = 5, skip_keys=None):
     """
-    Predict for a feature matrix, one output row per (cik, period_end). When a
-    period has multiple agency rows, the probabilities are averaged and the drivers
-    taken from the representative (first) row.
+    Yield one output row per (cik, period_end). When a period has multiple agency rows
+    the probabilities are averaged and the drivers taken from the representative (first)
+    row. `skip_keys` is a set of (zero-padded cik, period_end) already scored — skipped
+    so a re-run can resume a killed pass without re-doing work.
     """
-    import logging
     import numpy as np
     import pandas as pd
 
-    log = logging.getLogger("model.predict")
     version = bundle.get("version", "")
-    out: list[dict] = []
+    skip = skip_keys or set()
     for (cik, period_end), grp in df.groupby(["cik", "period_end"], sort=False):
+        if (str(cik).zfill(10), period_end) in skip:
+            continue
         X = grp.reindex(columns=FEATURE_COLUMNS).apply(pd.to_numeric, errors="coerce")
         probs = predict_proba_all(bundle, X)
-        row = {
+        yield {
             "cik": cik,
             "period_end": period_end,
             "horizon_months": HORIZON_MONTHS,
@@ -100,20 +101,55 @@ def predict_rows(bundle: dict[str, Any], df, *, top_n: int = 5) -> list[dict]:
             "drivers_json": attribute(bundle, X.iloc[[0]], "downgrade", top_n),
             "model_version": version,
         }
-        out.append(row)
-        if len(out) % 2000 == 0:
-            log.info("  scored %d issuer-periods...", len(out))
-    log.info("  scored %d issuer-periods", len(out))
-    return out
 
 
-def predict_and_store(bundle: dict[str, Any], df) -> int:
-    """Predict for `df` and bulk-write to migration_predictions. Returns row count."""
-    from src.store import save_migration_predictions_bulk
+def predict_rows(bundle: dict[str, Any], df, *, top_n: int = 5) -> list[dict]:
+    """Eager list of every scored row (full pass, no skipping)."""
+    return list(_iter_predict_rows(bundle, df, top_n=top_n))
 
-    rows = predict_rows(bundle, df)
-    save_migration_predictions_bulk(rows)
-    return len(rows)
+
+def predict_and_store(bundle: dict[str, Any], df, *, batch_size: int = 2000,
+                      resume: bool = True, prune: bool = True) -> int:
+    """
+    Score `df` and write to migration_predictions in BATCHES as it goes — so an
+    interrupted run never empties the table (unlike clear-then-bulk-write-at-end).
+
+    resume=True skips issuer-periods already scored for this model version, so a re-run
+    continues where a killed run stopped. prune=True deletes leftover rows from OTHER
+    model versions at the END (replace semantics, with no empty-table window). Returns
+    the number of rows written this run.
+    """
+    import logging
+    from src.store import (
+        save_migration_predictions_bulk, get_predicted_keys,
+        prune_migration_predictions_except_version,
+    )
+
+    log = logging.getLogger("model.predict")
+    version = bundle.get("version", "")
+
+    skip = get_predicted_keys(version) if resume else set()
+    if skip:
+        log.info("  resume: %d issuer-periods already scored for %s — skipping", len(skip), version)
+
+    batch: list[dict] = []
+    n = 0
+    for row in _iter_predict_rows(bundle, df, skip_keys=skip):
+        batch.append(row)
+        if len(batch) >= batch_size:
+            save_migration_predictions_bulk(batch)
+            n += len(batch)
+            batch = []
+            log.info("  wrote %d issuer-periods...", n)
+    if batch:
+        save_migration_predictions_bulk(batch)
+        n += len(batch)
+    log.info("  wrote %d issuer-periods (this run)", n)
+
+    if prune:
+        prune_migration_predictions_except_version(version)
+        log.info("  pruned rows from other model versions (replace)")
+    return n
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -129,7 +165,11 @@ if __name__ == "__main__":
     parser.add_argument("--model", default="data/migration_model.joblib", help="joblib artifact")
     parser.add_argument("--matrix", default=None, help="feature-matrix CSV (else assemble from Supabase)")
     parser.add_argument("--no-replace", action="store_true",
-                        help="upsert without clearing migration_predictions first (keeps stale rows)")
+                        help="keep rows from other model versions (skip the end-of-run prune)")
+    parser.add_argument("--no-resume", action="store_true",
+                        help="re-score every issuer-period even if already scored for this version")
+    parser.add_argument("--batch-size", type=int, default=2000,
+                        help="rows per incremental upsert (smaller = more crash-resilient)")
     args = parser.parse_args()
 
     cli_log.info("Loading model %s...", args.model)
@@ -143,10 +183,8 @@ if __name__ == "__main__":
         df = load_training_matrix()
     cli_log.info("Matrix: %d rows", len(df))
 
-    if not args.no_replace:
-        from src.store import clear_migration_predictions
-        clear_migration_predictions()
-        print("Cleared migration_predictions (replace mode).")
-
-    n = predict_and_store(bundle, df)
+    # No up-front clear: predict_and_store batch-upserts (safe if killed) and prunes
+    # other-version rows at the END unless --no-replace.
+    n = predict_and_store(bundle, df, batch_size=args.batch_size,
+                          resume=not args.no_resume, prune=not args.no_replace)
     print(f"Wrote {n} migration_predictions with model {bundle.get('version')}")

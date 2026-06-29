@@ -1578,22 +1578,44 @@ function MigrationPredictionBlock({ periods }: { periods: PeriodData[] }) {
 
   // Drivers are attributed to the downgrade head: contribution > 0 raises downgrade
   // risk (credit-negative), < 0 lowers it (credit-positive). Frame the list around
-  // the predicted direction so it explains the call rather than only listing risk:
-  //   down   → downgrade-risk drivers (all, as before)
-  //   up     → only the factors LOWERING downgrade risk (what supports the upgrade)
-  //   stable → the strongest factors either way (what's holding the rating steady)
+  // the predicted direction so the TITLE matches the factors actually shown:
+  //   down   → the factors RAISING downgrade risk (what drives the call)
+  //   up     → the factors LOWERING downgrade risk (what supports the upgrade)
+  //   stable → the strongest factors either way
+  // If the directional filter empties (e.g. every top factor is protective), say so
+  // honestly instead of listing risk-reducers under a "downgrade risk" heading.
   const dir = m.direction ?? 'stable'
-  const driverView = {
-    down:   { title: 'Top drivers of downgrade risk',         keep: (_d: MigrationDriver) => true },
-    up:     { title: 'Top drivers supporting an upgrade',      keep: (d: MigrationDriver) => d.contribution < 0 },
-    stable: { title: 'Top factors holding the rating steady',  keep: (_d: MigrationDriver) => true },
-  }[dir]
-  // Fall back to the full list if the directional filter empties it.
-  const filtered = m.drivers_json.filter(driverView.keep)
-  const shownDrivers = filtered.length > 0 ? filtered : m.drivers_json
-  const headline = dir === 'down' ? 'Downgrade likely'
-    : dir === 'up' ? 'Upgrade likely'
+  const pDown = m.p_downgrade ?? 0
+  const pUp = m.p_upgrade ?? 0
+  const raisers = m.drivers_json.filter(d => d.contribution > 0)
+  const reducers = m.drivers_json.filter(d => d.contribution < 0)
+
+  let driverTitle: string
+  let shownDrivers: MigrationDriver[]
+  if (dir === 'down') {
+    if (raisers.length) { driverTitle = 'Top drivers of downgrade risk'; shownDrivers = raisers }
+    else { driverTitle = 'No single factor is raising risk — largest factors, all reducing it'; shownDrivers = reducers }
+  } else if (dir === 'up') {
+    if (reducers.length) { driverTitle = 'Top factors supporting an upgrade'; shownDrivers = reducers }
+    else { driverTitle = 'No single factor supports an upgrade — largest factors, all raising risk'; shownDrivers = raisers }
+  } else {
+    driverTitle = 'Top factors holding the rating steady'; shownDrivers = m.drivers_json
+  }
+
+  // Headline bands key off the model's TUNED per-head flag cutoff (T), not a hardcoded
+  // 0.5: on the recalibrated scale a downgrade probability rarely clears ~40%, so the
+  // operating point T≈0.22 is where the model actually flags. p ≥ T = "elevated risk"
+  // (what the backtest flags); below T = "leaning". We drop a "likely" tier because a
+  // literal >50% almost never applies to a calibrated rare-event model. Fall back to
+  // 0.5 only when the eval hasn't produced thresholds yet.
+  const tDown = m.thresholds?.downgrade ?? 0.5
+  const tUp = m.thresholds?.upgrade ?? 0.5
+  const headline = dir === 'down'
+      ? (pDown >= tDown ? 'Elevated downgrade risk' : 'Leaning negative')
+    : dir === 'up'
+      ? (pUp >= tUp ? 'Elevated upgrade chance' : 'Leaning positive')
     : 'Likely to stay stable'
+  const staysPut = dir !== 'stable' && pDown < tDown && pUp < tUp
 
   return (
     <div className="rounded-lg border border-gray-200 bg-white p-3">
@@ -1619,15 +1641,19 @@ function MigrationPredictionBlock({ periods }: { periods: PeriodData[] }) {
         <p className="mt-2 text-sm text-slate-600">
           <span className="font-medium text-slate-700">{headline}</span>
           {' — '}{m.reason}.
+          {staysPut && (
+            <span className="text-slate-400"> Staying at the current rating is still the most likely outcome.</span>
+          )}
         </p>
       )}
       {shownDrivers.length > 0 && (
         <div className="mt-2">
-          <p className="text-xs text-slate-400 mb-1">{driverView.title}:</p>
+          <p className="text-xs text-slate-400 mb-1">{driverTitle}:</p>
           <ul className="space-y-1">
             {shownDrivers.map((d, i) => (
               <li key={i} className="flex items-center gap-2 text-xs">
-                <span className={d.contribution > 0 ? 'text-red-600' : 'text-green-600'}>
+                <span className={d.contribution > 0 ? 'text-red-600' : 'text-green-600'}
+                      title={d.contribution > 0 ? 'Raises downgrade risk' : 'Reduces downgrade risk'}>
                   {d.contribution > 0 ? '▲' : '▼'}
                 </span>
                 <span className="text-slate-600">{driverLabel(d.feature)}</span>
@@ -1636,16 +1662,25 @@ function MigrationPredictionBlock({ periods }: { periods: PeriodData[] }) {
                 </span>
                 {/* YoY move of the underlying ratio — makes clear why it's a driver. */}
                 {d.pct_change != null && Math.abs(d.pct_change) >= 1 && (
-                  <span className="text-slate-400 font-mono" title="Year-over-year change">
+                  <span className="text-slate-400 font-mono" title="Year-over-year change in the metric">
                     ({d.pct_change > 0 ? '↑' : '↓'} {Math.abs(d.pct_change).toFixed(0)}%)
                   </span>
                 )}
-                <span className="text-slate-400 ml-auto font-mono">
+                <span className="text-slate-400 ml-auto font-mono"
+                      title="Effect on the 12-month downgrade probability">
                   {d.contribution > 0 ? '+' : ''}{(d.contribution * 100).toFixed(1)} pts
                 </span>
               </li>
             ))}
           </ul>
+          {/* Legend: the colored ▲/▼ encodes effect on downgrade RISK; the (↑/↓ %)
+              badge is the separate YoY move of the metric — without this they read
+              as contradictory (a green ▼ next to an "↑18%"). */}
+          <p className="text-[10px] text-slate-400 mt-1.5 leading-relaxed">
+            <span className="text-red-600">▲</span> raises downgrade risk
+            {' · '}<span className="text-green-600">▼</span> reduces it
+            {' · (↑/↓ %) = YoY change in the metric · pts = effect on 12-mo downgrade probability'}
+          </p>
         </div>
       )}
     </div>

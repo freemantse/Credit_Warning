@@ -246,22 +246,30 @@ def _case_row(row: dict[str, Any]) -> dict[str, Any]:
     return {col: (row.get(col) or "") for col in _CASE_COLUMNS}
 
 
+# Display/storage order for the roster: by credit-event severity the backtest reads
+# top-down — distress/default, then downgrade, then upgrade, then control (matches
+# scripts.rebuild_cases). This is the single source of order for the
+# /api/backtest/cases roster, the backtest run, and the CSV export, so all three stay
+# consistent (and any unknown event_type sorts last, deterministically).
+_EVENT_ORDER = {"default": 0, "downgrade": 1, "upgrade": 2, "control": 3}
+
+
 def list_cases(**_) -> list[dict[str, Any]]:
     """
-    Return every backtest case as a CSV-compatible dict (keys: case_id,
-    company_name, ticker, cik, label, event_date, notes — all strings).
+    Return every backtest case as a CSV-compatible dict (all-string values).
 
-    Sorted by label then case_id so the order is stable across runs.
+    Ordered distress/default → downgrade → upgrade → control, then by event_date and
+    ticker — stable across runs and shared by the UI roster, the backtest, and the
+    CSV export.
     """
-    res = (
-        _client()
-        .table("cases")
-        .select(",".join(_CASE_COLUMNS))
-        .order("label")
-        .order("case_id")
-        .execute()
-    )
-    return [_case_row(row) for row in res.data]
+    res = _client().table("cases").select(",".join(_CASE_COLUMNS)).execute()
+    rows = [_case_row(row) for row in res.data]
+    rows.sort(key=lambda r: (
+        _EVENT_ORDER.get((r.get("event_type") or "").strip(), 9),
+        r.get("event_date") or "",
+        r.get("ticker") or "",
+    ))
+    return rows
 
 
 def get_case(case_id: str, **_) -> dict[str, Any] | None:
@@ -306,6 +314,28 @@ def delete_case(case_id: str, **_) -> bool:
     existed = get_case(case_id) is not None
     _client().table("cases").delete().eq("case_id", case_id).execute()
     return existed
+
+
+def export_cases_to_csv(path: str | None = None) -> int:
+    """Mirror the live `cases` table → data/cases.csv (DB → CSV export).
+
+    The reverse of scripts.seed_cases (CSV → DB). Supabase is the source of truth;
+    this keeps the committed CSV in sync after roster edits. Writes every case in
+    list_cases() order (label, case_id — stable) using the canonical CSV schema.
+    Returns the number of rows written.
+    """
+    import csv
+    import pathlib
+
+    dest = (pathlib.Path(path) if path
+            else pathlib.Path(__file__).resolve().parent.parent / "data" / "cases.csv")
+    rows = list_cases()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with open(dest, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(_CASE_COLUMNS))
+        w.writeheader()
+        w.writerows(rows)
+    return len(rows)
 
 
 # ── Scoring config ───────────────────────────────────────────────────────────
@@ -662,10 +692,42 @@ def save_migration_predictions_bulk(rows: list[dict[str, Any]], **_) -> None:
 
 
 def clear_migration_predictions(**_) -> None:
-    """Truncate migration_predictions so a fresh predict run doesn't leave stale rows for
-    issuers no longer scored (and, after the p_default→p_distress rename, no rows whose
-    values predate the new head). Used by src.model.predict's default replace mode."""
+    """Truncate migration_predictions (full manual wipe). NOTE: src.model.predict no
+    longer clears up-front — it batch-upserts and prunes other-version rows at the END
+    (see prune_migration_predictions_except_version), so a killed run never empties the
+    table. Kept for an explicit hard reset."""
     _delete_all_rows("migration_predictions")
+
+
+def get_predicted_keys(version: str) -> set[tuple[str, str]]:
+    """
+    (cik, period_end) pairs already scored for `version`, so src.model.predict can
+    RESUME a killed run by skipping issuer-periods it already wrote. cik is the stored
+    zero-padded form. Empty set if the table is missing/unreachable (treat all as unscored).
+    """
+    def build():
+        return (
+            _client()
+            .table("migration_predictions")
+            .select("cik,period_end")
+            .eq("model_version", version)
+            .order("cik").order("period_end")
+        )
+    try:
+        rows = _fetch_all(build)
+    except Exception:
+        return set()
+    return {(r["cik"], r["period_end"]) for r in rows}
+
+
+def prune_migration_predictions_except_version(version: str) -> None:
+    """
+    Delete rows left from any OTHER model version — replace semantics with no
+    empty-table window. After a full re-score with `version`, every current
+    issuer-period has a fresh row, so anything tagged with a different version is
+    stale (old model, or an issuer-period that dropped out of the universe).
+    """
+    _client().table("migration_predictions").delete().neq("model_version", version).execute()
 
 
 def get_migration_predictions_grouped(

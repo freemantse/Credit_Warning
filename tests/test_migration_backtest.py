@@ -54,13 +54,27 @@ def test_downgrade_caught_early_and_control_clean():
 
 
 def test_control_false_positive_counts():
-    scoring = {"0000000001": [{"period_end": "2021-12-31", "leverage": 9.0}]}  # 0.9 → flag
+    # Controls are scored over the SAME trailing max_lead_months window as events
+    # (anchored at the control's event_date), so the flagging snapshot must fall inside
+    # that window (here 2024-12-31, within 24m of the 2025-12-31 anchor).
+    scoring = {"0000000001": [{"period_end": "2024-12-31", "leverage": 9.0}]}  # 0.9 → flag
     cases = [{"cik": "1", "ticker": "X", "event_type": "control", "event_date": "2025-12-31"}]
     out = run_migration_backtest(cases, scoring, VINTAGES, head_prob_fn=stub_head_prob,
                                  feature_columns=FEATURES)
     ctl = out["cases"][0]
     assert ctl["status"] == "false_positive" and ctl["fp_count"] == 1
     assert out["by_event_type"]["control"]["fp_rate"] == 100.0
+
+
+def test_control_outside_lead_window_is_data_gap():
+    # A control whose only snapshot predates the trailing window (here 48m before the
+    # anchor) has nothing to score in-window → data_gap, not a free "clean" pass. This
+    # is the symmetric-window contract that stops controls being scanned over all history.
+    scoring = {"0000000001": [{"period_end": "2021-12-31", "leverage": 9.0}]}
+    cases = [{"cik": "1", "ticker": "X", "event_type": "control", "event_date": "2025-12-31"}]
+    out = run_migration_backtest(cases, scoring, VINTAGES, head_prob_fn=stub_head_prob,
+                                 feature_columns=FEATURES)
+    assert out["cases"][0]["status"] == "data_gap"
 
 
 def test_no_vintage_before_snapshot_is_data_gap():

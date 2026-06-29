@@ -61,11 +61,18 @@ def compute_labels(
     ratios_grouped: dict[str, dict[str, Any]],
     *,
     horizons: tuple[int, ...] = (3, 6, 12),
+    label_policy: str = "all",
 ) -> list[dict[str, Any]]:
     """
     Pure label build from the two grouped store reads. data_max_date is the last
     observed agency action — horizon windows past it are censored (left None), never
     fabricated as 'stable'. Returns [] when there are no agency events to anchor on.
+
+    `label_policy` (see src.ratings.labels.LABEL_POLICIES) controls EJR denoising.
+    Default is "all" (keep every EJR label): the step-0 A/B measured that denoising
+    does NOT improve out-of-time discrimination, and dropping EJR ("big3") badly hurts
+    the rare distress head (it supplies most distress positives). EJR noise is denoised
+    only in the backtest CASE POOL (where it affects measurement), not in training.
     """
     events = flatten_events(agency_grouped)
     if not events:
@@ -76,6 +83,7 @@ def compute_labels(
         period_ends_by_cik(ratios_grouped),
         data_max_date=data_max_date,
         horizons=horizons,
+        label_policy=label_policy,
     )
 
 
@@ -89,9 +97,14 @@ def main() -> None:
         clear_rating_labels,
     )
 
+    from src.ratings.labels import LABEL_POLICIES
+
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--no-replace", action="store_true",
                     help="upsert without clearing rating_labels first (keeps stale rows)")
+    ap.add_argument("--label-policy", choices=LABEL_POLICIES, default="all",
+                    help="EJR denoising policy for labels (default: all — see compute_labels; "
+                         "the step-0 A/B found denoising doesn't help and 'big3' hurts distress)")
     args = ap.parse_args()
 
     import time
@@ -107,9 +120,9 @@ def main() -> None:
     ratios_grouped = get_ratios_grouped()
     print(f"  {len(ratios_grouped)} tracked issuers ({time.perf_counter() - t:.1f}s)", flush=True)
 
-    print("Computing lookahead-free labels...", flush=True)
+    print(f"Computing lookahead-free labels (policy={args.label_policy})...", flush=True)
     t = time.perf_counter()
-    labels = compute_labels(agency_grouped, ratios_grouped)
+    labels = compute_labels(agency_grouped, ratios_grouped, label_policy=args.label_policy)
     print(f"  built {len(labels)} label rows ({time.perf_counter() - t:.1f}s)", flush=True)
 
     if not labels:
