@@ -76,6 +76,11 @@ EXPENSIVE strict LAYER-2 (careful reasoning — high precision):
 
 ## 3. Layer 1 generous, Layer 2 strict — tuned as a PAIR
 
+> **REJECTED (measured)** — `finding_locality_measure.py` showed MD&A findings are
+> diffuse (RAD: tone spans 68% of MD&A, ~30% single-extractor routing footprint), so a
+> triage layer saves little and concentrates mis-tag risk. Real fix if scale demands:
+> prompt-merge the extractors, not triage. Overlap is tolerable now via chunking + tier.
+
 **Why generous layer-1:** the two layers have *asymmetric* failure costs.
 - Layer-1 false NEGATIVE (drops a covenant) → gone forever, layer-2 never sees it → **fatal miss.**
 - Layer-1 false POSITIVE (keeps junk) → layer-2 discards it → **cheap, self-correcting.**
