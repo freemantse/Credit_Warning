@@ -1,5 +1,7 @@
 """Tests for src/migration_backtest.py — pure harness logic with an injected model."""
 
+from pytest import approx
+
 from src.migration_backtest import run_migration_backtest
 
 
@@ -111,3 +113,28 @@ def test_missing_issuer_rows_is_data_gap():
     out = run_migration_backtest(cases, {}, VINTAGES, head_prob_fn=stub_head_prob,
                                  feature_columns=FEATURES)
     assert out["cases"][0]["status"] == "data_gap"
+
+
+def test_scores_any_agency_by_noisy_or():
+    """
+    When an issuer is rated by multiple agencies, each snapshot is scored under EVERY
+    covering agency and combined by noisy-OR (the shipped issuer-level 'any-agency'
+    signal). Here MDY alone (0.3) would NOT flag at 0.5, but MDY+EJR combine to
+    1 − 0.7·0.5 = 0.65 → the case is caught.
+    """
+    def hp_by_agency(path, X, head):
+        return 0.3 if float(X["agency_code"].iloc[0]) == 0 else 0.5   # MDY=0 → .3, EJR=2 → .5
+
+    def events(cik):
+        ev = [{"effective_date": "2018-01-01", "rating_index": 8, "rating_status": "rated"}]
+        return {"MDY": list(ev), "EJR": list(ev)}
+
+    scoring = {"0000000001": [{"period_end": "2020-12-31", "leverage": 1.0, "agency_code": None}]}
+    cases = [{"cik": "1", "ticker": "X", "event_type": "downgrade",
+              "event_date": "2021-06-30", "agency": "MDY"}]
+    out = run_migration_backtest(cases, scoring, VINTAGES, threshold=0.5,
+                                 head_prob_fn=hp_by_agency, agency_events_fn=events,
+                                 feature_columns=["leverage", "agency_code"])
+    c = out["cases"][0]
+    assert c["status"] == "caught"
+    assert c["trajectory"][0]["prob"] == approx(0.65)   # 1 − (1−.3)(1−.5)

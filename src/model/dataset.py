@@ -23,7 +23,9 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from src.model.features import FEATURE_COLUMNS, FEATURE_DIRECTIONS, CORE_CONSTRAINED_FEATURES
+from src.model.features import (
+    FEATURE_COLUMNS, FEATURE_DIRECTIONS, CORE_CONSTRAINED_FEATURES, MARKET_FEATURES,
+)
 from src.ratings.labels import add_months
 
 
@@ -35,6 +37,12 @@ HEADS: dict[str, dict[str, Any]] = {
     "upgrade":   {"monotone_sign": -1, "positive": lambda r: r.get("label_12m") == -1},
     "distress":  {"monotone_sign": 1,  "positive": lambda r: bool(r.get("distress_12m"))},
 }
+
+# Features a head must NOT use, masked to NaN in make_xy (an all-NaN column is inert —
+# the histogram booster never splits on it). The DISTRESS head excludes the market
+# features: they lift downgrade/upgrade but regressed distress precision, so distress
+# keeps its fundamentals-only view while up/down get the market signal.
+HEAD_EXCLUDED_FEATURES: dict[str, tuple[str, ...]] = {"distress": tuple(MARKET_FEATURES)}
 
 HORIZON_MONTHS = 12
 
@@ -80,6 +88,11 @@ def make_xy(df, head: str):
     # Coerce everything to float; booleans → 0/1; non-numeric → NaN.
     for col in FEATURE_COLUMNS:
         X[col] = pd.to_numeric(X[col], errors="coerce").astype(float)
+    # Per-head feature masking: excluded columns become all-NaN so this head's booster
+    # never splits on them (e.g. distress excludes the market features).
+    for col in HEAD_EXCLUDED_FEATURES.get(head, ()):
+        if col in X.columns:
+            X[col] = float("nan")
     return X, y.reset_index(drop=True), usable.index
 
 

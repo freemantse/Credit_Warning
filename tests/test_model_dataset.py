@@ -3,10 +3,9 @@
 import pandas as pd
 
 from src.model.dataset import (
-    HEADS, monotone_constraints, time_split, make_xy, observed, HORIZON_MONTHS,
-    recall_at_k,
+    monotone_constraints, time_split, make_xy, observed, recall_at_k,
 )
-from src.model.features import FEATURE_COLUMNS, FEATURE_DIRECTIONS
+from src.model.features import FEATURE_COLUMNS
 
 
 def _row(period_end, label_12m=0, distress_12m=False, **feats):
@@ -77,6 +76,21 @@ def test_make_xy_X_has_feature_columns():
     X, _, _ = make_xy(df, "downgrade")
     assert list(X.columns) == list(FEATURE_COLUMNS)
     assert X.iloc[0]["leverage"] == 5.0
+
+
+def test_make_xy_masks_market_features_for_distress_only():
+    from src.model.features import MARKET_FEATURES
+    df = pd.DataFrame([_row("2019-12-31", label_12m=1, distress_12m=True,
+                            distance_to_default=5.0, equity_vol=0.3,
+                            equity_ret_12m=0.1, market_leverage=0.4)])
+    Xd, _, _ = make_xy(df, "downgrade")
+    Xu, _, _ = make_xy(df, "upgrade")
+    Xx, _, _ = make_xy(df, "distress")
+    # downgrade + upgrade use the market features …
+    assert Xd.iloc[0]["distance_to_default"] == 5.0 and Xu.iloc[0]["distance_to_default"] == 5.0
+    # … the distress head masks them all to NaN (inert for its booster).
+    for c in MARKET_FEATURES:
+        assert pd.isna(Xx.iloc[0][c])
 
 
 def test_recall_at_k():

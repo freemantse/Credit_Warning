@@ -1,6 +1,5 @@
 """Tests for src/rating.py — pure arithmetic, no network or LLM."""
 
-import pytest
 
 from src.extract import RatioResult
 from src.rating import (

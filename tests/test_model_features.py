@@ -10,7 +10,6 @@ from src.model.features import (
     FEATURE_COLUMNS,
     FEATURE_DIRECTIONS,
     ID_COLUMNS,
-    TARGET_COLUMNS,
 )
 
 
@@ -99,6 +98,9 @@ def test_merge_labels_attaches_gap_and_targets():
     assert mdy["implied_vs_agency_gap"] == 2       # implied 7 − agency 5 (implied worse)
     assert mdy["label_12m"] == 1
     assert mdy["time_in_rating_months"] is None    # no events supplied
+    # agency identity is carried as the ordinal agency_code feature (MDY=0, FTC=1).
+    assert mdy["agency_code"] == 0
+    assert next(r for r in rows if r["agency"] == "FTC")["agency_code"] == 1
 
 
 def test_merge_labels_skips_periods_without_features():
@@ -137,3 +139,25 @@ def test_feature_directions_cover_all_features():
     for col in FEATURE_COLUMNS:
         assert col in FEATURE_DIRECTIONS, col
         assert FEATURE_DIRECTIONS[col] in (-1, 0, 1)
+
+
+def test_add_market_features_join():
+    import pandas as pd
+    import src.model.features as F
+    from src.model.features import add_market_features, MARKET_FEATURES
+
+    saved = F._MARKET_FEATURES_CACHE
+    F._MARKET_FEATURES_CACHE = pd.DataFrame([{
+        "cik": "C1", "period_end": "2019-12-31", "distance_to_default": 5.0,
+        "equity_vol": 0.3, "equity_ret_12m": 0.1, "market_leverage": 0.4,
+    }])
+    try:
+        out = add_market_features(pd.DataFrame([
+            {"cik": "C1", "period_end": "2019-12-31"},   # matches → populated
+            {"cik": "C2", "period_end": "2019-12-31"},   # no market row → NaN
+        ]))
+        assert all(c in out.columns for c in MARKET_FEATURES)
+        assert out.loc[out.cik == "C1", "distance_to_default"].iloc[0] == 5.0
+        assert pd.isna(out.loc[out.cik == "C2", "distance_to_default"].iloc[0])
+    finally:
+        F._MARKET_FEATURES_CACHE = saved

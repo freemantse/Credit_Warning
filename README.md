@@ -95,6 +95,44 @@ into the CCC+/default tail) *plus the top financial drivers behind each number* 
 "rising leverage", "falling interest coverage"), so a prediction is never a black box.
 These land in the `migration_predictions` table, which the portfolio and issuer pages read.
 
+**How the three agencies are combined.** The three agencies rate the same company
+independently and often *disagree* (they agree on direction only ~64% of the time), so
+there is no single "true rating". The model is trained **pooled** over all three — one
+row per (company, period, agency), each labelled by *that agency's* own 12-month move —
+with the **agency identity itself as a feature**, so the booster can learn that e.g.
+Egan-Jones downgrades roughly twice as often as Moody's. At serving time the per-agency
+probabilities are then combined into a single **issuer-level "will *any* agency
+deteriorate"** number via noisy-OR (`1 − ∏(1 − pₐ)`) — the question the product actually
+answers. (We deliberately do *not* train three separate models; see the limitations below.)
+
+#### Forward-looking market features (distance-to-default)
+
+The accounting ratios above are backward-looking and update only quarterly. To give the
+model a **forward-looking** signal, the **downgrade** and **upgrade** heads also read four
+market features computed from daily equity prices (an LSEG drop, ~2002→present): the Merton
+**distance-to-default** (Bharath–Shumway "naive" form, using market cap + gross debt +
+equity volatility), **12-month equity momentum**, **annualised equity volatility**, and
+**market leverage** (debt / (debt + market cap)). Every value is strictly point-in-time —
+only prices dated on/before the period_end — so the walk-forward guarantee holds
+(`src/model/market.py`, precomputed by `scripts.build_market_features`).
+
+This is the credit literature's single most reliable lever, and it is the first feature
+addition that measurably helped (an earlier batch of purely ratio-derived features was
+tried and reverted for not helping). Out-of-time walk-forward, adding the market block:
+
+| Head | PR-AUC (before → after) | Catch @10% false-positive |
+|---|---|---|
+| **Downgrade** | 0.220 → **0.246** | 25% → **30%** |
+| **Upgrade** | 0.290 → **0.311** | 33% → **35%** |
+| Distress | 0.190 (unchanged) | ~59% |
+
+The **distress head deliberately excludes** the market features — they lifted the migration
+heads but slightly hurt distress precision, and because the three heads are independent
+classifiers each can use its own feature set (`dataset.make_xy` masks them for distress).
+Honest caveat: this is a real, replicable gain in *discrimination*, but migration
+prediction still tops out well short of "catch 90% at a low false-alarm rate" — the market
+signal shifts the catch/false-positive frontier up, it doesn't remove the ceiling.
+
 #### The pipeline
 
 It never runs in the API hot path — it trains on a schedule (local / CI / cron) and
@@ -105,15 +143,60 @@ data/agency_ratings.csv  (consolidated real ratings: Moody's/Fitch/Egan-Jones)
    → load_agency_ratings  (the single source of truth → agency_ratings table)
    → track_universe       (each company's SEC filings → auditable XBRL ratio features)
    → build_labels         (period_end + the next rating event → a lookahead-free label)
+   → build_market_features (LSEG daily equity prices → point-in-time distance-to-default,
+                            equity momentum & volatility → data/market_features.csv)
    → train                (one active model on all history + walk-forward "vintages")
    → predict              (calibrated P(up/down/distress) + drivers → migration_predictions)
-   → evaluate             (out-of-time scorecard → data/migration_eval.json)
+   → evaluate             (out-of-time scorecard + catch/false-positive frontier → data/migration_eval.json)
 ```
 
 The issuer page shows each company's prediction from `migration_predictions` (falling
 back to the rule-based Rating Outlook until the model is trained). The `/backtest` page
 replays the **vintages** point-in-time over the case library — each snapshot scored by a
 model trained strictly *before* that date, so there is no look-ahead.
+
+#### Known limitations & data constraints
+
+These bound what the model can do today. They are **data/label limits, not modelling
+bugs** — more expressive models don't fix them; more (and more balanced) labelled events
+would.
+
+- **Migration events are rare, and thin at the top of the scale.** Of ~20k observed
+  issuer-period-agency rows (1,466 issuers with a usable 12-month outcome), only about
+  **2,230 downgrades / 2,385 upgrades** and a **few hundred distress** events are
+  positives; the rest are "stable". De-duplicated to one-per-issuer-period that is
+  ~**1,210 downgrades / 1,544 upgrades**. **Upgrades from high grades barely exist** —
+  roughly **120 from A, 6 from AA, 0 from AAA** — so the upgrade signal for A-and-above
+  is essentially unlearnable (a AAA issuer *cannot* be upgraded). Downgrade/distress are
+  the better-supported directions; treat high-grade *upgrade* probabilities as weak.
+
+- **The three agencies disagree.** When two or more rate the same company-period they
+  agree on direction only **~64%** of the time (median starting-rating spread 1 notch,
+  up to 3 at the 90th percentile). This genuine disagreement is real label noise that
+  caps achievable accuracy — it is why the target is framed as "*any* agency" rather
+  than a single consolidated rating.
+
+- **Agency coverage doesn't span the full history or universe.** Egan-Jones history
+  starts only in **~2015** (Moody's ~2007, Fitch ~2008), and no single agency covers
+  every issuer (roughly EJR 1,210 / Moody's 903 / Fitch 493 distinct issuers). Their
+  base rates differ sharply (EJR downgrades ~15.9% of periods vs Moody's ~8.5%, Fitch
+  ~5.6%) — hence conditioning on agency identity, and why an issuer's number can lean on
+  whichever agencies happen to cover it.
+
+- **Why not a separate model per agency?** It sounds cleaner but is worse here: splitting
+  the already-scarce events three ways starves the rare cells (high-grade upgrades would
+  drop to single digits per agency, then again per walk-forward fold) and loses
+  cross-agency coverage. Pooling with an agency *feature* keeps every row and every
+  issuer while still letting the model learn each agency's behaviour — the bias/variance
+  trade-off strongly favours it in this rare-event regime.
+
+- **Right-edge censoring & point-in-time.** A 12-month outcome that would close after the
+  dataset's last date is left **unlabelled** (never assumed "stable"), and every split is
+  **walk-forward** (train on the past, test on the future) — so metrics are honest but
+  the most recent periods contribute no training labels yet.
+
+- **US filers only.** As above, inputs come from SEC EDGAR, so foreign issuers/ADRs are
+  dropped — the usable universe is smaller than the raw ratings file.
 
 ---
 

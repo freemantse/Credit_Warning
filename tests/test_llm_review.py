@@ -1,8 +1,7 @@
 """Tests for src/llm_review.py — Anthropic SDK is mocked."""
 
 import json
-import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from src.llm_review import review_text, Finding, _validate_finding, quote_in_text
 

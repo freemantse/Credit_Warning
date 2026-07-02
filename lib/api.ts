@@ -821,6 +821,32 @@ export function ratingFromIndex(idx: number | null | undefined): string {
 }
 
 /**
+ * The 7 whole-letter rating grades (no +/- notches), best (index 0) → worst.
+ * Used for the migration view, where notch-level wiggle obscures the category
+ * moves that matter — see stripNotch / ratingLetterBucket / letterFromBucket.
+ */
+export const RATING_LETTER_SCALE = ['AAA', 'AA', 'A', 'BBB', 'BB', 'B', 'CCC'] as const
+
+/** Strip the trailing +/- notch from a rating letter ("BBB-" → "BBB"). '—' for null. */
+export function stripNotch(rating: string | null | undefined): string {
+  if (!rating) return '—'
+  return rating.replace(/[+-]$/, '')
+}
+
+/** Notch-level rating_index (0..18) → whole-letter bucket (0..6). Null-safe. */
+export function ratingLetterBucket(idx: number | null | undefined): number | null {
+  if (idx == null) return null
+  const b = RATING_LETTER_SCALE.indexOf(stripNotch(ratingFromIndex(idx)) as typeof RATING_LETTER_SCALE[number])
+  return b < 0 ? null : b
+}
+
+/** Whole-letter bucket (0..6) → grade ("BBB"). Clamped. */
+export function letterFromBucket(bucket: number): string {
+  const i = Math.max(0, Math.min(RATING_LETTER_SCALE.length - 1, Math.round(bucket)))
+  return RATING_LETTER_SCALE[i]
+}
+
+/**
  * Return a Tailwind CSS class string for an implied-rating badge, banded by
  * broad credit grade (parallels scoreBg — but for the rating letter, not the
  * stress score):

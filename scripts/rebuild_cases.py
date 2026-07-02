@@ -48,7 +48,6 @@ CASE_COLUMNS = ["case_id", "company_name", "ticker", "cik", "label",
 A_BAND_MAX = rating_index("A-")     # 6  — AAA/AA/A band is indices 0..6
 BBB_BAND_MIN = rating_index("BBB+")  # 7
 BBB_BAND_MAX = rating_index("BBB-")  # 9  — BBB band is indices 7..9
-IG_MAX = rating_index("BBB-")        # 9  — investment grade is index <= 9
 MAX_LEAD_MONTHS = 24                 # mirrors migration_backtest.DEFAULT_MAX_LEAD_MONTHS
 
 

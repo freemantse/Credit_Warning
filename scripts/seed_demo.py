@@ -149,7 +149,10 @@ def main() -> None:
     except Exception as e:
         print(f"  ! score-config derivation skipped: {e}")
     try:
-        n = predict_and_store(bundle, build_scoring_matrix())
+        # per_agency=True so each issuer-period carries one row per covering agency;
+        # predict._iter_predict_rows combines them (noisy-OR) into the issuer-level
+        # "any-agency deterioration" probability that is stored/served.
+        n = predict_and_store(bundle, build_scoring_matrix(per_agency=True))
         print(f"  wrote {n} migration_predictions rows")
     except Exception as e:
         print(f"  ! prediction step failed: {e}")

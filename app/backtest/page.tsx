@@ -62,8 +62,11 @@ export default function BacktestPage() {
   // True only between clicking "Run" and the first status response (anti double-click).
   const [starting, setStarting] = useState(false)
 
-  // History depth: how many annual point-in-time snapshots per case to walk back.
-  const [steps, setSteps] = useState(12)
+  // History depth: how many point-in-time snapshots per case to walk back. Capped at 8
+  // — the ~2-year (max-lead) window holds about that many quarterly snapshots, and both
+  // event cases and controls are scored over the SAME window, so catch and false-positive
+  // rates stay comparable. More snapshots just add flag chances (inflating both).
+  const [steps, setSteps] = useState(8)
 
   // UI-level error (e.g. 409 already running), separate from a server task error.
   const [error, setError] = useState('')
@@ -130,6 +133,7 @@ export default function BacktestPage() {
 
   // The flag cutoff for an event-type's head, as a "≥ NN%" string (UI heads:
   // downgrade/upgrade map 1:1; "default" is scored by the model's distress head).
+  // These are the backend-tuned thresholds (data/migration_eval.json) the run scored at.
   const headKey = (et: string) => (et === 'default' ? 'distress' : et)
   const thrPct = (et: string) => {
     const v = thresholds[headKey(et)] ?? threshold
@@ -140,9 +144,8 @@ export default function BacktestPage() {
   const allLeads = (result?.cases ?? [])
     .filter(c => c.caught && c.lead_months != null)
     .map(c => c.lead_months as number)
-    .sort((a, b) => a - b)
   const medianLead = allLeads.length
-    ? allLeads[Math.floor((allLeads.length - 1) / 2)]
+    ? [...allLeads].sort((a, b) => a - b)[Math.floor((allLeads.length - 1) / 2)]
     : null
 
 
@@ -191,7 +194,7 @@ export default function BacktestPage() {
               id="history-depth"
               type="range"
               min={4}
-              max={20}
+              max={8}
               step={1}
               value={steps}
               onChange={e => setSteps(Number(e.target.value))}
@@ -199,7 +202,7 @@ export default function BacktestPage() {
               className="w-40 accent-slate-700 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             />
             <span className="text-xs text-slate-400 tabular-nums whitespace-nowrap">
-              up to {steps} snapshots/case · capped at {maxLead} mo before the event
+              up to {steps} snapshots/case · same {maxLead}-mo window for events & controls
             </span>
           </div>
         </div>
@@ -232,42 +235,63 @@ export default function BacktestPage() {
       {/* ── Case library ── */}
       {library && <CaseLibraryCard library={library} onChange={reloadLibrary} />}
 
-      {/* ── Per-event-type summary cards ── */}
+      {/* ── Catch rate / lead time / false-positive (at the backend-tuned cutoffs) ── */}
       {byType && Object.keys(byType).length > 0 && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
-          {(['downgrade', 'upgrade', 'default'] as const).map(et => {
-            const s = byType[et]
-            if (!s) return null
-            const label = et[0].toUpperCase() + et.slice(1)
-            return (
+        <div className="space-y-3">
+          <div>
+            <h2 className="font-semibold text-slate-800">How early the model catches real rating events</h2>
+            <p className="text-xs text-slate-400">
+              Out-of-time: the share of real events flagged <em>before</em> they happened, the typical
+              months of lead time, and how often healthy control issuers were wrongly flagged — at the
+              backend-tuned per-head cutoffs.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
+            {(['downgrade', 'upgrade', 'default'] as const).map(et => {
+              const s = byType[et]
+              if (!s) return null
+              const label = et[0].toUpperCase() + et.slice(1)
+              const rate = s.catch_rate ?? 0
+              return (
+                <StatCard
+                  key={et}
+                  label={`${label} caught`}
+                  value={`${rate.toFixed(0)}%`}
+                  sub={`${s.caught ?? 0} of ${s.total} · ${(s.median_lead_months ?? 0).toFixed(0)} mo lead · flags ≥ ${thrPct(et)}`}
+                  good={rate >= 70 ? true : rate >= 40 ? undefined : false}
+                  tip={`Share of ${et} cases flagged before the event (flag = P(${et === 'default' ? 'distress' : et}) ≥ ${thrPct(et)}, the backend-tuned cutoff). Distress/default is the hardest, rarest head.`}
+                />
+              )
+            })}
+            {medianLead != null && (
               <StatCard
-                key={et}
-                label={`${label} caught`}
-                value={`${(s.catch_rate ?? 0).toFixed(0)}%`}
-                sub={`${s.caught ?? 0} of ${s.total} · ${(s.median_lead_months ?? 0).toFixed(0)} mo lead · flags ≥ ${thrPct(et)}`}
-                good={(s.catch_rate ?? 0) >= 70}
-                tip={`Share of ${et} cases the model flagged ahead of time (flag = P(${et === 'default' ? 'distress' : et}) ≥ ${thrPct(et)}, the head's tuned cutoff). Higher is better.`}
+                label="Median Lead"
+                value={`${medianLead.toFixed(0)} mo`}
+                sub="across all caught events"
+                good={medianLead >= 3}
+                tip={`Typical months between the first flag and the event. Capped at ${maxLead} months — earlier flags don't count as catches.`}
               />
-            )
-          })}
-          {medianLead != null && (
-            <StatCard
-              label="Median Lead"
-              value={`${medianLead.toFixed(0)} mo`}
-              sub="across all caught events"
-              good={medianLead >= 3}
-              tip={`Typical months between the first flag and the event, across all caught cases. Capped at ${maxLead} months — flags earlier than that don't count as catches.`}
-            />
-          )}
-          {byType.control && (
-            <StatCard
-              label="Control FP Rate"
-              value={`${(byType.control.fp_rate ?? 0).toFixed(0)}%`}
-              sub={`${byType.control.false_positive ?? 0} of ${byType.control.total} controls flagged`}
-              good={(byType.control.fp_rate ?? 0) <= 10}
-              tip="False-positive rate: share of healthy control issuers (no real event) the model wrongly flagged. Lower is better."
-            />
-          )}
+            )}
+            {byType.control && (
+              <StatCard
+                label="Control FP Rate"
+                value={`${(byType.control.fp_rate ?? 0).toFixed(0)}%`}
+                sub={`${byType.control.false_positive ?? 0} of ${byType.control.total} controls flagged`}
+                good={(byType.control.fp_rate ?? 0) <= 25 ? true : (byType.control.fp_rate ?? 0) <= 45 ? undefined : false}
+                tip="Share of healthy control issuers wrongly flagged (scored against the downgrade head). For rating-migration this is a DIAL, not a bug: ~25–40% is the honest, expected level at a useful catch rate. Raise the downgrade cutoff (backend) to lower it — at the cost of catch."
+              />
+            )}
+          </div>
+
+          <p className="text-xs text-slate-500 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 leading-relaxed">
+            <strong>Catch rate and false positives trade off.</strong> Catching more real
+            downgrades/upgrades means flagging at a lower probability cutoff, which also flags more
+            healthy issuers (higher false-positive rate). No single setting makes both perfect; an
+            early-warning tool leans toward catching more and accepts some false alarms. A ~25–40%
+            control false-positive rate at a strong catch rate is normal for this problem. Tune the
+            per-head cutoffs in the backend and re-run to move along this trade-off.
+          </p>
         </div>
       )}
 

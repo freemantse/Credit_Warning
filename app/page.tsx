@@ -16,7 +16,7 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import {
   IssuerSummary, RatingChangePrediction, fetchIssuers, trackIssuer, deleteIssuer,
-  fmtRatio, fmtFCF, fmtPct, scoreLabel, scoreBg, ratingBg,
+  fmtRatio, fmtFCF, fmtPct, scoreLabel, scoreBg, ratingBg, stripNotch,
 } from '@/lib/api'
 
 // ── Rating Change cell ─────────────────────────────────────────────────────────
@@ -61,7 +61,7 @@ type SortDir = 'asc' | 'desc'
 const SORT_FIELDS: { key: SortField; label: string }[] = [
   { key: 'status',            label: 'Status (risk score)' },
   { key: 'rating',            label: 'Implied Rating' },
-  { key: 'rating_change',     label: 'Rating Change (12m)' },
+  { key: 'rating_change',     label: 'Predicted Change (12m)' },
   { key: 'period',            label: 'Latest period (date)' },
   { key: 'ebitda_margin',     label: 'EBITDA Margin' },
   { key: 'leverage',          label: 'Leverage' },
@@ -575,7 +575,7 @@ export default function Dashboard() {
                 <col className="w-[5%]" />   {/* Score */}
                 <col className="w-[8%]" />   {/* Status */}
                 <col className="w-[6%]" />   {/* Implied Rating */}
-                <col className="w-[7%]" />   {/* Rating Change (12m) */}
+                <col className="w-[7%]" />   {/* Predicted Change (12m) */}
                 <col className="w-[8%]" />   {/* Remove */}
               </colgroup>
               <thead>
@@ -594,7 +594,7 @@ export default function Dashboard() {
                   <th className="px-2 py-3 text-center">Score</th>
                   <th className="px-2 py-3 text-center">Status</th>
                   <th className="px-2 py-3 text-center">Implied Rating</th>
-                  <th className="px-2 py-3 text-center">Rating Change (12m)</th>
+                  <th className="px-2 py-3 text-center">Predicted Change (12m)</th>
                   {/* Remove button column, no header */}
                   <th className="px-6 py-3"></th>
                 </tr>
@@ -675,7 +675,7 @@ export default function Dashboard() {
                     <td className="px-2 py-4 text-center">
                       {iss.implied_rating ? (
                         <span className={`inline-block text-xs font-mono font-semibold px-2.5 py-1 rounded-full whitespace-nowrap ${ratingBg(iss.implied_rating)}`}>
-                          {iss.implied_rating}
+                          {stripNotch(iss.implied_rating)}
                         </span>
                       ) : iss.rating_note ? (
                         // Financial-sector issuer: the industrial model doesn't apply.

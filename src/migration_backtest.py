@@ -25,7 +25,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from src.model.train import select_vintage
-from src.ratings.labels import add_months, rating_asof
+from src.ratings.labels import add_months
 from src.rating import RATING_SCALE
 
 # event_type → the model head (probability key) that should fire for it. A "default"
@@ -109,15 +109,6 @@ def _rating_timeline(events_by_agency: dict[str, list[dict]], agency: str) -> li
     return max(events_by_agency.values(), key=len)
 
 
-def _rating_at(timeline: list[dict], period: str) -> tuple[str | None, int | None]:
-    """The agency rating (letter, index) in effect as of `period`, forward-filled."""
-    if not timeline:
-        return (None, None)
-    idx, _status = rating_asof(timeline, period)
-    letter = RATING_SCALE[int(idx)] if idx is not None else None
-    return (letter, idx)
-
-
 def _case_snapshots(rows, event_date: str, *, steps: int, controls: bool, max_lead_months: int):
     """The (period_end, feature-row) snapshots to score for a case, newest-first.
 
@@ -167,9 +158,44 @@ def run_migration_backtest(
     Returns {threshold, thresholds, by_event_type, cases}.
     """
     import pandas as pd
-    from src.model.features import FEATURE_COLUMNS, RATIO_FEATURES, agency_features_asof
+    from src.model.features import FEATURE_COLUMNS, RATIO_FEATURES, agency_features_asof, AGENCY_CODE
 
     feats = feature_columns or FEATURE_COLUMNS
+
+    def _score_issuer_any(path: str, head: str, row: dict, period: str,
+                          by_agency: dict[str, list[dict]], score_agencies: list[str]) -> float | None:
+        """
+        Issuer-level "any-agency" probability for one snapshot — the shipped signal.
+        Scores the model under EACH covering agency (its point-in-time rating features
+        + agency_code) and combines them by noisy-OR (1 − ∏(1 − pₐ)), matching
+        predict._iter_predict_rows. Issuers with no rating coverage fall back to a
+        single agency-less row (agency features NaN) — the pre-agency behavior.
+        """
+        def _one(agency_feats: dict, agency_code) -> float | None:
+            feat_row = {c: row.get(c) for c in feats}
+            feat_row.update({k: v for k, v in agency_feats.items() if k in feats})
+            if "agency_code" in feats:
+                feat_row["agency_code"] = agency_code
+            X = pd.DataFrame([feat_row])
+            for c in feats:
+                X[c] = pd.to_numeric(X[c], errors="coerce")
+            return head_prob(path, X, head)
+
+        if not score_agencies:
+            return _one({"agency_rating_index": None, "implied_vs_agency_gap": None,
+                         "time_in_rating_months": None}, None)
+        ps: list[float] = []
+        for a in score_agencies:
+            af = agency_features_asof(by_agency[a], period, row.get("implied_rating_index"))
+            p = _one(af, AGENCY_CODE.get(a))
+            if p is not None:
+                ps.append(max(0.0, min(1.0, float(p))))
+        if not ps:
+            return None
+        prod = 1.0
+        for p in ps:
+            prod *= (1.0 - p)
+        return 1.0 - prod
     head_prob = head_prob_fn or _default_loader()
     events_for = agency_events_fn or _default_rating_loader()
     head_threshold = thresholds or {}
@@ -202,8 +228,15 @@ def run_migration_backtest(
         # The flag cutoff for this case's head (tuned per head; falls back to the
         # legacy single threshold for any head without a tuned value).
         flag_threshold = head_threshold.get(head, threshold) if head else threshold
-        # The issuer's real agency-rating timeline, forward-filled onto each snapshot.
-        timeline = _rating_timeline(events_for(cik), (case.get("agency") or "").strip())
+        # The issuer's agency-rating coverage. `by_agency` drives the issuer-level
+        # "any-agency" scoring (all covering agencies, noisy-OR — the shipped signal);
+        # `display_timeline` (the case's own agency, else best-covered) drives the rating
+        # shown in the trajectory, so the case still reads against the rating its event
+        # moved. Empty coverage → agency-less fallback (fundamentals-only issuers/tests).
+        by_agency = events_for(cik) or {}
+        display_timeline = _rating_timeline(by_agency, (case.get("agency") or "").strip())
+        score_agencies = [a for a in sorted(by_agency, key=lambda a: AGENCY_CODE.get(a, 99))
+                          if by_agency.get(a)]
         trajectory: list[dict[str, Any]] = []
         earliest_flag: str | None = None
         flag_count = 0
@@ -212,25 +245,15 @@ def run_migration_backtest(
             period = row["period_end"]
             path = select_vintage(vintages, period)   # vintage trained strictly before T
             prob = None
-            # Point-in-time agency-conditioning features from the case's own agency
-            # timeline. build_scoring_matrix may already carry these (primary agency);
-            # here we OVERRIDE with the case's agency so the prediction is conditioned
-            # on the rating the event actually moved — and so they are never NaN, which
-            # was the train/serve skew that collapsed the model's resolution.
-            agency_feats = agency_features_asof(timeline, period, row.get("implied_rating_index"))
             if path is not None and head is not None:
                 scored_any = True
-                feat_row = {c: row.get(c) for c in feats}
-                feat_row.update({k: v for k, v in agency_feats.items() if k in feats})
-                X = pd.DataFrame([feat_row])
-                for c in feats:
-                    X[c] = pd.to_numeric(X[c], errors="coerce")
-                prob = head_prob(path, X, head)
+                prob = _score_issuer_any(path, head, row, period, by_agency, score_agencies)
             flagged = prob is not None and prob >= flag_threshold
             if flagged:
                 flag_count += 1
                 earliest_flag = period  # snaps are newest-first → ends on the oldest flag
-            rating_index = agency_feats["agency_rating_index"]
+            disp = agency_features_asof(display_timeline, period, row.get("implied_rating_index"))
+            rating_index = disp["agency_rating_index"]
             rating = RATING_SCALE[int(rating_index)] if rating_index is not None else None
             trajectory.append({
                 "eval_date": period,

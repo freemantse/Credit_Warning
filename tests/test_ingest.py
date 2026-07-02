@@ -1,8 +1,6 @@
 """Tests for src/ingest.py — network is mocked."""
 
 import json
-import pathlib
-import tempfile
 import pytest
 from unittest.mock import patch, MagicMock
 

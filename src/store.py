@@ -216,19 +216,6 @@ def get_cik_by_ticker(ticker: str, **_) -> str | None:
     return res.data[0]["cik"] if res.data else None
 
 
-def _companies_map(ciks: list[str]) -> dict[str, dict]:
-    """
-    Fetch identity rows for a set of CIKs and return them keyed by CIK.
-
-    Batched into one `in_` query so list_issuers doesn't issue a round-trip per
-    company. CIKs absent from the companies table simply won't appear in the map.
-    """
-    if not ciks:
-        return {}
-    res = _client().table("companies").select("*").in_("cik", ciks).execute()
-    return {row["cik"]: row for row in res.data}
-
-
 # ── Case library (backtest roster) ───────────────────────────────────────────
 # The `cases` table is the editable roster the point-in-time backtest evaluates
 # (migrated from data/cases.csv). list_cases returns CSV-compatible dicts so the
@@ -633,40 +620,6 @@ def clear_rating_labels(**_) -> None:
     _delete_all_rows("rating_labels")
 
 
-def get_rating_scale(**_) -> list[dict[str, Any]]:
-    """Return the rating_scale lookup rows ordered by rating_index (0=AAA…21=D)."""
-    res = (
-        _client()
-        .table("rating_scale")
-        .select("rating_index, sp_fitch, moody, grade")
-        .order("rating_index")
-        .execute()
-    )
-    return list(res.data)
-
-
-def agency_rating_asof(cik: str, agency: str, as_of: str, **_) -> dict[str, Any] | None:
-    """
-    The most recent agency-rating action on/before `as_of` (point-in-time correct).
-
-    Returns {effective_date, rating_index, rating_status, rating_action} or None when
-    the issuer had no action by that date. The query filters effective_date <= as_of
-    and takes the latest, so it never reads a future action.
-    """
-    res = (
-        _client()
-        .table("agency_ratings")
-        .select("effective_date, rating_index, rating_status, rating_action")
-        .eq("cik", cik.zfill(10))
-        .eq("agency", agency)
-        .lte("effective_date", as_of)
-        .order("effective_date", desc=True)
-        .limit(1)
-        .execute()
-    )
-    return res.data[0] if res.data else None
-
-
 # ── Migration predictions + model registry (Stage 3) ─────────────────────────
 
 _MIGRATION_PREDICTION_COLUMNS = (
@@ -1060,39 +1013,6 @@ def get_full_ratios(cik: str, period_end: str, **_) -> dict[str, dict]:
         .execute()
     )
     return {row["ratio_name"]: _ratio_data_from_row(row) for row in res.data}
-
-
-def get_all_ratios(cik: str, period_end: str, **_) -> dict[str, float]:
-    """
-    Return a flat {ratio_name: value} dict for one (cik, period_end).
-
-    Convenience wrapper over get_full_ratios() for callers that only need the
-    numeric values (e.g. quick CLI display) and don't need the full audit trail.
-    """
-    return {name: data["value"] for name, data in get_full_ratios(cik, period_end).items()}
-
-
-def get_findings(cik: str, period_end: str, **_) -> list[dict]:
-    """
-    Return LLM findings for one (cik, period_end) as plain dicts.
-
-    Returns an empty list if:
-      - no_llm=True was used during track (LLM review skipped), or
-      - the LLM review ran but found no concerning signals.
-
-    The API (api/main.py) passes these dicts to _finding_objects() which
-    converts them back into Finding dataclass instances for compute_score().
-    """
-    cik = cik.zfill(10)
-    res = (
-        _client()
-        .table("llm_findings")
-        .select("concern, severity, evidence_quote, source, source_url")
-        .eq("cik", cik)
-        .eq("period_end", period_end)
-        .execute()
-    )
-    return list(res.data)
 
 
 def get_ratios_grouped(

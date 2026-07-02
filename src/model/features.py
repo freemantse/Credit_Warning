@@ -37,6 +37,28 @@ RATIO_FEATURES = [
 ID_COLUMNS = ["cik", "period_end", "agency"]
 TARGET_COLUMNS = ["label_3m", "label_6m", "label_12m", "notch_change_12m", "distress_12m"]
 
+# Rating agency → integer code for the `agency_code` feature. The model trains pooled
+# over all agencies (one row per (cik, period, agency)); this code lets the booster
+# condition on WHICH agency a row/label came from — a real signal, since e.g. Egan-Jones
+# (EJR) downgrades at roughly twice Moody's (MDY) rate and reverses faster. Mirrors the
+# agencies in src.ratings.labels (SPI carried for forward-compat).
+#
+# It is fed as an ORDINAL integer, UNCONSTRAINED (FEATURE_DIRECTIONS["agency_code"] = 0),
+# NOT declared categorical: sklearn 1.4's HistGradientBoosting forbids mixing monotonic
+# constraints with categorical_features, and we keep the credit-coherent monotone
+# directions on the other features. With only 3–4 agencies the booster still isolates
+# any single one via threshold splits (EJR at the top of the code range is separated by
+# a single split). Codes must stay STABLE — they are baked into persisted model vintages.
+AGENCY_CODE: dict[str, int] = {"MDY": 0, "FTC": 1, "EJR": 2, "SPI": 3}
+
+# Forward-looking MARKET features (Merton distance-to-default + equity momentum /
+# volatility / market leverage), joined per (cik, period_end) by add_market_features from
+# data/market_features.csv (precomputed point-in-time by scripts.build_market_features).
+# They lift the downgrade + upgrade heads; the DISTRESS head EXCLUDES them
+# (dataset.make_xy masks them to NaN) because they regressed its precision — see the
+# market-features experiment. Missing issuers get NaN (booster-tolerant).
+MARKET_FEATURES = ["distance_to_default", "equity_vol", "equity_ret_12m", "market_leverage"]
+
 # Full ordered feature list (the model's X). Built once so train/predict agree.
 FEATURE_COLUMNS = (
     RATIO_FEATURES
@@ -48,7 +70,9 @@ FEATURE_COLUMNS = (
         "outlook_trend_pressure",
         # added by merge_labels (depend on the agency):
         "agency_rating_index", "implied_vs_agency_gap", "time_in_rating_months",
+        "agency_code",   # categorical: which agency this row/label comes from
     ]
+    + MARKET_FEATURES
 )
 
 # Monotone direction of each feature w.r.t. DOWNGRADE probability, for the
@@ -65,12 +89,20 @@ FEATURE_DIRECTIONS: dict[str, int] = {
     "implied_vs_agency_gap": 1,
     # The starting agency rating and time-in-rating are non-monotone → unconstrained.
     "agency_rating_index": 0, "time_in_rating_months": 0,
+    # agency identity is an unordered categorical → must be unconstrained (0).
+    "agency_code": 0,
 }
 # Deltas inherit their level's monotone direction.
 for _r in RATIO_FEATURES:
     FEATURE_DIRECTIONS[f"{_r}_yoy"] = FEATURE_DIRECTIONS[_r]
 FEATURE_DIRECTIONS["implied_rating_index_yoy"] = 1
 FEATURE_DIRECTIONS["stress_score_yoy"] = 1
+# Market features: higher distance-to-default / equity return = safer (−1); higher
+# equity volatility / market leverage = riskier (+1). Credit-coherent, so constrained.
+FEATURE_DIRECTIONS["distance_to_default"] = -1
+FEATURE_DIRECTIONS["equity_ret_12m"] = -1
+FEATURE_DIRECTIONS["equity_vol"] = 1
+FEATURE_DIRECTIONS["market_leverage"] = 1
 
 # The fundamentals whose credit-coherent monotone direction is ALWAYS enforced for
 # auditability. The Lever-4 relax sweep (dataset.monotone_constraints(relax_secondary=))
@@ -296,6 +328,7 @@ def merge_labels(
                     "agency_rating_index": agency_idx,
                     "implied_vs_agency_gap": gap,
                     "time_in_rating_months": _time_in_rating(events, period_end),
+                    "agency_code": AGENCY_CODE.get(agency),
                     **{t: label.get(t) for t in TARGET_COLUMNS},
                 }
                 rows.append(row)
@@ -311,6 +344,40 @@ def to_dataframe(rows: list[dict[str, Any]]):
     # Keep only known columns, in canonical order; tolerate an empty matrix.
     present = [c for c in cols if c in df.columns]
     return df.reindex(columns=present)
+
+
+_MARKET_FEATURES_CACHE = None
+
+
+def add_market_features(df, path: str = "data/market_features.csv"):
+    """
+    Left-join the precomputed point-in-time MARKET_FEATURES onto an assembled matrix by
+    (cik, period_end) — the same file feeds train (load_training_matrix) and serve
+    (build_scoring_matrix), so both agree. Columns are created (NaN) even when the file
+    is absent, so the feature set stays stable. `df` must carry 'cik' and 'period_end'.
+    """
+    global _MARKET_FEATURES_CACHE
+    import pandas as pd
+    from pathlib import Path
+
+    if _MARKET_FEATURES_CACHE is None:
+        p = Path(path)
+        _MARKET_FEATURES_CACHE = (
+            pd.read_csv(p, dtype={"cik": str, "period_end": str}) if p.exists()
+            else pd.DataFrame(columns=["cik", "period_end", *MARKET_FEATURES])
+        )
+    mf = _MARKET_FEATURES_CACHE
+    if df.empty:
+        for c in MARKET_FEATURES:
+            if c not in df.columns:
+                df[c] = pd.NA
+        return df
+    keep = ["cik", "period_end", *[c for c in MARKET_FEATURES if c in mf.columns]]
+    out = df.merge(mf[keep], on=["cik", "period_end"], how="left")
+    for c in MARKET_FEATURES:            # ensure every market column exists even if absent
+        if c not in out.columns:
+            out[c] = pd.NA
+    return out
 
 
 def load_training_matrix(config: dict | None = None):
@@ -353,31 +420,33 @@ def load_training_matrix(config: dict | None = None):
         )
 
     rows = merge_labels(features_by_cik, labels, agency_events_by_cik=agency_events)
-    return to_dataframe(rows)
-
-
-def _primary_agency_timeline(by_agency: dict[str, list[dict]] | None) -> list[dict]:
-    """The agency timeline to condition a scoring row on: the issuer's best-covered
-    (most-events) series. Empty when the issuer has no agency coverage."""
-    if not by_agency:
-        return []
-    return max(by_agency.values(), key=len)
+    return add_market_features(to_dataframe(rows))
 
 
 def build_scoring_matrix(agency_events: dict[str, dict[str, list[dict]]] | None = None,
-                         *, fill_agency_features: bool = True):
+                         *, fill_agency_features: bool = True, per_agency: bool = False):
     """
     Assemble feature rows for every (cik, period_end) WITHOUT requiring labels — for
-    live prediction and the migration event backtest. One row per period with the
-    financial features.
+    live prediction and the migration event backtest.
 
     The agency-conditioning columns (agency_rating_index, implied_vs_agency_gap,
-    time_in_rating_months) are populated POINT-IN-TIME from the issuer's best-covered
-    agency timeline via `agency_features_asof`, matching how merge_labels derives them
-    at training time. This closes the train/serve skew that otherwise leaves them NaN
-    at scoring (the model was trained with them present, so all-NaN at serve collapses
-    its resolution). `agency_events` defaults to a fresh get_agency_ratings_grouped()
-    read; pass `fill_agency_features=False` (or empty agency_events) to keep them NaN.
+    time_in_rating_months) plus `agency_code` are populated POINT-IN-TIME from the
+    issuer's agency timeline via `agency_features_asof`, matching how merge_labels
+    derives them at training time. This closes the train/serve skew that otherwise
+    leaves them NaN at scoring (the model was trained with them present, so all-NaN at
+    serve collapses its resolution). `agency_events` defaults to a fresh
+    get_agency_ratings_grouped() read; pass `fill_agency_features=False` (or empty
+    agency_events) to keep them NaN.
+
+    Grain:
+      per_agency=False (default) — ONE row per (cik, period_end), conditioned on the
+        issuer's best-covered ("primary") agency. Used by the event backtest (which
+        re-derives the agency per snapshot) and case-eligibility scans.
+      per_agency=True — ONE row per (cik, period_end, covering-agency), each carrying
+        that agency's rating features + agency_code. The live-prediction path uses this
+        so predict._iter_predict_rows can combine the per-agency probabilities into the
+        issuer-level "any-agency deterioration" probability (noisy-OR). Issuers with no
+        agency coverage still emit a single row (agency columns NaN).
 
     Returns a DataFrame with columns [cik, period_end] + FEATURE_COLUMNS, computed
     with DEFAULT_CONFIG (the stress_score feature stays non-circular).
@@ -412,12 +481,27 @@ def build_scoring_matrix(agency_events: dict[str, dict[str, list[dict]]] | None 
             provisions_by_period=provisions.get(cik, {}),
             config=cfg,
         )
-        timeline = _primary_agency_timeline(agency_events.get(cik)) if fill_agency_features else []
+        by_agency = (agency_events.get(cik) or {}) if fill_agency_features else {}
+        # agencies with actual events, code order (MDY, FTC, EJR, …) for determinism
+        covering = [a for a in sorted(by_agency, key=lambda a: AGENCY_CODE.get(a, 99))
+                    if by_agency.get(a)]
         for period_end, feat in feats.items():
-            row = {"cik": cik, "period_end": period_end, **feat}
-            if timeline:
-                row.update(agency_features_asof(timeline, period_end, feat.get("implied_rating_index")))
-            rows.append(row)
+            base = {"cik": cik, "period_end": period_end, **feat}
+            if per_agency and covering:
+                for agency in covering:
+                    row = dict(base)
+                    row.update(agency_features_asof(
+                        by_agency[agency], period_end, feat.get("implied_rating_index")))
+                    row["agency_code"] = AGENCY_CODE.get(agency)
+                    rows.append(row)
+            else:
+                # Single row: condition on the primary (best-covered) agency, if any.
+                primary = max(covering, key=lambda a: len(by_agency[a])) if covering else None
+                if primary is not None:
+                    base.update(agency_features_asof(
+                        by_agency[primary], period_end, feat.get("implied_rating_index")))
+                    base["agency_code"] = AGENCY_CODE.get(primary)
+                rows.append(base)
 
     cols = ["cik", "period_end"] + FEATURE_COLUMNS
-    return pd.DataFrame(rows).reindex(columns=cols)
+    return add_market_features(pd.DataFrame(rows).reindex(columns=cols))

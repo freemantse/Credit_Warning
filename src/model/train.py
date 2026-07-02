@@ -49,6 +49,12 @@ def _build_booster(monotone: list[int], random_state: int, *, early_stopping: bo
     The remaining knobs (learning_rate / max_iter / max_leaf_nodes / l2 / min_samples_leaf)
     default to the shipped config; the walk-forward sweep (evaluate.py --sweep) explores
     them per head and the winner is folded back in here.
+
+    NOTE the `agency_code` feature is passed as an ordinal integer (0..3), UNCONSTRAINED
+    (monotone 0), not declared categorical: sklearn 1.4's HistGradientBoosting forbids
+    combining monotonic constraints with categorical_features, and we keep the
+    credit-coherent monotone directions. With only 3–4 agencies the booster still
+    isolates any single one via threshold splits.
     """
     from sklearn.ensemble import HistGradientBoostingClassifier
 

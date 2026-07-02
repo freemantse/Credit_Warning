@@ -124,6 +124,34 @@ def test_predict_rows_aggregates_per_issuer_period():
     assert r["horizon_months"] == 12
 
 
+def test_noisy_or_combines_agencies():
+    # 1 − ∏(1 − p): any-agency probability, ≥ each input and ≥ their max.
+    assert predict_mod._noisy_or([0.2, 0.5]) == pytest.approx(1 - 0.8 * 0.5)  # 0.6
+    assert predict_mod._noisy_or([0.3]) == pytest.approx(0.3)
+    # NaNs (e.g. a head a vintage couldn't score) are dropped, not propagated.
+    assert predict_mod._noisy_or([float("nan"), 0.4]) == pytest.approx(0.4)
+
+
+def test_predict_rows_noisy_or_across_agencies():
+    # Two agency rows for the SAME issuer-period must combine by noisy-OR into one
+    # issuer-level probability (the "any-agency deterioration" target).
+    df = _synthetic_matrix()
+    bundle, _ = train_all(df, "2019-12-31", version="test")
+
+    r_mdy = _feature_row(leverage=2.0, stress_score=20.0, implied_rating_index=4, agency_code=0)
+    r_ejr = _feature_row(leverage=8.5, stress_score=85.0, implied_rating_index=12, agency_code=2)
+    p_mdy = float(predict_mod.predict_proba_all(bundle, r_mdy)["downgrade"][0])
+    p_ejr = float(predict_mod.predict_proba_all(bundle, r_ejr)["downgrade"][0])
+
+    grp = pd.concat([r_mdy, r_ejr], ignore_index=True)
+    grp["cik"] = "C9999"
+    grp["period_end"] = "2021-12-31"
+    rows = predict_mod.predict_rows(bundle, grp)
+    assert len(rows) == 1                                   # collapsed to one issuer-period
+    assert rows[0]["p_downgrade"] == pytest.approx(1 - (1 - p_mdy) * (1 - p_ejr))
+    assert rows[0]["p_downgrade"] >= max(p_mdy, p_ejr)      # noisy-OR ≥ any single agency
+
+
 def test_save_load_roundtrip(tmp_path):
     df = _synthetic_matrix()
     bundle, _ = train_all(df, "2019-12-31", version="test")

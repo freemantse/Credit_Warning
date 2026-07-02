@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.model.dataset import HEADS, make_xy, time_split
+from src.model.dataset import HEADS, make_xy, time_split, calibration_bins
 from src.model.train import train_all
 from src.rating import is_investment_grade, RATING_SCALE
 
@@ -48,6 +48,63 @@ def tune_threshold(y_true, p, *, min_threshold: float = 0.02) -> float | None:
         f1 = np.where((prec + rec) > 0, 2 * prec * rec / (prec + rec), 0.0)
     best = int(np.argmax(f1))
     return round(float(max(thr[best], min_threshold)), 4)
+
+
+def catch_fp_frontier(
+    y_true, p, *,
+    recall_targets: tuple[float, ...] = (0.70, 0.80, 0.90),
+    fpr_targets: tuple[float, ...] = (0.05, 0.10, 0.20, 0.30),
+) -> dict[str, Any] | None:
+    """
+    The catch-rate vs false-positive frontier for ONE head, from its pooled
+    out-of-time (truth, prob) predictions — the honest answer to "what does catching
+    X% of events cost in false alarms?".
+
+    catch = recall = TPR (share of issuer-periods that DID migrate which we flag);
+    false-positive rate = FPR (share of non-migrating issuer-periods we wrongly flag).
+    Both are read off the ROC curve. Returns, per head:
+      - at_recall: for each target catch (70/80/90%), the lowest threshold reaching it
+        and the FPR + precision it costs;
+      - at_fpr: for each false-positive budget, the best catch achievable and its threshold.
+    None when a single class (no curve). Note: this is issuer-period recall; the
+    event-level backtest catch (multiple snapshots per case, with lead time) runs
+    somewhat higher — use this to choose the operating point, the backtest to confirm
+    catch + lead at it.
+    """
+    import numpy as np
+    from sklearn.metrics import roc_curve
+
+    y = np.asarray(y_true, dtype=int)
+    p = np.asarray(p, dtype=float)
+    if len(y) == 0 or int(y.sum()) == 0 or int(y.sum()) == len(y):
+        return None
+    fpr, tpr, thr = roc_curve(y, p)          # all monotonic increasing in index
+    pos, neg = int(y.sum()), int(len(y) - y.sum())
+
+    def _prec(tp_rate: float, fp_rate: float) -> float | None:
+        tp, fp = tp_rate * pos, fp_rate * neg
+        return round(tp / (tp + fp), 4) if (tp + fp) > 0 else None
+
+    at_recall: dict[str, Any] = {}
+    for r in recall_targets:
+        i = int(np.argmax(tpr >= r))         # first index reaching catch r
+        at_recall[f"{int(r*100)}"] = {
+            "catch": round(float(tpr[i]), 4), "fpr": round(float(fpr[i]), 4),
+            "threshold": round(float(thr[i]), 4) if np.isfinite(thr[i]) else None,
+            "precision": _prec(float(tpr[i]), float(fpr[i])),
+        }
+    at_fpr: dict[str, Any] = {}
+    for f in fpr_targets:
+        idx = np.where(fpr <= f)[0]
+        if len(idx):
+            j = int(idx[-1])                 # max catch with FPR within budget
+            at_fpr[f"{int(f*100)}"] = {
+                "catch": round(float(tpr[j]), 4), "fpr": round(float(fpr[j]), 4),
+                "threshold": round(float(thr[j]), 4) if np.isfinite(thr[j]) else None,
+                "precision": _prec(float(tpr[j]), float(fpr[j])),
+            }
+    return {"n": int(len(y)), "n_positive": pos, "base_rate": round(pos / len(y), 4),
+            "at_recall": at_recall, "at_fpr": at_fpr}
 
 
 def confusion_by_bucket(test_df, p_downgrade, threshold: float = 0.5) -> dict[str, dict]:
@@ -93,23 +150,27 @@ def confusion_by_bucket(test_df, p_downgrade, threshold: float = 0.5) -> dict[st
     return out
 
 
-def tune_vintage_thresholds(df, vintages: list[dict], *, downgrade_operating_point: float = 0.14) -> dict[str, float]:
+def _ig_hy_bucket(idx) -> str | None:
+    """IG (BBB- and up) / HY split of a starting agency rating index, or None if absent."""
+    import pandas as pd
+
+    if idx is None or (isinstance(idx, float) and pd.isna(idx)):
+        return None
+    return "IG" if is_investment_grade(RATING_SCALE[int(idx)]) else "HY"
+
+
+def _pooled_vintage_issuer_any(df, vintages: list[dict]):
     """
-    Per-head flag cutoffs tuned on the VINTAGE models — the models the migration
-    backtest actually scores with — over the labeled matrix, walk-forward (each row
-    scored by the vintage trained strictly before its period_end, via select_vintage).
+    Pool ISSUER-LEVEL (truth_any, prob_any) per head over the labeled matrix, scored
+    walk-forward by the vintage trained strictly before each row's period_end (via
+    select_vintage). Within each (cik, period_end) the per-agency vintage probabilities
+    are combined by NOISY-OR (1 − ∏(1 − pₐ)) and the truth is "ANY covering agency
+    migrated" — the issuer-level "any-agency deterioration" target the product ships.
 
-    This fixes a silent distribution mismatch: the shipped thresholds were tuned on the
-    EVAL-split models (walk_forward_eval), but the backtest scores with the data/
-    model_vintages/*.joblib vintages, whose probability scale differs — the distress
-    cutoff in particular sat ABOVE the vintages' achievable max (≈0.10), guaranteeing
-    0% default catch. Tuning on the vintages puts every head's cutoff in range.
-
-    upgrade / distress: max-F1. downgrade: an explicit operating point (default 0.14).
-    The downgrade head's precision is ~flat (≈ base rate) across the usable threshold
-    range, so max-F1 there only maximizes alert VOLUME (≈60% control false-positive);
-    the operating point instead trades catch vs false-alarm rate and sets the issuer-
-    page risk band — a product parameter, not a fit. See the backtest catch/FP frontier.
+    Returns (pooled_y, pooled_p, pooled_bucket): pooled_y/pooled_p are {head: [values]}
+    at issuer-period grain; pooled_bucket is the IG/HY starting bucket per issuer-period
+    (by the preferred agency = lowest agency_code with a known rating), aligned to
+    pooled_y["downgrade"] for the confusion breakdown.
     """
     import numpy as np
     import pandas as pd
@@ -121,21 +182,38 @@ def tune_vintage_thresholds(df, vintages: list[dict], *, downgrade_operating_poi
     cache: dict[str, Any] = {}
     pooled_y: dict[str, list[int]] = {h: [] for h in HEADS}
     pooled_p: dict[str, list[float]] = {h: [] for h in HEADS}
+    pooled_bucket: list[str | None] = []
     for period, grp in obs.groupby("period_end"):
         path = select_vintage(vintages, period)
         if path is None:
             continue
         bundle = cache.get(path) or cache.setdefault(path, load_model(path))
+        grp = grp.reset_index(drop=True)
         X = grp.reindex(columns=FEATURE_COLUMNS).apply(pd.to_numeric, errors="coerce")
         probs = predict_proba_all(bundle, X)
         for head in HEADS:
             if head not in probs:
                 continue
             is_pos = HEADS[head]["positive"]
-            y = grp.apply(lambda r: 1 if is_pos(r) else 0, axis=1).to_numpy()
-            pooled_y[head].extend(int(v) for v in y)
-            pooled_p[head].extend(float(v) for v in np.asarray(probs[head]))
+            p_head = np.clip(np.asarray(probs[head], dtype=float), 0.0, 1.0)
+            y_head = grp.apply(lambda r: 1 if is_pos(r) else 0, axis=1).to_numpy()
+            tmp = pd.DataFrame({
+                "cik": grp["cik"].to_numpy(), "y": y_head, "p": p_head,
+                "code": grp.get("agency_code"), "ar": grp.get("agency_rating_index"),
+            })
+            for cik, sub in tmp.groupby("cik", sort=False):
+                pooled_y[head].append(int(sub["y"].max()))
+                pooled_p[head].append(float(1.0 - np.prod(1.0 - sub["p"].to_numpy())))
+                if head == "downgrade":
+                    rated = sub[sub["ar"].notna()].sort_values("code")
+                    pooled_bucket.append(_ig_hy_bucket(rated["ar"].iloc[0]) if len(rated) else None)
+    return pooled_y, pooled_p, pooled_bucket
 
+
+def _tune_from_pooled(pooled_y, pooled_p, *, downgrade_operating_point: float = 0.14) -> dict[str, float]:
+    """Per-head cutoffs from pooled issuer-level (y, p): upgrade/distress max-F1;
+    downgrade an explicit product operating point (its precision is ~flat, so max-F1
+    there only maximizes alert volume)."""
     out: dict[str, float] = {}
     for head in HEADS:
         if head == "downgrade" and downgrade_operating_point is not None:
@@ -145,6 +223,50 @@ def tune_vintage_thresholds(df, vintages: list[dict], *, downgrade_operating_poi
         if thr is not None:
             out[head] = thr
     return out
+
+
+def _diag_from_pooled(pooled_y, pooled_p, pooled_bucket, thresholds) -> dict[str, Any]:
+    """
+    Issuer-level diagnostics for the shipped ("any-agency") signal: per-head base rate,
+    reliability bins (mean noisy-OR p vs observed rate — the noisy-OR calibration check),
+    the calibration ratio (mean p / base rate; >~1.5 flags noisy-OR overstatement → the
+    combiner should fall back to max in predict._noisy_or), the catch/FP frontier, and
+    the downgrade head's IG/HY confusion at its shipped cutoff.
+    """
+    import numpy as np
+
+    diag: dict[str, Any] = {"base_rate": {}, "calibration": {}, "calibration_ratio": {},
+                            "frontier": {}, "confusion_by_bucket": {}}
+    for head in HEADS:
+        y, p = pooled_y[head], pooled_p[head]
+        if not y:
+            continue
+        base = float(np.mean(y))
+        mean_p = float(np.mean(p)) if p else 0.0
+        diag["base_rate"][head] = round(base, 4)
+        diag["calibration"][head] = calibration_bins(y, p)
+        diag["calibration_ratio"][head] = round(mean_p / base, 3) if base > 0 else None
+        diag["frontier"][head] = catch_fp_frontier(y, p)
+
+    thr = thresholds.get("downgrade")
+    yd, pd_ = pooled_y.get("downgrade", []), pooled_p.get("downgrade", [])
+    if thr is not None and yd:
+        y = np.asarray(yd, dtype=int)
+        pred = np.asarray(pd_, dtype=float) >= thr
+        buckets = np.asarray(pooled_bucket, dtype=object)
+        for b in ("IG", "HY"):
+            mask = buckets == b
+            if not mask.any():
+                diag["confusion_by_bucket"][b] = {"n": 0}
+                continue
+            yb, prb = y[mask], pred[mask]
+            diag["confusion_by_bucket"][b] = {
+                "n": int(mask.sum()),
+                "tp": int((prb & (yb == 1)).sum()), "fp": int((prb & (yb == 0)).sum()),
+                "tn": int((~prb & (yb == 0)).sum()), "fn": int((~prb & (yb == 1)).sum()),
+                "actual_downgrade_rate": round(float((yb == 1).mean()), 4),
+            }
+    return diag
 
 
 def walk_forward_eval(df, split_dates: list[str], **train_kwargs) -> dict[str, Any]:
@@ -222,11 +344,16 @@ def walk_forward_eval(df, split_dates: list[str], **train_kwargs) -> dict[str, A
             # operating point the backtest actually flags at (not a dead 0.5).
             confusion = confusion_by_bucket(last_test_df, p, threshold=thresholds.get("downgrade", 0.5))
 
+    # Catch-rate vs false-positive frontier per head (pooled OOT) — the operating-point
+    # chooser: "to catch X% of events, you need threshold T at FPR F%".
+    frontier = {head: catch_fp_frontier(pooled_y[head], pooled_p[head]) for head in HEADS}
+
     return {
         "split_dates": split_dates,
         "per_split": per_split,
         "aggregate": aggregate,
         "thresholds": thresholds,
+        "frontier": frontier,
         "confusion_by_bucket_final": confusion,
     }
 
@@ -283,7 +410,7 @@ def run_sweep(df, split_dates: list[str], grid: list[dict] | None = None) -> dic
 def print_sweep(sweep: dict[str, Any]) -> None:
     heads = sweep["heads"]
     fmt = lambda x: f"{x:.4f}" if isinstance(x, (int, float)) else "—"
-    print(f"\nPer-head sweep — mean PR-AUC (higher is better):")
+    print("\nPer-head sweep — mean PR-AUC (higher is better):")
     print(f"  {'config':<26}" + "".join(f"{h:>12}" for h in heads))
     for r in sweep["results"]:
         print(f"  {r['label']:<26}" + "".join(f"{fmt(r['pr_auc'].get(h)):>12}" for h in heads))
@@ -291,6 +418,29 @@ def print_sweep(sweep: dict[str, Any]) -> None:
     for h in heads:
         b = sweep["best"].get(h)
         print(f"  {h:<20}{b['label'] if b else '—':<26}{fmt(b['pr_auc']) if b else '—'}")
+
+
+def print_frontier(frontier: dict) -> None:
+    """Print the per-head catch-vs-false-positive frontier: the cost of each catch
+    target, and the catch achievable at each false-positive budget."""
+    labels = {"downgrade": "Downgrade", "upgrade": "Upgrade", "distress": "Distress (default)"}
+    pct = lambda x: f"{x*100:.0f}%" if isinstance(x, (int, float)) else "—"
+    items = [(h, f) for h, f in frontier.items() if f]
+    if not items:
+        return
+    print("\nCatch-rate vs false-positive frontier (pooled out-of-time, per head):")
+    print("  False-positive rate you must accept to CATCH this share of events:")
+    print(f"    {'Head':<20}{'catch 70%':>12}{'catch 80%':>12}{'catch 90%':>12}")
+    for h, f in items:
+        cells = [(f"FPR {pct(f['at_recall'][r]['fpr'])}" if f["at_recall"].get(r) else "—")
+                 for r in ("70", "80", "90")]
+        print(f"    {labels.get(h, h.title()):<20}" + "".join(f"{c:>12}" for c in cells))
+    print("  Catch you get at a fixed false-positive budget:")
+    print(f"    {'Head':<20}{'FPR 5%':>10}{'FPR 10%':>10}{'FPR 20%':>10}{'FPR 30%':>10}")
+    for h, f in items:
+        cells = [(pct(f["at_fpr"][fp]["catch"]) if f["at_fpr"].get(fp) else "—")
+                 for fp in ("5", "10", "20", "30")]
+        print(f"    {labels.get(h, h.title()):<20}" + "".join(f"{c:>10}" for c in cells))
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -360,9 +510,25 @@ if __name__ == "__main__":
         key=lambda v: v["cutoff"],
     ) if vdir.exists() else []
     if vintages:
+        # Score the vintages once at ISSUER level (any-agency, noisy-OR) and derive both
+        # the shipped thresholds and the issuer-level diagnostics from the same pooling.
+        pooled_y, pooled_p, pooled_bucket = _pooled_vintage_issuer_any(df, vintages)
         result["thresholds_eval_models"] = result["thresholds"]
-        result["thresholds"] = tune_vintage_thresholds(df, vintages, downgrade_operating_point=args.downgrade_op)
-        print(f"Thresholds tuned on {len(vintages)} vintages: {result['thresholds']}")
+        result["thresholds"] = _tune_from_pooled(pooled_y, pooled_p,
+                                                  downgrade_operating_point=args.downgrade_op)
+        result["vintage_diagnostics"] = _diag_from_pooled(
+            pooled_y, pooled_p, pooled_bucket, result["thresholds"])
+        print(f"Thresholds tuned on {len(vintages)} vintages (issuer-level any-agency): "
+              f"{result['thresholds']}")
+        # Noisy-OR calibration check: mean issuer-level p vs observed "any" rate. A ratio
+        # far above 1 means the independence assumption overstates — consider max().
+        cr = result["vintage_diagnostics"]["calibration_ratio"]
+        print("Issuer-level any-agency calibration (mean p / base rate; ~1 = calibrated):")
+        for head in HEADS:
+            if cr.get(head) is not None:
+                flag = "  ⚠ inflated — consider max() combiner" if cr[head] > 1.5 else ""
+                print(f"  {head:<10} ratio={cr[head]:.2f}"
+                      f"  base={result['vintage_diagnostics']['base_rate'].get(head)}{flag}")
 
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(json.dumps({"migration": result}, indent=2))
@@ -382,4 +548,6 @@ if __name__ == "__main__":
         print(f"  {labels.get(head, head.title()):<20}{fmt(a.get('mean_pr_auc_model')):>9}"
               f"{fmt(a.get('mean_pr_auc_baseline')):>11}{fmt(a.get('mean_base_rate')):>11}"
               f"{(a.get('n_splits_scored') or 0):>8}")
+    if result.get("frontier"):
+        print_frontier(result["frontier"])
     print(f"\nFull report → {args.out}")

@@ -90,6 +90,11 @@ the rule-based stress score. ("distress" = a transition into the CCC+/default ta
   constraints — e.g. higher leverage can only raise downgrade risk), with an isotonic
   probability calibration and a LogisticRegression baseline it must beat. **Walk-forward**
   splits only (train on the past, test on the future — no look-ahead).
+- **Agencies:** trained **pooled** over all three (one labelled row per agency) with the
+  **agency identity as a feature**; the per-agency probabilities are combined into a
+  single issuer-level *"will any agency deteriorate"* number via **noisy-OR**. Rare
+  events (especially high-grade upgrades) and agency disagreement (~64% direction
+  agreement) are the binding limits — see README → "Known limitations & data constraints".
 - **Outputs:** calibrated probabilities + top drivers → `migration_predictions`.
 
 ## Model artifacts & offline training

@@ -1,9 +1,8 @@
 """Tests for src/score.py — pure arithmetic, no network or LLM."""
 
-import pytest
 from dataclasses import dataclass
 from src.extract import RatioResult
-from src.score import compute_score, ScoreResult, STRESS_THRESHOLD
+from src.score import compute_score, STRESS_THRESHOLD
 
 
 def make_ratio(name, value, inputs=None):

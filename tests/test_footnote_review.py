@@ -5,8 +5,6 @@ from unittest.mock import MagicMock, patch
 
 from src.footnote_review import review_filing
 from tests.test_sections import (
-    CONTINGENCIES_BODY,
-    DEBT_BODY,
     MDNA_LIQUIDITY_SENTENCE,
     _build_filing,
 )

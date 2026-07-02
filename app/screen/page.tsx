@@ -13,7 +13,7 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import {
   ScreenRow, ScreenResponse, fetchScreen,
-  ratingBg, outlookBadge, seniorityBadge, fmtFCF,
+  ratingBg, outlookBadge, seniorityBadge, fmtFCF, stripNotch,
 } from '@/lib/api'
 
 // Issuer-health floors offered in the control bar (issuer must rate at least this).
@@ -171,7 +171,7 @@ function ScreenRowView({ row }: { row: ScreenRow }) {
       </td>
       <td className="px-4 py-3 text-center">
         <span className={`inline-block text-xs font-mono font-semibold px-2.5 py-1 rounded-full ${ratingBg(row.issuer_implied_rating)}`}>
-          {row.issuer_implied_rating}
+          {stripNotch(row.issuer_implied_rating)}
         </span>
       </td>
       <td className="px-4 py-3 text-center">

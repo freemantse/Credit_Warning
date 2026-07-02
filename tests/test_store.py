@@ -2,7 +2,6 @@
 
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from src.extract import RatioResult, MissingRatio
 import src.store as store

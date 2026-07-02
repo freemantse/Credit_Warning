@@ -32,6 +32,24 @@ def _proba(estimator, X) -> Any:
     return estimator.predict_proba(X)[:, 1]
 
 
+def _noisy_or(probs) -> float:
+    """
+    Combine per-agency probabilities into the issuer-level "ANY agency" probability:
+    P(at least one) = 1 − ∏(1 − pₐ). This is how the model answers the product target
+    "will the issuer's credit deteriorate (any agency) in 12m" from the pooled
+    per-agency heads. Assumes rough independence (agencies are positively correlated,
+    so this slightly overstates); the flag threshold is tuned on the realized "any"
+    rate to absorb that, and evaluate.py checks the calibration.
+    """
+    import numpy as np
+
+    p = np.clip(np.asarray(list(probs), dtype=float), 0.0, 1.0)
+    p = p[np.isfinite(p)]
+    if not len(p):
+        return float("nan")
+    return float(1.0 - np.prod(1.0 - p))
+
+
 def predict_proba_all(bundle: dict[str, Any], X) -> dict[str, Any]:
     """{head: probability-array} for every head the bundle actually trained."""
     return {head: _proba(h["estimator"], X) for head, h in bundle["heads"].items()}
@@ -57,6 +75,10 @@ def attribute(bundle: dict[str, Any], x_row, head: str = "downgrade", top_n: int
 
     drivers: list[dict] = []
     for col in feats:
+        # agency_code is an identity, not an actionable credit driver — resetting it to
+        # a "median code" is meaningless, so it never appears as a driver.
+        if col == "agency_code":
+            continue
         x2 = x.copy()
         x2.iloc[0, x2.columns.get_loc(col)] = medians.get(col, 0.0)
         delta = p_actual - float(_proba(est, x2)[0])
@@ -76,12 +98,15 @@ def attribute(bundle: dict[str, Any], x_row, head: str = "downgrade", top_n: int
 
 def _iter_predict_rows(bundle: dict[str, Any], df, *, top_n: int = 5, skip_keys=None):
     """
-    Yield one output row per (cik, period_end). When a period has multiple agency rows
-    the probabilities are averaged and the drivers taken from the representative (first)
-    row. `skip_keys` is a set of (zero-padded cik, period_end) already scored — skipped
-    so a re-run can resume a killed pass without re-doing work.
+    Yield one ISSUER-LEVEL output row per (cik, period_end). A period may carry multiple
+    agency rows (one per covering agency, from build_scoring_matrix(per_agency=True) or
+    the per-agency training matrix); their per-head probabilities are combined by
+    noisy-OR into the "any-agency deterioration" probability, and the drivers are taken
+    from the representative (first) agency row — the financial features are identical
+    across an issuer-period's agency rows, so they explain the shared signal.
+    `skip_keys` is a set of (zero-padded cik, period_end) already scored — skipped so a
+    re-run can resume a killed pass without re-doing work.
     """
-    import numpy as np
     import pandas as pd
 
     version = bundle.get("version", "")
@@ -95,9 +120,9 @@ def _iter_predict_rows(bundle: dict[str, Any], df, *, top_n: int = 5, skip_keys=
             "cik": cik,
             "period_end": period_end,
             "horizon_months": HORIZON_MONTHS,
-            "p_downgrade": float(np.mean(probs["downgrade"])) if "downgrade" in probs else None,
-            "p_upgrade": float(np.mean(probs["upgrade"])) if "upgrade" in probs else None,
-            "p_distress": float(np.mean(probs["distress"])) if "distress" in probs else None,
+            "p_downgrade": _noisy_or(probs["downgrade"]) if "downgrade" in probs else None,
+            "p_upgrade": _noisy_or(probs["upgrade"]) if "upgrade" in probs else None,
+            "p_distress": _noisy_or(probs["distress"]) if "distress" in probs else None,
             "drivers_json": attribute(bundle, X.iloc[[0]], "downgrade", top_n),
             "model_version": version,
         }

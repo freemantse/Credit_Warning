@@ -19,11 +19,11 @@ import {
   XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer,
 } from 'recharts'
 import {
-  IssuerDetail, PeriodData, Covenant, LossProvision, RatingOutlook, BondInstrument,
+  IssuerDetail, PeriodData, Covenant, LossProvision, BondInstrument,
   AgencyRatingEvent, RatingChangePrediction, MigrationDriver,
   fetchIssuer, trackIssuer, startLlmReview, fetchLlmReviewStatus,
   fmtRatio, fmtFCF, fmtPct, scoreBg, scoreLabel, severityDot,
-  ratingBg, ratingFromIndex, RATING_SCALE, outlookBadge, seniorityBadge,
+  ratingBg, ratingFromIndex, RATING_LETTER_SCALE, stripNotch, ratingLetterBucket, letterFromBucket, seniorityBadge,
 } from '@/lib/api'
 
 // How many period rows to show per page in the Ratio History table.
@@ -46,8 +46,11 @@ const TREND_METRICS: {
   domain?: [number, number]
   threshold?: number
   reversed?: boolean   // invert the Y-axis (used by Implied Rating so AAA sits at top)
+  ticks?: number[]     // fixed Y-axis tick positions (Implied Rating: one per whole-letter grade)
 }[] = [
-  { key: 'implied_rating',    label: 'Implied Rating',    accessor: p => p.implied_rating?.rating_index, fmt: v => ratingFromIndex(v), domain: [0, RATING_SCALE.length - 1], reversed: true },
+  // Implied Rating is bucketed to whole-letter grades (AAA…CCC, no +/- notches) so the
+  // line steps only on category migration; ticks pin one label per grade.
+  { key: 'implied_rating',    label: 'Implied Rating',    accessor: p => ratingLetterBucket(p.implied_rating?.rating_index), fmt: v => letterFromBucket(v), domain: [0, RATING_LETTER_SCALE.length - 1], reversed: true, ticks: [0, 1, 2, 3, 4, 5, 6] },
   { key: 'score',             label: 'Stress Score',      accessor: p => p.score,                       fmt: v => `${Math.round(v)}`, domain: [0, 100], threshold: 50 },
   { key: 'ebitda_margin',     label: 'EBITDA Margin',     accessor: p => p.ratios.ebitda_margin?.value,     fmt: fmtPct },
   { key: 'leverage',          label: 'Leverage',          accessor: p => p.ratios.leverage?.value,          fmt: fmtRatio },
@@ -237,7 +240,8 @@ export default function IssuerPage() {
     ? [...data.periods].reverse().map(p => ({
         date: p.period_end,
         value: metric.accessor(p) ?? null,
-        agency: showAgencyOverlay ? (p.agency_rating_index ?? null) : null,
+        // Bucket the agency line to the same whole-letter axis as the implied line.
+        agency: showAgencyOverlay ? ratingLetterBucket(p.agency_rating_index) : null,
       }))
     : []
 
@@ -380,6 +384,7 @@ export default function IssuerPage() {
                   domain={metric.domain ?? ['auto', 'auto']}  // score uses a fixed 0–100; ratios auto-scale
                   reversed={metric.reversed}                   // Implied Rating: AAA (index 0) at the top
                   allowDecimals={!metric.reversed}             // rating ticks are integer indices → letters
+                  ticks={metric.ticks}                         // Implied Rating: one tick per whole-letter grade
                   tick={{ fontSize: 11, fill: '#94a3b8' }}
                   tickFormatter={(v: number) => metric.fmt(v)}
                   width={48}
@@ -443,9 +448,8 @@ export default function IssuerPage() {
           </div>
 
           {/* ── Implied credit rating ──────────────────────────────────── */}
-          {/* S&P-style rating for the latest period, with its sub-factor breakdown
-              and the directional Rating Outlook. */}
-          <RatingProfileSection periods={data.periods} outlook={data.outlook} ratingNote={data.rating_note} />
+          {/* S&P-style rating for the latest period, with its sub-factor breakdown. */}
+          <RatingProfileSection periods={data.periods} ratingNote={data.rating_note} />
 
           {/* Agency rating history — the real Moody's / Fitch / Egan-Jones actions
               (dates, from→to, and an upgrade/downgrade/default/withdrawn badge).
@@ -1370,7 +1374,7 @@ function fmtSubfactor(sub: string, value: number | null): string {
   return fmtRatio(value)
 }
 
-function RatingProfileSection({ periods, outlook, ratingNote }: { periods: PeriodData[]; outlook?: RatingOutlook | null; ratingNote?: string | null }) {
+function RatingProfileSection({ periods, ratingNote }: { periods: PeriodData[]; ratingNote?: string | null }) {
   // Use the most recent period that actually carries an implied rating.
   const period = periods.find(p => p.implied_rating)
   const rating = period?.implied_rating
@@ -1392,8 +1396,6 @@ function RatingProfileSection({ periods, outlook, ratingNote }: { periods: Perio
     )
   }
 
-  const ob = outlookBadge(outlook?.outlook)
-
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
       <div className="px-6 py-4 border-b border-gray-100 flex items-baseline justify-between gap-4">
@@ -1404,42 +1406,14 @@ function RatingProfileSection({ periods, outlook, ratingNote }: { periods: Perio
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {ob && (
-            <span className={`inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-lg whitespace-nowrap ${ob.cls}`} title="Rating Outlook">
-              {ob.arrow} {ob.label}
-            </span>
-          )}
+          {/* Whole-letter grade (no +/- notch) — the migration view cares about categories. */}
           <span className={`inline-block text-base font-mono font-bold px-3 py-1 rounded-lg whitespace-nowrap ${ratingBg(rating.implied_rating)}`}>
-            {rating.implied_rating}
+            {stripNotch(rating.implied_rating)}
           </span>
         </div>
       </div>
 
       <div className="p-6 space-y-4">
-
-        {/* Directional Rating Outlook — trend + (when available) the implied-vs-agency
-            gap. The reasons are the auditable "why" behind the arrow. */}
-        {outlook && ob && (
-          <div className="rounded-lg border border-gray-200 bg-slate-50 p-3">
-            <p className="text-sm">
-              <span className="font-semibold text-slate-700">Outlook:</span>{' '}
-              <span className={`font-semibold ${outlook.outlook === 'Negative' ? 'text-red-700' : outlook.outlook === 'Positive' ? 'text-green-700' : 'text-slate-600'}`}>
-                {ob.arrow} {outlook.outlook}
-              </span>
-              <span className="text-slate-400"> — where the rating looks headed, from the score trend{outlook.gap != null ? ' and the implied-vs-agency gap' : ''}.</span>
-            </p>
-            {outlook.reasons.length > 0 && (
-              <ul className="mt-2 space-y-1">
-                {outlook.reasons.map((r, i) => (
-                  <li key={i} className="flex items-start gap-2 text-xs text-slate-500">
-                    <span className="mt-1 w-1 h-1 rounded-full bg-slate-300 flex-shrink-0" />
-                    {r}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        )}
 
         {/* Calibrated migration prediction (Stage 3 model) — present once trained. */}
         <MigrationPredictionBlock periods={periods} />
