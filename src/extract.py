@@ -66,6 +66,11 @@ class RatioResult:
     # (When the adjustment can't be computed the ratio is a MissingRatio, not a
     # RatioResult with lease_source="none" — absence itself is the "none" signal.)
     lease_source: str | None = None
+    # Independent provenance marker for the Moody's PENSION adjustment
+    # (pension_debt_burden). Kept SEPARATE from lease_source so lease and pension
+    # provenance never collide — a ratio can be lease-xbrl and pension-none. Same
+    # values ("xbrl" now; "llm" reserved; absence = unavailable, no stored ratio).
+    pension_source: str | None = None
 
 
 @dataclass
@@ -577,6 +582,114 @@ def lease_debt_burden(facts: dict, period_end: str, filed_before: str | None = N
         source_tags={**nd_tags, **lease_tags},
         period_end=period_end,
         lease_source="xbrl",
+    )
+
+
+# ── Pension capitalization (Moody's Formula 2, deterministic layer — PARALLEL to leases) ─
+#
+# Deliberately NOT folded into leverage_adjusted: that ratio's availability gate
+# requires leases, which would kill the pension add for pension-heavy/lease-light
+# filers, and its single lease_source can't carry pension provenance. So pensions
+# is its own helper + ratio + pension_source marker, additive and independent.
+#
+# This pass builds only the DEBT ADD (unfunded pension → adjusted debt), the clean
+# deterministic win (~26% of filers). The Moody's EBITDA/interest reclass needs
+# TOTAL net periodic benefit cost (not a single clean tag), so it is treated as
+# partial and deferred to the LLM layer — NOT computed here.
+
+def pension_debt(
+    facts: dict, period_end: str, filed_before: str | None = None
+) -> tuple[float, dict, dict] | None:
+    """
+    Unfunded defined-benefit pension deficit for the Moody's Formula-2 debt add.
+
+    Funded-status waterfall (spec/LEVERAGE.md Formula 2):
+      1. Prefer the direct tag `pension_funded_status` (DefinedBenefitPlanFundedStatusOfPlan);
+         it is reported as (assets − PBO), so the unfunded deficit is −min(0, funded_status).
+      2. Else derive from PBO and plan assets: deficit = PBO − plan_assets.
+      3. Else return None — the adjustment is UNAVAILABLE (no guess; a later LLM
+         footnote layer fills these ~70-80% of filers).
+
+    The overfunded floor is applied in every branch: an overfunded plan (assets >
+    PBO) adds 0 to debt, never a negative (spec/LEVERAGE.md:589). PBO and plan
+    assets are instant year-end balances resolved at the same period_end, and
+    companyfacts carries only the undimensioned plan total (not a segment), so the
+    subtraction is valid.
+
+    Returns (unfunded_deficit, inputs_dict, source_tags_dict) or None.
+    """
+    inputs: dict[str, float] = {}
+    tags: dict[str, str] = {}
+
+    # 1. Direct funded-status tag (assets − PBO; negative = underfunded).
+    funded, funded_tag = _resolve_first_opt(facts, "pension_funded_status", period_end, filed_before)
+    if funded is not None:
+        deficit = max(0.0, -funded)  # overfunded (funded>0) → 0
+        inputs["pension_funded_status"] = funded
+        if funded_tag:
+            tags["pension_funded_status"] = funded_tag
+        inputs["unfunded_pension"] = deficit
+        return deficit, inputs, tags
+
+    # 2. Derive from PBO − plan assets (needs both).
+    pbo, pbo_tag = _resolve_first_opt(facts, "pension_pbo", period_end, filed_before)
+    assets, assets_tag = _resolve_first_opt(facts, "pension_plan_assets", period_end, filed_before)
+    if pbo is not None and assets is not None:
+        deficit = max(0.0, pbo - assets)  # overfunded → 0
+        inputs["pension_pbo"] = pbo
+        inputs["pension_plan_assets"] = assets
+        inputs["unfunded_pension"] = deficit
+        if pbo_tag:
+            tags["pension_pbo"] = pbo_tag
+        if assets_tag:
+            tags["pension_plan_assets"] = assets_tag
+        return deficit, inputs, tags
+
+    # 3. Unavailable — no direct tag and can't derive.
+    return None
+
+
+def pension_debt_burden(facts: dict, period_end: str, filed_before: str | None = None) -> RatioResult:
+    """
+    Pension-inflation multiple = (raw net_debt + unfunded pension) / raw net_debt —
+    the PARALLEL companion to lease_debt_burden, for the Moody's pension debt add.
+
+    Always defined at any profitability (no EBITDA in the denominator). Answers
+    "how much does the unfunded pension deficit inflate the debt obligation?"
+    Deterministic-only (XBRL funded status / PBO − assets) → pension_source="xbrl".
+
+    Raises MissingDataError when the pension adjustment is unavailable (no funded
+    status and can't derive — the ~70-80% incl. RAD/AAPL, deferred to the LLM
+    layer), or when raw net_debt ≤ 0 (net-cash issuer — multiple not meaningful).
+    """
+    pension = pension_debt(facts, period_end, filed_before)
+    if pension is None:
+        raise MissingDataError(
+            f"No defined-benefit pension funded status tagged for {period_end} — "
+            f"pension_debt_burden unavailable (deterministic pass; no LLM fallback)"
+        )
+    deficit, pension_inputs, pension_tags = pension
+
+    nd, nd_inputs, nd_tags = net_debt(facts, period_end, filed_before)
+    if nd <= 0:
+        raise MissingDataError(
+            f"Raw net debt is ≤ 0 (net-cash position) for {period_end} — "
+            f"pension_debt_burden multiple is not meaningful"
+        )
+    adj_net_debt = nd + deficit
+    inputs = {
+        **nd_inputs, **pension_inputs,
+        "raw_net_debt": nd,
+        "unfunded_pension_added": deficit,
+        "adjusted_net_debt": adj_net_debt,
+    }
+    return RatioResult(
+        name="pension_debt_burden",
+        value=adj_net_debt / nd,
+        inputs=inputs,
+        source_tags={**nd_tags, **pension_tags},
+        period_end=period_end,
+        pension_source="xbrl",
     )
 
 
@@ -1194,6 +1307,9 @@ _RATIO_FUNCTIONS = [
     # Always-defined lease-inflation multiple (no EBITDA denominator) — the
     # companion signal that works even when leverage_adjusted's ratio is degenerate.
     lease_debt_burden,
+    # Moody's pension debt add (deterministic layer, PARALLEL to leases): a
+    # MissingRatio when funded status is untagged (~70-80%, deferred to LLM layer).
+    pension_debt_burden,
 ]
 
 
@@ -1227,6 +1343,8 @@ RATIO_INPUTS: dict[str, list[str]] = {
     "lease_debt_burden":          ["total_debt", "cash",
                                    "operating_lease_liability_current",
                                    "operating_lease_liability_noncurrent"],
+    "pension_debt_burden":        ["total_debt", "cash", "pension_funded_status",
+                                   "pension_pbo", "pension_plan_assets"],
 }
 
 

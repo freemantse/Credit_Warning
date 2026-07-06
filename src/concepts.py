@@ -163,6 +163,37 @@ TAGS: dict[str, list[str]] = {
         "us-gaap/OperatingLeaseCost",
     ],
 
+    # ── Defined-benefit pension (Moody's Formula 2, deterministic layer) ────────
+    # Unfunded pension deficit (PBO − plan assets, floored at 0) is added to debt
+    # in the Moody's adjustment — mirrors the lease block but PARALLEL to it
+    # (pension_debt / pension_debt_burden, own pension_source provenance). Tagged
+    # for only ~18-32% of filers, so absent → adjustment unavailable (no guess),
+    # deferring to a later LLM footnote layer.
+    #
+    # SEC companyfacts exposes only the undimensioned/aggregate context (no segment
+    # members), so these resolve to the PLAN TOTAL, not a domestic/foreign/OPEB
+    # sub-segment. PBO and plan-assets are instant (year-end balance) measures, so
+    # they align on the same period_end for a valid PBO − assets subtraction.
+    "pension_pbo": [                          # projected benefit obligation
+        "us-gaap/DefinedBenefitPlanBenefitObligation",
+    ],
+    "pension_plan_assets": [                  # fair value of plan assets
+        "us-gaap/DefinedBenefitPlanFairValueOfPlanAssets",
+    ],
+    "pension_funded_status": [                # direct funded status (PBO − assets), when tagged
+        "us-gaap/DefinedBenefitPlanFundedStatusOfPlan",
+    ],
+    "pension_service_cost": [                 # F2 EBITDA reclass input (partial — deferred to LLM layer)
+        "us-gaap/DefinedBenefitPlanServiceCost",
+    ],
+    "pension_interest_cost": [                # F2 interest reclass input (partial — deferred to LLM layer)
+        "us-gaap/DefinedBenefitPlanInterestCost",
+    ],
+    "pension_contributions": [                # F2 FCF add-back (optional this pass)
+        "us-gaap/PensionContributions",
+        "us-gaap/PaymentsForPensionAndOtherPostretirementBenefits",
+    ],
+
     # ── Cash ─────────────────────────────────────────────────────────────────
     # Used in: net_debt = total_debt - cash, and liquidity = cash / short_term_debt.
     # Prefer the balance-sheet carrying value; the period-increase tag is a last

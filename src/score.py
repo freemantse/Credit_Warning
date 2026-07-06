@@ -123,6 +123,14 @@ DEFAULT_CONFIG: dict = {
         # potential value on future borderline lease-heavy names, not demonstrated
         # benefit. Revisit if borderline cases become available to power a real value test.
         "lease_debt_burden":              {"weight": 6.0,  "healthy": 1.5,  "severe": 2.0},
+        # Pension-inflation multiple (raw net_debt + unfunded pension) / raw net_debt,
+        # Moody's-style pension capitalization — PARALLEL to lease_debt_burden.
+        # FLAG-ONLY this pass (weight 0.0): emits a Moody's-provenance pension flag
+        # (layer A) where the deterministic XBRL adjustment is available, scores 0.
+        # No gated-C weight yet: deterministic coverage is only ~26% of filers and
+        # RAD isn't even covered, so there is no representative set to test a weight
+        # on — raise only once the LLM footnote layer lifts pension coverage.
+        "pension_debt_burden":            {"weight": 0.0,  "healthy": 1.05, "severe": 1.20},
     },
     # Points forced on these rules when EBITDA <= 0 (the ramp would flip sign).
     "ebitda_override": {"leverage>5x": 17.0, "coverage<2x": 14.0},
@@ -178,11 +186,13 @@ _ADDITIONAL_RULE_RATIOS = {
     # flag-only. Listed here so additional_total sums them and from_dict carries them.
     "leverage_adjusted>5x":           "leverage_adjusted",
     "lease_debt_burden":              "lease_debt_burden",
+    # Flag-only (weight 0) this pass — bespoke block in compute_score.
+    "pension_debt_burden":            "pension_debt_burden",
 }
 
 # Additional rules with bespoke scoring logic in compute_score — the generic ramp
 # loop SKIPS these and sets their breakdown entries explicitly.
-_SPECIAL_ADDITIONAL_RULES = frozenset({"leverage_adjusted>5x", "lease_debt_burden"})
+_SPECIAL_ADDITIONAL_RULES = frozenset({"leverage_adjusted>5x", "lease_debt_burden", "pension_debt_burden"})
 
 # Co-condition threshold for lease_debt_burden Option-C scoring: a severe lease
 # burden only scores when interest coverage is below this (or FCF is negative).
@@ -598,6 +608,36 @@ def compute_score(
                     f"({ldb_pts:.0f}/{ldb_rule['weight']:.0f} pts)"
                 )
     breakdown["lease_debt_burden"] = ldb_pts
+
+    # ── Pension-debt burden — Moody's pension capitalization (FLAG-ONLY this pass) ──
+    # (raw net_debt + unfunded pension) / raw net_debt. Layer A only: emit a
+    # Moody's-provenance flag where the deterministic XBRL adjustment is available
+    # (funded status tagged / derivable, ~26% of filers), and score 0. No gated-C
+    # weight yet — coverage is too thin to calibrate/test, and RAD isn't covered.
+    # Parallel to lease_debt_burden; independent of it (own ratio, own provenance).
+    pdb_rule = rules.get("pension_debt_burden")
+    pdb = ratios.get("pension_debt_burden")
+    pdb_pts = 0.0
+    if pdb_rule is not None and isinstance(pdb, RatioResult):
+        pburden = pdb.value
+        adj_b = pdb.inputs.get("adjusted_net_debt", 0.0) / 1e9
+        raw_b = pdb.inputs.get("raw_net_debt", 0.0) / 1e9
+        deficit_b = pdb.inputs.get("unfunded_pension_added", 0.0) / 1e9
+        if pburden >= pdb_rule["severe"]:
+            alerts.append(
+                f"Unfunded pension capitalized under Moody's adjustment criteria: "
+                f"deficit ${deficit_b:.1f}B, adjusted debt {pburden:.2f}× raw "
+                f"(${adj_b:.1f}B vs ${raw_b:.1f}B) (flag)"
+            )
+        elif pburden >= pdb_rule["healthy"]:
+            alerts.append(
+                f"Unfunded pension capitalized under Moody's adjustment criteria: "
+                f"deficit ${deficit_b:.1f}B, adjusted debt {pburden:.2f}× raw "
+                f"(${adj_b:.1f}B vs ${raw_b:.1f}B) (watch)"
+            )
+        # No scoring this pass: pdb_rule["weight"] is 0.0 (flag-only).
+        pdb_pts = _ramp(pburden, pdb_rule["healthy"], pdb_rule["severe"], pdb_rule["weight"])
+    breakdown["pension_debt_burden"] = pdb_pts
 
     # ── LLM qualitative adjustment ───────────────────────────────────────────
     # High-severity findings each add `high_severity_per` pts, capped at
