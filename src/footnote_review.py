@@ -22,6 +22,7 @@ from dataclasses import dataclass
 
 import anthropic
 
+from src.llm_client import build_client, resolve_model
 from src.llm_review import (
     Finding,
     parse_json_array,
@@ -1585,8 +1586,14 @@ def run_covenants(
     # to review_filing (rides out 429/5xx with backoff; no-op when not throttled).
     # Built only after the filing is located so the no-match early-return constructs
     # none. A caller-supplied client (e.g. a test MagicMock) is kept as-is.
+    # build_client + resolve_model route through OpenRouter when USE_OPENROUTER is
+    # set; default OFF they are byte-for-byte anthropic.Anthropic(max_retries=8) and
+    # the historical "claude-haiku-4-5-20251001". `model` is threaded EXPLICITLY into
+    # every pass below (not left to the per-pass MODEL default) so the toggle can't
+    # silently no-op on import ordering.
     if client is None:
-        client = anthropic.Anthropic(max_retries=8)
+        client = build_client(max_retries=8)
+    model = resolve_model()
 
     text = get_filing_text(cik, filing["accessionNumber"], filing["primaryDocument"])
     sections = locate_sections(text)
@@ -1598,6 +1605,7 @@ def run_covenants(
         covenants_a = extract_debt_footnote(
             sections["debt"].text, f"10-K {period}, Debt", client,
             section_conf=section_confidence(sections["debt"]), period_end=period,
+            model=model,
         )
     covenants_b: list[Covenant] = []
     for _key, _label in (("mdna", "MD&A"), ("risk_factors", "Risk Factors")):
@@ -1606,7 +1614,7 @@ def run_covenants(
             covenants_b += extract_covenants_broad(
                 _sec.text, f"10-K {period}, {_label} (covenants)", client,
                 section_label=_label, section_conf=section_confidence(_sec),
-                period_end=period,
+                period_end=period, model=model,
             )
     covenants = _dedupe_covenants(covenants_a, covenants_b)
 
@@ -1619,7 +1627,7 @@ def run_covenants(
             breach_findings += extract_covenant_breach(
                 _sec.text, f"10-K {period}, {_label} (breach/waiver)", client,
                 section_label=_label, section_conf=section_confidence(_sec),
-                period_end=period,
+                period_end=period, model=model,
             )
     orphan_breaches = _apply_breach_findings(covenants, breach_findings)
     for _orphan in orphan_breaches:
