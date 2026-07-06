@@ -455,6 +455,11 @@ def save_maturities_bulk(
     overwrite-on-PK-conflict semantics as save_ratios_bulk.
     """
     cik = cik.zfill(10)
+    # schedule_confidence / total_debt_reconcile are per-SCHEDULE, but the table
+    # is one row per bucket — so they're denormalized (repeated identically on
+    # every bucket row of the same period). getattr defaults keep this backward-
+    # compatible if a caller ever passes a schedule lacking the reconciliation
+    # fields (the read path treats a missing/None confidence as "unknown").
     rows = [
         {
             "cik": cik,
@@ -462,6 +467,8 @@ def save_maturities_bulk(
             "bucket": bucket,
             "value": value,
             "source_tag": schedule.source_tags.get(bucket, ""),
+            "schedule_confidence": getattr(schedule, "schedule_confidence", "unknown"),
+            "total_debt_reconcile": getattr(schedule, "total_debt_reconcile", None),
         }
         for period_end, schedule in schedules_by_period.items()
         for bucket, value in schedule.buckets.items()
@@ -791,12 +798,14 @@ def get_maturities_grouped(cik: str | None = None, **_) -> dict[str, dict[str, d
         q = (
             _client()
             .table("debt_maturities")
-            .select("cik, period_end, bucket, value, source_tag")
+            .select("cik, period_end, bucket, value, source_tag, schedule_confidence, total_debt_reconcile")
             .order("cik").order("period_end").order("bucket")  # stable order for paging
         )
         return q.eq("cik", cik.zfill(10)) if cik is not None else q
 
-    # First gather raw buckets per (cik, period_end).
+    # First gather raw buckets per (cik, period_end). schedule_confidence /
+    # total_debt_reconcile are denormalized (identical on every bucket row of a
+    # period), so we just take the last one seen for the period.
     raw: dict[str, dict[str, dict]] = {}
     for row in _fetch_all(build):
         period = raw.setdefault(row["cik"], {}).setdefault(
@@ -804,6 +813,10 @@ def get_maturities_grouped(cik: str | None = None, **_) -> dict[str, dict[str, d
         )
         period["buckets"][row["bucket"]] = row["value"]
         period["source_tags"][row["bucket"]] = row["source_tag"]
+        # Rows persisted before this column existed return None → treat as "unknown"
+        # so the scorer falls through to today's behavior (no suppression).
+        period["schedule_confidence"] = row.get("schedule_confidence") or "unknown"
+        period["total_debt_reconcile"] = row.get("total_debt_reconcile")
 
     # Then derive the same metrics MaturitySchedule computes.
     out: dict[str, dict[str, dict]] = {}
@@ -818,6 +831,8 @@ def get_maturities_grouped(cik: str | None = None, **_) -> dict[str, dict[str, d
                 "total_scheduled": total,
                 "near_term_pct": (near_term / total) if total else None,
                 "wall_year": max(buckets, key=buckets.get) if buckets else None,
+                "schedule_confidence": data.get("schedule_confidence", "unknown"),
+                "total_debt_reconcile": data.get("total_debt_reconcile"),
             }
     return out
 

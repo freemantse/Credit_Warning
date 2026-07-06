@@ -72,9 +72,19 @@ CREATE TABLE IF NOT EXISTS debt_maturities (
   bucket      TEXT NOT NULL,                        -- "y1".."y5" | "thereafter"
   value       DOUBLE PRECISION NOT NULL,            -- principal due in that bucket
   source_tag  TEXT NOT NULL DEFAULT '',             -- winning XBRL tag
+  -- Reconciliation guard (Phase 1): does the bucket sum reconcile with XBRL total
+  -- debt? "high" | "degraded" | "unknown". Denormalized — identical on every
+  -- bucket row of a (cik, period_end). The scorer suppresses the maturity-wall
+  -- rule when "degraded" so an under-tagged schedule can't score at full weight.
+  schedule_confidence   TEXT NOT NULL DEFAULT 'unknown',
+  total_debt_reconcile  DOUBLE PRECISION,           -- XBRL total debt compared against (audit)
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (cik, period_end, bucket)
 );
+
+-- Idempotent additive migration for pre-existing debt_maturities tables.
+ALTER TABLE debt_maturities ADD COLUMN IF NOT EXISTS schedule_confidence  TEXT NOT NULL DEFAULT 'unknown';
+ALTER TABLE debt_maturities ADD COLUMN IF NOT EXISTS total_debt_reconcile DOUBLE PRECISION;
 
 
 -- ── covenants ────────────────────────────────────────────────────────────────

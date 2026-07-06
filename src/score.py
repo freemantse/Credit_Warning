@@ -513,13 +513,28 @@ def compute_score(
     # None (no/zero schedule) → skip.
     wall_w = rules["maturity_wall"]["weight"]
     near_term_pct = _attr(maturity, "near_term_pct") if maturity is not None else None
-    wall_pts = _ramp(near_term_pct, rules["maturity_wall"]["healthy"], rules["maturity_wall"]["severe"], wall_w)
-    breakdown["maturity_wall"] = wall_pts
-    if wall_pts > 0:
+    # Reconciliation guard: when the tagged buckets don't reconcile with XBRL
+    # total debt (schedule_confidence == "degraded", e.g. RAD dropping the
+    # y5/thereafter buckets), near_term_pct is computed off a truncated total and
+    # would score artificially high. Suppress the rule (treat as None → 0 pts, so
+    # it stays out of the severe-count / escalation floor) and route to review
+    # rather than scoring a wrong number at full deterministic weight.
+    # "high", "unknown", and absent (legacy dicts) all fall through unchanged.
+    schedule_confidence = _attr(maturity, "schedule_confidence", None) if maturity is not None else None
+    if schedule_confidence == "degraded":
+        breakdown["maturity_wall"] = 0.0
         alerts.append(
-            f"Maturity wall: {near_term_pct * 100:.0f}% of debt due within 3 years "
-            f"({wall_pts:.0f}/{wall_w:.0f} pts)"
+            "Maturity schedule under-reconciled with total debt "
+            "— maturity_wall suppressed, routed to review"
         )
+    else:
+        wall_pts = _ramp(near_term_pct, rules["maturity_wall"]["healthy"], rules["maturity_wall"]["severe"], wall_w)
+        breakdown["maturity_wall"] = wall_pts
+        if wall_pts > 0:
+            alerts.append(
+                f"Maturity wall: {near_term_pct * 100:.0f}% of debt due within 3 years "
+                f"({wall_pts:.0f}/{wall_w:.0f} pts)"
+            )
 
     # ── Rule 6: Covenant proximity (LLM-DERIVED, capped) ─────────────────────
     # Each covenant the footnote describes the company as close to breaching adds

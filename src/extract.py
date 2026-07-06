@@ -113,6 +113,20 @@ class MaturitySchedule:
                          (so the maturity-wall score rule is suppressed, not
                          mis-computed, on unreliable data).
         wall_year:       Bucket with the largest principal due, or None if empty.
+        schedule_confidence:
+                         Reconciliation guard against under-tagging. "high" when
+                         sum(buckets) reconciles with XBRL total debt (within
+                         MATURITY_RECONCILE_TOLERANCE); "degraded" when it does
+                         NOT (e.g. a filer dropped the y5/thereafter buckets, so
+                         near_term_pct reads artificially high off a truncated
+                         total); "unknown" when total debt is unavailable/zero or
+                         no buckets were tagged. The scorer suppresses the
+                         maturity-wall rule when this is "degraded" (see score.py)
+                         so a wrong near_term_pct never scores at full weight.
+        total_debt_reconcile:
+                         The XBRL total-debt figure the reconciliation compared
+                         against (gross_debt waterfall total), or None when
+                         unavailable. Kept for audit — explains the confidence.
     """
     period_end: str
     buckets: dict[str, float]
@@ -120,6 +134,19 @@ class MaturitySchedule:
     total_scheduled: float
     near_term_pct: float | None
     wall_year: str | None
+    schedule_confidence: str
+    total_debt_reconcile: float | None
+
+
+# Reconciliation tolerance for the maturity schedule. The sum of the tagged
+# maturity buckets should reconcile with XBRL total debt; a gap wider than this
+# fraction means the filer under-tagged the schedule (e.g. dropped y5/thereafter),
+# so near_term_pct is computed off a truncated total and must NOT score at full
+# weight. 15% (not 10%) deliberately absorbs legitimate discrepancies —
+# unamortized discount/premium, capital-lease treatment, and short-term
+# instruments (commercial paper/revolver) that are in gross_debt but not in the
+# long-term-debt maturity schedule — without letting a heavy under-tag through.
+MATURITY_RECONCILE_TOLERANCE = 0.15
 
 
 # Ordered maturity buckets: concept name (in TAGS) → display/short key.
@@ -954,6 +981,31 @@ def debt_maturity_schedule(
     # wall_year = the single bucket carrying the most principal.
     wall_year = max(buckets, key=buckets.get) if buckets else None
 
+    # ── Reconciliation guard (deterministic, no LLM) ─────────────────────────
+    # Compare the tagged bucket sum against XBRL total debt (the validated
+    # gross_debt waterfall on the SAME facts). When they don't reconcile the
+    # filer under-tagged the schedule, so near_term_pct is off a truncated total
+    # and the maturity-wall rule must be suppressed (see score.py), not scored.
+    #   "high"     — buckets reconcile with total debt (healthy, fully-tagged).
+    #   "degraded" — they don't (under-tagging, e.g. RAD dropping y5/thereafter).
+    #   "unknown"  — total debt unavailable/zero, or no buckets tagged; falls
+    #                through to today's behavior (near_term_pct already None/0).
+    total_debt_reconcile: float | None = None
+    if total_scheduled and buckets:
+        try:
+            total_debt_reconcile, _, _ = gross_debt(facts, period_end, filed_before)
+        except MissingDataError:
+            total_debt_reconcile = None
+
+    if not total_scheduled or not buckets or not total_debt_reconcile:
+        schedule_confidence = "unknown"
+    else:
+        reconciled = (
+            abs(total_scheduled - total_debt_reconcile) / total_debt_reconcile
+            <= MATURITY_RECONCILE_TOLERANCE
+        )
+        schedule_confidence = "high" if reconciled else "degraded"
+
     return MaturitySchedule(
         period_end=period_end,
         buckets=buckets,
@@ -961,6 +1013,8 @@ def debt_maturity_schedule(
         total_scheduled=total_scheduled,
         near_term_pct=near_term_pct,
         wall_year=wall_year,
+        schedule_confidence=schedule_confidence,
+        total_debt_reconcile=total_debt_reconcile,
     )
 
 
