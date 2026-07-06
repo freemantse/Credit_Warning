@@ -59,6 +59,13 @@ class RatioResult:
     inputs: dict[str, float]        # raw dollar values used in the formula
     source_tags: dict[str, str]     # maps each input name to its winning XBRL tag
     period_end: str                 # fiscal year-end date, e.g. "2023-09-30"
+    # Provenance marker for Moody's-adjustment ratios (leverage_adjusted). Optional
+    # and defaults to None, so every existing ratio is byte-for-byte unchanged.
+    # "xbrl"  → the adjustment inputs came entirely from XBRL tags (full trust).
+    # "llm"   → reserved for a later pass where a footnote-extracted input is used.
+    # (When the adjustment can't be computed the ratio is a MissingRatio, not a
+    # RatioResult with lease_source="none" — absence itself is the "none" signal.)
+    lease_source: str | None = None
 
 
 @dataclass
@@ -418,6 +425,158 @@ def leverage(facts: dict, period_end: str, filed_before: str | None = None) -> R
         inputs={**nd_inputs, **ebit_inputs},
         source_tags={**nd_tags, **ebit_tags},
         period_end=period_end,
+    )
+
+
+# ── Operating-lease capitalization (Moody's Formula 2, post-2019 deterministic) ─
+
+# Moody's reclassifies annual operating-lease expense as 1/3 interest + 2/3
+# depreciation. For the leverage denominator (EBITDA), Formula 2 adds back the
+# depreciation component (2/3 of annual lease cost) — see spec/LEVERAGE.md Formula 2.
+_LEASE_EBITDA_DEPRECIATION_FRACTION = 2.0 / 3.0
+
+
+def operating_lease_debt(
+    facts: dict, period_end: str, filed_before: str | None = None
+) -> tuple[float, dict, dict] | None:
+    """
+    Capitalized operating-lease obligation for the Moody's Formula-2 debt add:
+    the balance-sheet ROU LIABILITY = OperatingLeaseLiabilityCurrent +
+    OperatingLeaseLiabilityNoncurrent (post-ASC 842, FY2019+).
+
+    Deterministic-only: returns None when NEITHER tag resolves (pre-2019 filings, or
+    a filer that doesn't tag the ROU liability) — the caller then marks the whole
+    adjustment unavailable rather than guessing a rent×multiple (no LLM this pass).
+    A partially-tagged filer (only one of the two) still sums what is present.
+
+    Returns (rou_liability, inputs_dict, source_tags_dict) or None.
+    """
+    cur, cur_tag = _resolve_first_opt(facts, "operating_lease_liability_current", period_end, filed_before)
+    non, non_tag = _resolve_first_opt(facts, "operating_lease_liability_noncurrent", period_end, filed_before)
+    if cur is None and non is None:
+        return None
+    cur_val = cur if cur is not None else 0.0
+    non_val = non if non is not None else 0.0
+    inputs = {
+        "operating_lease_liability_current": cur_val,
+        "operating_lease_liability_noncurrent": non_val,
+    }
+    tags: dict[str, str] = {}
+    if cur_tag:
+        tags["operating_lease_liability_current"] = cur_tag
+    if non_tag:
+        tags["operating_lease_liability_noncurrent"] = non_tag
+    return cur_val + non_val, inputs, tags
+
+
+def leverage_adjusted(facts: dict, period_end: str, filed_before: str | None = None) -> RatioResult:
+    """
+    Moody's-adjusted leverage (Formula 2, spec/LEVERAGE.md) — SUPPLEMENTS the raw
+    Formula-1 `leverage` ratio; it never replaces it.
+
+        Adjusted Net Debt = net_debt (Formula 1) + capitalized operating leases
+        Adjusted EBITDA    = EBITDA (Formula 1) + 2/3 × annual operating-lease cost
+        leverage_adjusted  = Adjusted Net Debt / Adjusted EBITDA
+
+    Deterministic-only this pass: the lease obligation is the XBRL ROU liability
+    (operating_lease_debt). Pension and non-recurring-gain terms of Formula 2 are
+    deferred. If the ROU liability isn't tagged (pre-2019 / untagged), the whole
+    adjustment is UNAVAILABLE — this raises MissingDataError so extract_all records
+    a MissingRatio and scoring falls back to Formula 1 only (the "none" provenance
+    state; no rent×multiple guess). When computable, lease_source="xbrl".
+
+    Raises MissingDataError if the ROU liability is untagged or Adjusted EBITDA is 0.
+    """
+    lease = operating_lease_debt(facts, period_end, filed_before)
+    if lease is None:
+        raise MissingDataError(
+            f"No operating-lease ROU liability tagged for {period_end} — Moody's "
+            f"Formula-2 lease adjustment unavailable (deterministic pass; no LLM fallback)"
+        )
+    lease_debt, lease_inputs, lease_tags = lease
+
+    nd, nd_inputs, nd_tags = net_debt(facts, period_end, filed_before)
+    ebit, ebit_inputs, ebit_tags = ebitda(facts, period_end, filed_before)
+
+    # EBITDA add-back = 2/3 of annual operating-lease cost (the depreciation
+    # component). Optional: if OperatingLeaseCost isn't tagged, add 0 rather than
+    # guess — the ROU-liability debt add (the dominant term) still applies.
+    lease_cost, cost_tag = _resolve_first_opt(facts, "operating_lease_cost", period_end, filed_before)
+    lease_cost_val = lease_cost if lease_cost is not None else 0.0
+    ebitda_lease_addback = _LEASE_EBITDA_DEPRECIATION_FRACTION * lease_cost_val
+
+    adj_net_debt = nd + lease_debt
+    adj_ebitda = ebit + ebitda_lease_addback
+    if adj_ebitda == 0:
+        raise MissingDataError(f"Adjusted EBITDA is zero for {period_end}, cannot compute leverage_adjusted")
+
+    inputs = {
+        **nd_inputs, **ebit_inputs, **lease_inputs,
+        "operating_lease_cost": lease_cost_val,
+        "capitalized_lease_debt_added": lease_debt,
+        "ebitda_lease_depreciation_addback": ebitda_lease_addback,
+        "adjusted_net_debt": adj_net_debt,
+        "adjusted_ebitda": adj_ebitda,
+    }
+    tags = {**nd_tags, **ebit_tags, **lease_tags}
+    if cost_tag:
+        tags["operating_lease_cost"] = cost_tag
+    return RatioResult(
+        name="leverage_adjusted",
+        value=adj_net_debt / adj_ebitda,
+        inputs=inputs,
+        source_tags=tags,
+        period_end=period_end,
+        lease_source="xbrl",
+    )
+
+
+def lease_debt_burden(facts: dict, period_end: str, filed_before: str | None = None) -> RatioResult:
+    """
+    Lease-inflation multiple = adjusted_net_debt / raw_net_debt, where
+    adjusted_net_debt = raw net_debt + capitalized operating leases (ROU liability).
+
+    Unlike leverage_adjusted this has NO EBITDA in the denominator, so it is
+    well-defined at ANY profitability — it answers "how much do operating leases
+    inflate the debt obligation?" independent of earnings. A retailer whose leases
+    equal its funded debt reads ~2.0×. This is the always-available companion to
+    leverage_adjusted for lease-heavy names whose adjusted-leverage RATIO is
+    degenerate because EBITDA ≤ 0 (e.g. RAD).
+
+    Deterministic-only (XBRL ROU liability) → lease_source="xbrl".
+
+    Raises MissingDataError when the ROU liability isn't tagged (adjustment
+    unavailable), or when raw net_debt ≤ 0 (a net-cash issuer — the multiple would
+    be negative/undefined and is not a meaningful debt-inflation figure).
+    """
+    lease = operating_lease_debt(facts, period_end, filed_before)
+    if lease is None:
+        raise MissingDataError(
+            f"No operating-lease ROU liability tagged for {period_end} — "
+            f"lease_debt_burden unavailable (deterministic pass; no LLM fallback)"
+        )
+    lease_debt, lease_inputs, lease_tags = lease
+
+    nd, nd_inputs, nd_tags = net_debt(facts, period_end, filed_before)
+    if nd <= 0:
+        raise MissingDataError(
+            f"Raw net debt is ≤ 0 (net-cash position) for {period_end} — "
+            f"lease_debt_burden multiple is not meaningful"
+        )
+    adj_net_debt = nd + lease_debt
+    inputs = {
+        **nd_inputs, **lease_inputs,
+        "raw_net_debt": nd,
+        "capitalized_lease_debt_added": lease_debt,
+        "adjusted_net_debt": adj_net_debt,
+    }
+    return RatioResult(
+        name="lease_debt_burden",
+        value=adj_net_debt / nd,
+        inputs=inputs,
+        source_tags={**nd_tags, **lease_tags},
+        period_end=period_end,
+        lease_source="xbrl",
     )
 
 
@@ -1029,6 +1188,12 @@ _RATIO_FUNCTIONS = [
     debt_to_equity, revenue_yoy_growth, asset_coverage, tangible_asset_coverage,
     liquidation_asset_coverage, quick_ratio, ocf_ebitda_conversion, moody_adjusted_fcf,
     rcf_net_debt, maturity_coverage_near_term,
+    # Moody's Formula-2 adjustment (post-2019 deterministic): SUPPLEMENTS `leverage`,
+    # a MissingRatio when the ROU liability isn't tagged (falls back to Formula 1).
+    leverage_adjusted,
+    # Always-defined lease-inflation multiple (no EBITDA denominator) — the
+    # companion signal that works even when leverage_adjusted's ratio is degenerate.
+    lease_debt_burden,
 ]
 
 
@@ -1056,6 +1221,12 @@ RATIO_INPUTS: dict[str, list[str]] = {
     "moody_adjusted_fcf":         ["operating_cashflow", "depreciation", "dividends_paid"],
     "rcf_net_debt":               ["operating_cashflow", "dividends_paid", "total_debt", "cash"],
     "maturity_coverage_near_term":["cash", "debt_maturity_y1"],
+    "leverage_adjusted":          ["total_debt", "cash", "operating_income", "depreciation",
+                                   "operating_lease_liability_current",
+                                   "operating_lease_liability_noncurrent", "operating_lease_cost"],
+    "lease_debt_burden":          ["total_debt", "cash",
+                                   "operating_lease_liability_current",
+                                   "operating_lease_liability_noncurrent"],
 }
 
 

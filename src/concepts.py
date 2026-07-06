@@ -145,6 +145,24 @@ TAGS: dict[str, list[str]] = {
         "us-gaap/NotesAndLoansPayable",                                              # legacy-parity (last resort)
     ],
 
+    # ── Operating leases (ASC 842, post-2019) ──────────────────────────────────
+    # Balance-sheet operating-lease right-of-use LIABILITY, split current /
+    # non-current. Summed to the capitalized-lease obligation added to debt in the
+    # Moody's Formula-2 adjustment (leverage_adjusted). Tagged from FY2019 onward
+    # (ASC 842 effective date); absent for pre-2019 filings, where the adjustment
+    # is marked unavailable (no LLM rent×multiple fallback in this deterministic
+    # pass). OperatingLeaseCost is the annual lease expense driving the Moody's
+    # 1/3-interest / 2/3-depreciation split.
+    "operating_lease_liability_current": [
+        "us-gaap/OperatingLeaseLiabilityCurrent",
+    ],
+    "operating_lease_liability_noncurrent": [
+        "us-gaap/OperatingLeaseLiabilityNoncurrent",
+    ],
+    "operating_lease_cost": [
+        "us-gaap/OperatingLeaseCost",
+    ],
+
     # ── Cash ─────────────────────────────────────────────────────────────────
     # Used in: net_debt = total_debt - cash, and liquidity = cash / short_term_debt.
     # Prefer the balance-sheet carrying value; the period-increase tag is a last

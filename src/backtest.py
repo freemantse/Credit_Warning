@@ -206,6 +206,10 @@ class Snapshot:
     # Captured so the backtest output can show each metric's history per
     # company, not just the composite score.
     ratios: dict = field(default_factory=dict)
+    # Rule key → points contributed at this snapshot (compute_score's breakdown).
+    # Captured so an A/B can isolate a single rule's marginal contribution per
+    # company-period (e.g. how many points lease_debt_burden added).
+    breakdown: dict = field(default_factory=dict)
 
 
 def score_issuer_at_date(
@@ -269,7 +273,7 @@ def score_issuer_at_date(
 
     return Snapshot(eval_date, score_result.score, score_result.score >= threshold,
                     has_data=True, period_end=latest_period, missing_ratios=missing,
-                    ratios=ratio_values)
+                    ratios=ratio_values, breakdown=dict(score_result.breakdown))
 
 
 # ── Case library ─────────────────────────────────────────────────────────────

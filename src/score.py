@@ -100,6 +100,29 @@ DEFAULT_CONFIG: dict = {
         "moody_adjusted_fcf_negative":    {"weight": 8.0,  "healthy": 0.0,  "severe": -0.10},
         "rcf_net_debt<15%":               {"weight": 10.0, "healthy": 0.30, "severe": 0.05},
         "maturity_coverage_near_term<1x": {"weight": 7.0,  "healthy": 1.5,  "severe": 0.5},
+        # Moody's-adjusted leverage (Formula 2, lease-capitalized). SUPPLEMENTS the
+        # core leverage>5x rule — same 3×/6× ramp thresholds, additional-bucket
+        # weight (not core, so the escalation severe-count is unchanged). Only fires
+        # for issuers whose ROU liability is XBRL-tagged (leverage_adjusted present);
+        # absent → _ramp(None)=0, so all existing scorecards are unchanged. Its
+        # scoring is GATED on adjusted EBITDA > 0 (see compute_score) — the ratio is
+        # not meaningful when EBITDA ≤ 0; lease_debt_burden carries severity there.
+        "leverage_adjusted>5x":           {"weight": 10.0, "healthy": 3.0,  "severe": 6.0},
+        # Lease-inflation multiple (adjusted_net_debt / raw_net_debt), Moody's-style
+        # lease capitalization. Layer A (always-on flag) fires at healthy(1.5×)/
+        # severe(2.0×) regardless of weight; layer C (this weight) scores only when
+        # burden ≥ severe(2×) AND coverage/FCF is weak (see compute_score). Additional
+        # bucket, not core → escalation severe-count unchanged.
+        #
+        # Weight 6 enabled as FP-safe insurance. A/B (2026-07, 5 healthy lease-heavy
+        # controls incl. 3 clean across 40 periods) showed C adds ZERO false positives
+        # and the gate correctly suppresses healthy names — FP-safety is demonstrated.
+        # C's catch/lead-time BENEFIT is UNTESTED: the A/B set had no borderline
+        # (just-below-threshold) cases, the only region C could change an outcome, so
+        # it neither helped nor hurt there. Enabled on the basis of proven safety +
+        # potential value on future borderline lease-heavy names, not demonstrated
+        # benefit. Revisit if borderline cases become available to power a real value test.
+        "lease_debt_burden":              {"weight": 6.0,  "healthy": 1.5,  "severe": 2.0},
     },
     # Points forced on these rules when EBITDA <= 0 (the ramp would flip sign).
     "ebitda_override": {"leverage>5x": 17.0, "coverage<2x": 14.0},
@@ -150,7 +173,20 @@ _ADDITIONAL_RULE_RATIOS = {
     "moody_adjusted_fcf_negative":    "moody_adjusted_fcf",
     "rcf_net_debt<15%":               "rcf_net_debt",
     "maturity_coverage_near_term<1x": "maturity_coverage_near_term",
+    # Both handled specially in compute_score (not by the generic ramp loop):
+    # leverage_adjusted>5x is gated on adjusted EBITDA > 0; lease_debt_burden is
+    # flag-only. Listed here so additional_total sums them and from_dict carries them.
+    "leverage_adjusted>5x":           "leverage_adjusted",
+    "lease_debt_burden":              "lease_debt_burden",
 }
+
+# Additional rules with bespoke scoring logic in compute_score — the generic ramp
+# loop SKIPS these and sets their breakdown entries explicitly.
+_SPECIAL_ADDITIONAL_RULES = frozenset({"leverage_adjusted>5x", "lease_debt_burden"})
+
+# Co-condition threshold for lease_debt_burden Option-C scoring: a severe lease
+# burden only scores when interest coverage is below this (or FCF is negative).
+LEASE_BURDEN_WEAK_COVERAGE = 2.0
 
 
 @dataclass(frozen=True)
@@ -484,6 +520,8 @@ def compute_score(
     # silently skipped if it isn't present in the active config (back-compat with
     # configs saved before these rules existed).
     for rule_key, ratio_name in _ADDITIONAL_RULE_RATIOS.items():
+        if rule_key in _SPECIAL_ADDITIONAL_RULES:
+            continue  # scored below with bespoke logic
         rule = rules.get(rule_key)
         if rule is None:
             breakdown[rule_key] = 0.0
@@ -494,6 +532,72 @@ def compute_score(
         breakdown[rule_key] = add_pts
         if add_pts > 0:
             alerts.append(f"{ratio_name} {add_val:.2f} stressed ({add_pts:.0f}/{add_w:.0f} pts)")
+
+    # ── Adjusted leverage (lease-capitalized) — GATED on adjusted EBITDA > 0 ──
+    # The leverage_adjusted RATIO is stored faithfully even when adjusted EBITDA ≤ 0
+    # (a degenerate negative value, kept for trajectory tracking), but it is only
+    # MEANINGFUL as a stress ramp when EBITDA > 0 (e.g. profitable lease-heavy names
+    # like Stein Mart 4.8×→19×). When adjusted EBITDA ≤ 0 the rule scores 0 and we
+    # flag it — the debt-burden signal below carries severity instead.
+    la_rule = rules.get("leverage_adjusted>5x")
+    la = ratios.get("leverage_adjusted")
+    la_pts = 0.0
+    if la_rule is not None and isinstance(la, RatioResult):
+        adj_ebitda = la.inputs.get("adjusted_ebitda")
+        if adj_ebitda is not None and adj_ebitda > 0:
+            la_pts = _ramp(la.value, la_rule["healthy"], la_rule["severe"], la_rule["weight"])
+            if la_pts > 0:
+                alerts.append(
+                    f"Adjusted leverage {la.value:.1f}× (lease-capitalized) elevated "
+                    f"({la_pts:.0f}/{la_rule['weight']:.0f} pts)"
+                )
+        else:
+            alerts.append(
+                "Adjusted leverage ratio not meaningful (EBITDA≤0) — see lease_debt_burden"
+            )
+    breakdown["leverage_adjusted>5x"] = la_pts
+
+    # ── Lease-debt burden — Moody's lease capitalization (A: always-flag + C: selective score) ──
+    # adjusted_net_debt / raw_net_debt = how much operating leases inflate the debt
+    # obligation under Moody's adjustment criteria. Always defined (no EBITDA in the
+    # denominator), so it works at any profitability. Two layers:
+    #   A — ALWAYS-ON flag (0 pts): emit a watch (≥ healthy=1.5×) / flag (≥ severe=2×)
+    #       alert for any computable burden. Pure visibility → zero FP risk.
+    #   C — SELECTIVE scoring (weight-gated): award points ONLY when the burden is
+    #       severe (≥2×) AND the issuer is already weak on cash servicing
+    #       (interest_coverage < LEASE_BURDEN_WEAK_COVERAGE OR moody_adjusted_fcf < 0).
+    #       weight 0.0 ⇒ C-off (baseline); a positive weight ⇒ C-on (A/B is a pure
+    #       config diff). Additional bucket, so the escalation severe-count is untouched.
+    ldb_rule = rules.get("lease_debt_burden")
+    ldb = ratios.get("lease_debt_burden")
+    ldb_pts = 0.0
+    if ldb_rule is not None and isinstance(ldb, RatioResult):
+        burden = ldb.value
+        adj_b = ldb.inputs.get("adjusted_net_debt", 0.0) / 1e9
+        raw_b = ldb.inputs.get("raw_net_debt", 0.0) / 1e9
+        # A — always-on flag, Moody's provenance wording (both watch and flag levels).
+        if burden >= ldb_rule["severe"]:
+            alerts.append(
+                f"Operating leases capitalized under Moody's adjustment criteria: "
+                f"adjusted debt {burden:.2f}× raw (${adj_b:.1f}B vs ${raw_b:.1f}B) (flag)"
+            )
+        elif burden >= ldb_rule["healthy"]:
+            alerts.append(
+                f"Operating leases capitalized under Moody's adjustment criteria: "
+                f"adjusted debt {burden:.2f}× raw (${adj_b:.1f}B vs ${raw_b:.1f}B) (watch)"
+            )
+        # C — selective scoring: severe burden AND weak coverage/FCF co-condition.
+        cov = _val("interest_coverage")
+        mfcf = _val("moody_adjusted_fcf")
+        weak = (cov is not None and cov < LEASE_BURDEN_WEAK_COVERAGE) or (mfcf is not None and mfcf < 0.0)
+        if burden >= ldb_rule["severe"] and weak:
+            ldb_pts = ldb_rule["weight"]  # gate is at `severe`, so the ramp would saturate → full weight
+            if ldb_pts > 0:
+                alerts.append(
+                    f"Lease-debt burden scored: {burden:.2f}× raw debt with weak coverage/FCF "
+                    f"({ldb_pts:.0f}/{ldb_rule['weight']:.0f} pts)"
+                )
+    breakdown["lease_debt_burden"] = ldb_pts
 
     # ── LLM qualitative adjustment ───────────────────────────────────────────
     # High-severity findings each add `high_severity_per` pts, capped at
