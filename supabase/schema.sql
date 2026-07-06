@@ -59,6 +59,11 @@ CREATE TABLE IF NOT EXISTS companies (
   lseg_ric      TEXT,                              -- LSEG RIC resolved to this CIK
   sic           TEXT,                              -- SIC industry code (industry-risk input for the business-risk proxy)
   sic_description TEXT,                            -- human-readable SIC label, e.g. "Electric Services"
+  -- Methodology routing (src/methodology.py): which agency sector methodology to apply.
+  moodys_methodology     TEXT,                     -- Moody's sector methodology name, e.g. "Regulated Electric and Gas Utilities"
+  sp_sector              TEXT,                     -- S&P sector-section name, e.g. "Regulated Utilities"
+  methodology_confidence TEXT,                     -- "high" | "medium" | "low" (specific SIC hit / major-group / default-or-LLM-or-TRBC-conflict)
+  methodology_source     TEXT,                     -- "sic_table" | "llm_fallback" | "default"
   -- Curated-watchlist membership: the dashboard (/api/issuers) shows ONLY in_portfolio
   -- rows. Tracking an issuer for model TRAINING writes ratios/labels but leaves this
   -- FALSE, so the full universe can be trained on without cluttering the portfolio.
@@ -75,6 +80,10 @@ ALTER TABLE companies ADD COLUMN IF NOT EXISTS lseg_ric       TEXT;
 ALTER TABLE companies ADD COLUMN IF NOT EXISTS sic            TEXT;
 ALTER TABLE companies ADD COLUMN IF NOT EXISTS sic_description TEXT;
 ALTER TABLE companies ADD COLUMN IF NOT EXISTS in_portfolio   BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS moodys_methodology     TEXT;
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS sp_sector              TEXT;
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS methodology_confidence TEXT;
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS methodology_source     TEXT;
 
 
 -- ── ratios ───────────────────────────────────────────────────────────────────

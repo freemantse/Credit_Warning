@@ -35,6 +35,10 @@ def _detect_xref_columns(columns: list[str]) -> dict[str, str | None]:
         "name": find(lambda l: "commonname" in l or "company" in l or l == "name"),
         "cusip": find(lambda l: "cusip" in l),
         "isin": find(lambda l: "isin" in l),
+        # TRBC "Economic Sector Name" (or a plain "sector" column) — used only as a
+        # cross-check for the methodology classifier (src/methodology.py), never as a
+        # primary key. Absent in many LSEG configs, so callers must tolerate None.
+        "trbc": find(lambda l: "trbc" in l or l == "sector" or "economic sector" in l),
     }
 
 
@@ -136,6 +140,43 @@ def attach_cik(events: list[dict[str, Any]], resolved: dict[str, dict[str, Any]]
             "source_ric": e.get("ric"),
         })
     return out
+
+
+# Ticker → TRBC economic sector, loaded once from the (gitignored) LSEG universe file.
+_TRBC_BY_TICKER: dict[str, str] | None = None
+_DEFAULT_XREF_PATH = Path("data/universe_xref.csv")
+
+
+def trbc_by_ticker(path: Path | str = _DEFAULT_XREF_PATH) -> dict[str, str]:
+    """
+    Build a {ticker(upper) → TRBC economic sector} map from the LSEG universe file.
+
+    Cross-check-only input for the methodology classifier. Returns {} (cached) when
+    the file is absent or carries no TRBC/sector column — the classifier then simply
+    runs without the cross-check. Cached after first read; pass an explicit `path` in
+    tests to bypass the cache.
+    """
+    global _TRBC_BY_TICKER
+    explicit = path != _DEFAULT_XREF_PATH
+    if _TRBC_BY_TICKER is not None and not explicit:
+        return _TRBC_BY_TICKER
+
+    path = Path(path)
+    mapping: dict[str, str] = {}
+    if path.exists():
+        df = pd.read_csv(path, dtype=str)
+        cols = _detect_xref_columns(list(df.columns))
+        tcol, scol = cols.get("ticker"), cols.get("trbc")
+        if tcol and scol:
+            for _, row in df.iterrows():
+                ticker = _clean(row[tcol])
+                sector = _clean(row[scol])
+                if ticker and sector:
+                    mapping[ticker.upper()] = sector
+
+    if not explicit:
+        _TRBC_BY_TICKER = mapping
+    return mapping
 
 
 def write_unmatched(unmatched: list[dict[str, Any]], path: str | Path) -> int:

@@ -126,13 +126,18 @@ def test_get_issuers_maps_company_rows():
 
     # Sorted by CIK regardless of input order.
     assert [i["cik"] for i in issuers] == ["0000320193", "0000789019", "0001000000"]
-    # Full field mapping for the first issuer.
+    # Full field mapping for the first issuer. Methodology-routing columns default to
+    # None when absent from the raw row (issuers tracked before the classifier existed).
     assert issuers[0] == {
         "cik": "0000320193",
         "name": "Apple Inc.",
         "ticker": "AAPL",
         "last_refreshed": "2024-01-01T00:00:00Z",
         "sic": "3571",
+        "moodys_methodology": None,
+        "sp_sector": None,
+        "methodology_confidence": None,
+        "methodology_source": None,
     }
     # Empty tickers → ""; a row with no sic column → None.
     assert issuers[2]["ticker"] == ""

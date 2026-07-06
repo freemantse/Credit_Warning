@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.DS_Store
+
+# Local input/output data — commit code, not issuer lists or results.
+*_methodology.csv
+*_methodology.json
+/data/

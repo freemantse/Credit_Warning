@@ -163,7 +163,10 @@ def save_company(info: dict[str, Any], **_) -> None:
     the canonical `cik` plus the mutable display attributes (name, tickers,
     exchanges, formerNames, sic, sic_description). The CIK is the conflict target,
     so re-tracking a company refreshes its name/ticker rather than inserting a
-    duplicate.
+    duplicate. Methodology-routing fields (moodys_methodology / sp_sector /
+    methodology_confidence / methodology_source), when present, are persisted too;
+    they are omitted from the row when absent so re-saving identity alone doesn't
+    clobber an existing classification.
     """
     cik = info["cik"].zfill(10)
     row = {
@@ -175,6 +178,10 @@ def save_company(info: dict[str, Any], **_) -> None:
         "sic": info.get("sic", ""),
         "sic_description": info.get("sic_description", ""),
     }
+    for field in ("moodys_methodology", "sp_sector",
+                  "methodology_confidence", "methodology_source"):
+        if info.get(field) is not None:
+            row[field] = info[field]
     _client().table("companies").upsert(row).execute()
 
 
@@ -880,10 +887,11 @@ def get_issuers(portfolio_only: bool = False, **_) -> list[dict[str, Any]]:
     """
     Return one identity row per tracked company.
 
-    Each row is {cik, name, ticker, last_refreshed, sic} where `ticker` is the
-    first current ticker (or "" if unknown), `last_refreshed` is when the issuer
-    was last re-tracked from EDGAR (None = never), and `sic` is the industry code
-    (used to flag unrated financial-sector issuers). Querying companies directly —
+    Each row is {cik, name, ticker, last_refreshed, sic, moodys_methodology,
+    sp_sector, methodology_confidence} where `ticker` is the first current ticker
+    (or "" if unknown), `last_refreshed` is when the issuer was last re-tracked from
+    EDGAR (None = never), and `sic` is the industry code (used to flag unrated
+    financial-sector issuers). Querying companies directly —
     rather than deriving CIKs from the ratios table — ensures issuers whose ratio
     extraction failed (e.g. banks with non-standard XBRL) are still visible.
 
@@ -891,7 +899,10 @@ def get_issuers(portfolio_only: bool = False, **_) -> list[dict[str, Any]]:
     used by the dashboard so issuers tracked solely to TRAIN the model don't appear.
     The default (all tracked) is what the refresh cron and model pipeline want.
     """
-    q = _client().table("companies").select("cik, name, tickers, last_refreshed, sic")
+    q = _client().table("companies").select(
+        "cik, name, tickers, last_refreshed, sic, "
+        "moodys_methodology, sp_sector, methodology_confidence, methodology_source"
+    )
     if portfolio_only:
         q = q.eq("in_portfolio", True)
     res = q.execute()
@@ -904,6 +915,10 @@ def get_issuers(portfolio_only: bool = False, **_) -> list[dict[str, Any]]:
             "ticker": tickers[0] if tickers else "",
             "last_refreshed": row.get("last_refreshed"),
             "sic": row.get("sic"),
+            "moodys_methodology": row.get("moodys_methodology"),
+            "sp_sector": row.get("sp_sector"),
+            "methodology_confidence": row.get("methodology_confidence"),
+            "methodology_source": row.get("methodology_source"),
         })
     return issuers
 

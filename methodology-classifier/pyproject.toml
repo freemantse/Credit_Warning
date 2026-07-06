@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "methodology-classifier"
+version = "0.1.0"
+description = "Classify a corporate issuer into its Moody's and S&P sector rating methodology from a SIC code."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []                      # core + CLI are stdlib-only
+
+[project.optional-dependencies]
+llm = ["anthropic>=0.40"]              # only needed for the LLM fallback on ambiguous SICs
+edgar = ["certifi>=2023"]              # recommended for EDGAR SIC resolution (TLS roots on macOS)
+test = ["pytest>=7"]
+
+[project.scripts]
+methodology-classifier = "methodology_classifier.cli:main"
+
+[tool.setuptools]
+packages = ["methodology_classifier"]

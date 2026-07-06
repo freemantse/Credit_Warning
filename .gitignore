@@ -20,6 +20,9 @@ data/migration_model.joblib
 # Licensed LSEG data drops (raw rating history + universe crosswalk) — not ours
 # to redistribute. Consumed offline by scripts/seed_agency_ratings.py; keep local.
 data/ratings_history_raw.csv
+data/ratings_history.csv
+data/distress_events.csv
+data/agency_ratings.csv.bak
 data/universe_xref.csv
 
 # LSEG data pull request (targeted issuer/ticker/RIC/permid list for the data team)

@@ -103,7 +103,11 @@ def main() -> None:
     ok = failed = 0
     failures: list[str] = []
     for i, (cik, tkr) in enumerate(pending, 1):
-        ident = tkr or cik              # track() accepts a bare CIK too (resolve_identifier)
+        # Prefer the CIK we already hold: resolve_identifier() takes a bare CIK directly
+        # (no EDGAR ticker-list lookup), so dot-class tickers (CRD.B, MOG.A) and private
+        # names (FIRY) that aren't in SEC's company_tickers list still resolve. Fall back
+        # to the ticker only when no CIK is on file.
+        ident = cik or tkr
         try:
             track(ident, include_llm=False)
             ok += 1

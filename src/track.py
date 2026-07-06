@@ -51,6 +51,8 @@ from src.store import (
 )
 from src.score import compute_score, STRESS_THRESHOLD
 from src.rating import compute_implied_ratings_series
+from src.methodology import classify_methodology
+from src.ratings.crosswalk import trbc_by_ticker
 
 
 # ── Display helpers ──────────────────────────────────────────────────────────
@@ -152,6 +154,25 @@ def track(ticker: str, n_periods: int | None = None, include_llm: bool = True) -
     # SIC), keyed on the permanent CIK, so reads can map CIK ↔ ticker without an EDGAR
     # call. `info` is retained for the SIC used by the business-risk proxy below.
     info = get_company_info(cik)
+
+    # Methodology routing: classify the issuer into its Moody's / S&P sector
+    # methodology from the EDGAR SIC (deterministic table, LLM fallback for ambiguous
+    # SICs), cross-checked against TRBC where the LSEG universe file provides it. Merged
+    # onto `info` so save_company persists it alongside the identity snapshot.
+    trbc = trbc_by_ticker().get(ticker.upper())
+    mc = classify_methodology(
+        info.get("sic"),
+        sic_description=info.get("sic_description"),
+        name=info.get("name"),
+        trbc=trbc,
+    )
+    info["moodys_methodology"] = mc.moodys_methodology
+    info["sp_sector"] = mc.sp_sector
+    info["methodology_confidence"] = mc.confidence
+    info["methodology_source"] = mc.source
+    print(f"  Methodology: Moody's={mc.moodys_methodology!r} | "
+          f"S&P={mc.sp_sector!r} ({mc.confidence})")
+
     save_company(info)
 
     # Step 3: Fetch the full XBRL companyfacts JSON from EDGAR (cached after first fetch).

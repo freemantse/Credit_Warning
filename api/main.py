@@ -55,6 +55,8 @@ from src.ingest import (
 )
 from src.score import DEFAULT_CONFIG, ScoreConfig, compute_score
 from src.rating import compute_implied_ratings_series, rating_outlook, OUTLOOK_DEFAULT, RatingOutlookResult, RATING_SCALE, financial_sector_note
+from src.methodology import classify_methodology
+from src.ratings.crosswalk import trbc_by_ticker
 from src.ratings.labels import rating_asof
 from src.store import (
     add_case,
@@ -396,6 +398,9 @@ def list_issuers():
                 "rating_note": financial_sector_note(issuer.get("sic")),
                 "outlook": None,
                 "prediction": None,
+                "moodys_methodology": issuer.get("moodys_methodology"),
+                "sp_sector": issuer.get("sp_sector"),
+                "methodology_confidence": issuer.get("methodology_confidence"),
             })
             continue
 
@@ -482,6 +487,9 @@ def list_issuers():
             "rating_note": None if rating else financial_sector_note(issuer.get("sic")),
             "outlook": outlook.outlook if outlook else None,
             "prediction": prediction,
+            "moodys_methodology": issuer.get("moodys_methodology"),
+            "sp_sector": issuer.get("sp_sector"),
+            "methodology_confidence": issuer.get("methodology_confidence"),
         })
     return result
 
@@ -556,6 +564,20 @@ def _track_one(identifier: str, *, no_llm: bool = True, periods: int | None = No
     # current tickers, former names, SIC) keyed on the permanent CIK.
     try:
         info = get_company_info(cik)
+        # Methodology routing: classify into the Moody's / S&P sector methodology from
+        # the EDGAR SIC (deterministic table + LLM fallback for ambiguous SICs),
+        # cross-checked against TRBC where the LSEG universe file provides it. Merged
+        # onto `info` so save_company persists it with the identity snapshot.
+        mc = classify_methodology(
+            info.get("sic"),
+            sic_description=info.get("sic_description"),
+            name=info.get("name"),
+            trbc=trbc_by_ticker().get(identifier),
+        )
+        info["moodys_methodology"] = mc.moodys_methodology
+        info["sp_sector"] = mc.sp_sector
+        info["methodology_confidence"] = mc.confidence
+        info["methodology_source"] = mc.source
         save_company(info)
     except Exception as e:
         raise HTTPException(500, f"Failed to fetch/save company info: {e}")
@@ -873,6 +895,13 @@ def get_issuer(ticker: str):
             None if any(p.get("implied_rating") for p in period_data)
             else financial_sector_note(company.get("sic"))
         ),
+        # Which agency sector methodology to apply (see src/methodology.py).
+        "methodology": {
+            "moodys": company.get("moodys_methodology"),
+            "sp": company.get("sp_sector"),
+            "confidence": company.get("methodology_confidence"),
+            "source": company.get("methodology_source"),
+        },
     }
 
 
@@ -882,6 +911,56 @@ def remove_issuer(ticker: str):
     cik = _resolve_cik_for_read(ticker)
     delete_issuer(cik)
     return {"status": "deleted", "cik": cik}
+
+
+@app.get("/api/methodology/{ticker}")
+def get_methodology(ticker: str, refresh: bool = False):
+    """
+    Return the Moody's / S&P sector methodology routing for one issuer.
+
+    Teammates call this to know which agency scorecard to apply. By default it reads
+    the classification persisted at track time (companies.moodys_methodology / …). Pass
+    ?refresh=true (or when the issuer has no stored classification) to recompute on the
+    fly from the issuer's SIC — this also covers issuers tracked before the classifier
+    existed. Returns the MethodologyClass fields plus the SIC it was derived from.
+    """
+    cik = _resolve_cik_for_read(ticker)
+    company = get_company(cik)
+    if not company:
+        raise HTTPException(404, f"{ticker!r} is not tracked")
+
+    if not refresh and company.get("moodys_methodology"):
+        return {
+            "cik": cik,
+            "ticker": company.get("tickers", [ticker.upper()])[0] if company.get("tickers") else ticker.upper(),
+            "name": company.get("name", ""),
+            "sic": company.get("sic"),
+            "moodys_methodology": company.get("moodys_methodology"),
+            "sp_sector": company.get("sp_sector"),
+            "confidence": company.get("methodology_confidence"),
+            "source": company.get("methodology_source"),
+            "computed": False,
+        }
+
+    mc = classify_methodology(
+        company.get("sic"),
+        sic_description=company.get("sic_description"),
+        name=company.get("name"),
+        trbc=trbc_by_ticker().get((company.get("tickers") or [ticker])[0].upper() if company.get("tickers") else ticker.upper()),
+    )
+    return {
+        "cik": cik,
+        "ticker": (company.get("tickers") or [ticker.upper()])[0],
+        "name": company.get("name", ""),
+        "sic": company.get("sic"),
+        "moodys_methodology": mc.moodys_methodology,
+        "sp_sector": mc.sp_sector,
+        "confidence": mc.confidence,
+        "source": mc.source,
+        "is_financial": mc.is_financial,
+        "notes": mc.notes,
+        "computed": True,
+    }
 
 
 @app.get("/api/screen/senior-secured")
