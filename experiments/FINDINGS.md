@@ -66,5 +66,13 @@ All three Moody's Formula-2 adjustments are **directionally correct but amplify 
 
 ---
 
+## 5. Correction — pension-EBITDA reclass is DETERMINISTIC (~19%), not LLM-only
+
+Earlier scoping (and the `concepts.py` tag comments) characterized the Moody's pension-EBITDA reclassification as needing footnote/LLM extraction ("not a single clean tag"). **That was too pessimistic.** The total is a single XBRL tag — `us-gaap:DefinedBenefitPlanNetPeriodicBenefitCost` — populated for **29%** of cached filers, and the reclass addback is simply **(net periodic benefit cost − service cost)**, computable deterministically where **both** tag (**~19%**, 245/1,291 cached). A service-cost-only figure is *not* a partial approximation of the reclass — the excess is uncomputable without the total — so the leg requires both tags and is otherwise MissingRatio (no guess). Built 2026-07-07 as `pension_ebitda_reclass` (flag-first, weight 0, `pension_source="xbrl"`). LLM fallback is only needed for the ~81% that don't tag both.
+
+(The three deterministic pension flag legs — B3 interest `interest_coverage_pension_adjusted`, B2 EBITDA `pension_ebitda_reclass`, B4 FCF `moody_adjusted_fcf_pension` — all ship flag-first weight 0, score-neutral. B4 is a **parallel** flag, deliberately NOT an in-place edit of `moody_adjusted_fcf` because that ratio is scored (weight 8) and feeds the lease Option-C gate — editing it would move scores for ~14% of filers, deferred as a separate A/B-gated change.)
+
+---
+
 ### One-line summary for Freeman
 Catch is real and generalizes (~91% held-out); the 5.8% FP was a curated-control artifact (true ~17%), driven by missing sector normalization (financials shouldn't use these ratios; REITs/utilities/pipelines/staples need sector-relative thresholds); and the migration trajectory engine does not predict rating transitions (coincidence, not lead) — transition modeling should be grid-based, not velocity-based.

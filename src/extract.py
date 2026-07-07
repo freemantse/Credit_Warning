@@ -602,6 +602,152 @@ def interest_coverage_adjusted(facts: dict, period_end: str, filed_before: str |
     )
 
 
+# ── Pension Formula-2 legs (deterministic flags, PARALLEL to the lease legs) ────
+#
+# All three are flag-first (weight 0 in score.py) and independent ratios with their
+# own pension_source provenance — kept SEPARATE from the lease legs (lease_source)
+# because one ratio can't cleanly carry two provenance markers, mirroring the
+# pension_debt-vs-leverage_adjusted parallel decision.
+
+def interest_coverage_pension_adjusted(facts: dict, period_end: str, filed_before: str | None = None) -> RatioResult:
+    """
+    Moody's Formula-2 pension-interest leg (INTEREST_COVERAGE.md:171) — SUPPLEMENTS
+    Formula-1 `interest_coverage`; parallel to `interest_coverage_adjusted` (leases).
+
+        interest_coverage_pension_adjusted = EBITDA / (interest + pension interest cost)
+
+    Mirrors the code's EBITDA base (not the spec's EBIT numerator); only the
+    DENOMINATOR gets the pension-interest reclass this leg. Gated on
+    `pension_interest_cost` — untagged → MissingDataError → MissingRatio (no guess).
+    pension_source="xbrl". Raises if adjusted interest is 0.
+    """
+    pint_cost, pint_tag = _resolve_first_opt(facts, "pension_interest_cost", period_end, filed_before)
+    if pint_cost is None:
+        raise MissingDataError(
+            f"No pension interest cost tagged for {period_end} — Moody's Formula-2 "
+            f"pension-interest adjustment unavailable (deterministic pass; no guess)"
+        )
+    ebit, ebit_inputs, ebit_tags = ebitda(facts, period_end, filed_before)
+    int_exp, int_tag = _resolve(facts, "interest_expense", period_end, filed_before)
+    adj_interest = int_exp + pint_cost
+    if adj_interest == 0:
+        raise MissingDataError(f"Adjusted interest expense is zero for {period_end}, cannot compute interest_coverage_pension_adjusted")
+    inputs = {
+        **ebit_inputs,
+        "interest_expense": int_exp,
+        "pension_interest_cost": pint_cost,
+        "adjusted_interest_expense": adj_interest,
+    }
+    tags = {**ebit_tags, "interest_expense": int_tag, "pension_interest_cost": pint_tag}
+    return RatioResult(
+        name="interest_coverage_pension_adjusted",
+        value=ebit / adj_interest,
+        inputs=inputs,
+        source_tags=tags,
+        period_end=period_end,
+        pension_source="xbrl",
+    )
+
+
+def pension_ebitda_reclass(facts: dict, period_end: str, filed_before: str | None = None) -> RatioResult:
+    """
+    Moody's Formula-2 pension-EBITDA reclass (LEVERAGE.md:111) — the FULL periodic-
+    cost reclass, NOT a partial approximation.
+
+        reclass addback = net periodic benefit cost − service cost
+        value = (EBITDA + addback) / EBITDA          (the EBITDA-uplift multiple)
+
+    Moody's reclassifies the excess of total pension expense over service cost out
+    of operating expense, lifting EBITDA. Computing that excess REQUIRES the total
+    (DefinedBenefitPlanNetPeriodicBenefitCost) AND service cost — this leg requires
+    BOTH tags; if either is missing it raises MissingDataError → MissingRatio (no
+    guess). A service-cost-only figure cannot yield the excess, so it is never
+    faked. Deterministic where both tag (~19% of filers). pension_source="xbrl".
+
+    Raises if either pension tag is missing, or if base EBITDA ≤ 0 (the uplift
+    multiple is degenerate — reported unavailable rather than misleading).
+    """
+    total, tot_tag = _resolve_first_opt(facts, "pension_net_periodic_cost", period_end, filed_before)
+    service, svc_tag = _resolve_first_opt(facts, "pension_service_cost", period_end, filed_before)
+    if total is None or service is None:
+        raise MissingDataError(
+            f"Pension net-periodic-cost and/or service-cost untagged for {period_end} — "
+            f"full reclass (total − service) not computable (deterministic pass; no guess)"
+        )
+    ebit, ebit_inputs, ebit_tags = ebitda(facts, period_end, filed_before)
+    if ebit <= 0:
+        raise MissingDataError(
+            f"Base EBITDA ≤ 0 for {period_end}, pension-EBITDA-reclass uplift multiple is degenerate"
+        )
+    addback = total - service          # the non-service "excess" reclassified out of opex
+    adj_ebitda = ebit + addback
+    inputs = {
+        **ebit_inputs,
+        "pension_net_periodic_cost": total,
+        "pension_service_cost": service,
+        "pension_ebitda_reclass_addback": addback,
+        "adjusted_ebitda": adj_ebitda,
+    }
+    tags = {**ebit_tags, "pension_net_periodic_cost": tot_tag, "pension_service_cost": svc_tag}
+    return RatioResult(
+        name="pension_ebitda_reclass",
+        value=adj_ebitda / ebit,       # uplift multiple; >1 when the reclass adds to EBITDA
+        inputs=inputs,
+        source_tags=tags,
+        period_end=period_end,
+        pension_source="xbrl",
+    )
+
+
+def moody_adjusted_fcf_pension(facts, period_end, filed_before=None) -> RatioResult:
+    """
+    Moody's Formula-2 pension-FCF leg (FREE_CASH_FLOW.md:229) — PARALLEL FLAG.
+
+        moody_adjusted_fcf_pension = OCF + pension cash contributions − D&A(maint capex proxy) − dividends
+
+    Built as an INDEPENDENT flag rather than editing the live `moody_adjusted_fcf`
+    ON PURPOSE: `moody_adjusted_fcf` is a scored ratio (moody_adjusted_fcf_negative,
+    weight 8) AND a co-condition in the lease_debt_burden Option-C gate, so adding
+    the pension addback in place would CHANGE scores for the ~14% of filers that tag
+    contributions (score-affecting, not flag-first). That in-place change is deferred
+    as a separate, deliberate, A/B-gated deliverable. This parallel flag leaves
+    `moody_adjusted_fcf` and its omit-shortcut untouched.
+
+    Gated on `pension_contributions` — untagged → MissingDataError → MissingRatio
+    (no guess; that is the whole point of this leg). pension_source="xbrl".
+    """
+    contrib, con_tag = _resolve_first_opt(facts, "pension_contributions", period_end, filed_before)
+    if contrib is None:
+        raise MissingDataError(
+            f"No pension cash contributions tagged for {period_end} — Moody's Formula-2 "
+            f"pension-FCF addback unavailable (deterministic pass; no guess)"
+        )
+    ocf, ocf_tag = _resolve(facts, "operating_cashflow", period_end, filed_before)
+    dep, dep_tag = _resolve(facts, "depreciation", period_end, filed_before)
+    inputs = {
+        "operating_cashflow": ocf,
+        "pension_contributions_addback": contrib,
+        "depreciation_proxy_for_maintenance_capex": dep,
+    }
+    tags = {"operating_cashflow": ocf_tag, "pension_contributions": con_tag, "depreciation": dep_tag}
+    try:
+        div, div_tag = _resolve(facts, "dividends_paid", period_end, filed_before)
+        inputs["dividends_paid"] = div
+        tags["dividends_paid"] = div_tag
+    except MissingDataError:
+        div = 0.0
+    value = ocf + contrib - dep - div
+    inputs["adjusted_fcf_pension"] = value
+    return RatioResult(
+        name="moody_adjusted_fcf_pension",
+        value=value,
+        inputs=inputs,
+        source_tags=tags,
+        period_end=period_end,
+        pension_source="xbrl",
+    )
+
+
 def lease_debt_burden(facts: dict, period_end: str, filed_before: str | None = None) -> RatioResult:
     """
     Lease-inflation multiple = adjusted_net_debt / raw_net_debt, where
@@ -1373,6 +1519,9 @@ _RATIO_FUNCTIONS = [
     # Moody's Formula-2 adjusted coverage (lease-interest leg): SUPPLEMENTS
     # `interest_coverage`; MissingRatio when operating_lease_cost is untagged.
     interest_coverage_adjusted,
+    # Moody's Formula-2 pension legs (deterministic flags, parallel to lease legs):
+    # MissingRatio when the pension tags are absent (falls back to Formula 1).
+    interest_coverage_pension_adjusted, pension_ebitda_reclass, moody_adjusted_fcf_pension,
     # Always-defined lease-inflation multiple (no EBITDA denominator) — the
     # companion signal that works even when leverage_adjusted's ratio is degenerate.
     lease_debt_burden,
@@ -1411,6 +1560,12 @@ RATIO_INPUTS: dict[str, list[str]] = {
                                    "operating_lease_liability_noncurrent", "operating_lease_cost"],
     "interest_coverage_adjusted": ["operating_income", "depreciation", "interest_expense",
                                    "operating_lease_cost"],
+    "interest_coverage_pension_adjusted": ["operating_income", "depreciation", "interest_expense",
+                                           "pension_interest_cost"],
+    "pension_ebitda_reclass":     ["operating_income", "depreciation",
+                                   "pension_net_periodic_cost", "pension_service_cost"],
+    "moody_adjusted_fcf_pension": ["operating_cashflow", "pension_contributions",
+                                   "depreciation", "dividends_paid"],
     "lease_debt_burden":          ["total_debt", "cash",
                                    "operating_lease_liability_current",
                                    "operating_lease_liability_noncurrent"],

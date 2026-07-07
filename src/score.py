@@ -139,6 +139,14 @@ DEFAULT_CONFIG: dict = {
         # names (REIT/utility/pipeline — the OOS FP drivers), so it must be validated
         # on a FRESH hold-out before being enabled.
         "coverage_adjusted<2x":           {"weight": 0.0,  "healthy": 4.0,  "severe": 1.0},
+        # Moody's Formula-2 pension legs — all FLAG-FIRST (weight 0.0, score-neutral),
+        # parallel to the lease legs, own pension_source provenance. Scored through the
+        # generic additional-rules ramp (weight 0 → 0 pts), so existing scorecards are
+        # byte-for-byte unchanged. Weight gated on the sector-normalization layer, same
+        # as every other Moody's adjustment (see FINDINGS.md).
+        "coverage_pension_adjusted<2x":   {"weight": 0.0,  "healthy": 4.0,  "severe": 1.0},
+        "pension_ebitda_reclass":         {"weight": 0.0,  "healthy": 1.0,  "severe": 1.5},
+        "moody_adjusted_fcf_pension_negative": {"weight": 0.0, "healthy": 0.0, "severe": -0.10},
     },
     # Points forced on these rules when EBITDA <= 0 (the ramp would flip sign).
     "ebitda_override": {"leverage>5x": 17.0, "coverage<2x": 14.0},
@@ -197,6 +205,10 @@ _ADDITIONAL_RULE_RATIOS = {
     # Flag-only (weight 0) this pass — bespoke block in compute_score.
     "pension_debt_burden":            "pension_debt_burden",
     "coverage_adjusted<2x":           "interest_coverage_adjusted",
+    # Pension legs — flag-first (weight 0), scored via the generic ramp loop.
+    "coverage_pension_adjusted<2x":        "interest_coverage_pension_adjusted",
+    "pension_ebitda_reclass":              "pension_ebitda_reclass",
+    "moody_adjusted_fcf_pension_negative": "moody_adjusted_fcf_pension",
 }
 
 # Additional rules with bespoke scoring logic in compute_score — the generic ramp

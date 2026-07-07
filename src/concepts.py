@@ -183,13 +183,16 @@ TAGS: dict[str, list[str]] = {
     "pension_funded_status": [                # direct funded status (PBO − assets), when tagged
         "us-gaap/DefinedBenefitPlanFundedStatusOfPlan",
     ],
-    "pension_service_cost": [                 # F2 EBITDA reclass input (partial — deferred to LLM layer)
+    "pension_service_cost": [                 # F2 EBITDA reclass input (service leg of net periodic cost)
         "us-gaap/DefinedBenefitPlanServiceCost",
     ],
-    "pension_interest_cost": [                # F2 interest reclass input (partial — deferred to LLM layer)
+    "pension_interest_cost": [                # F2 interest reclass input (added to interest denominator)
         "us-gaap/DefinedBenefitPlanInterestCost",
     ],
-    "pension_contributions": [                # F2 FCF add-back (optional this pass)
+    "pension_net_periodic_cost": [            # total net periodic benefit cost; reclass addback = total − service
+        "us-gaap/DefinedBenefitPlanNetPeriodicBenefitCost",
+    ],
+    "pension_contributions": [                # F2 FCF add-back (cash contributions)
         "us-gaap/PensionContributions",
         "us-gaap/PaymentsForPensionAndOtherPostretirementBenefits",
     ],
