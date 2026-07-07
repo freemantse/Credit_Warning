@@ -74,5 +74,18 @@ Earlier scoping (and the `concepts.py` tag comments) characterized the Moody's p
 
 ---
 
+## 6. Design principle — flag-first, no scoring weight (GOVERNING RULE)
+
+**Every Moody's adjustment ships as a grounded, cited analyst FLAG, not a scoring weight.**
+
+- **Scoring weights overfit and amplify FP without adding catch — proven 3× this session** (leverage, pension, coverage). Each fired on names the scorecard *already* flags, so a nonzero weight added false positives (concentrated on structurally-levered / financial sectors) with **zero** new catches. A fitted weight is a parameter tuned on a labeled set; on held-out data it does not generalize.
+- **Flags carry no fitted parameter, so they cannot overfit.** The bar is "review-grade grounded number with a citation," not "scoring-grade number." A flag's value is a verifiable adjusted figure an analyst reviews — its correctness is checked against the source footnote, not against a label distribution.
+- **Grounding is the trust mechanism** (not calibration): each numeric flag carries a verbatim `evidence_quote`, `source`, and `source_url` deep-link, and every extracted number is verified against its quote (`_number_in_text`) before it is stored — ungrounded numbers are dropped, never guessed.
+- **Therefore:** all Moody's adjustments (deterministic *and* LLM-tier) are `weight 0` flags. **Scoring-weight for any adjustment is gated on the (unbuilt) sector-normalization layer** — without sector-relative thresholds, a weight only re-amplifies the FP concentration documented above.
+
+This is the governing rule for the LLM-extraction tier and for Freeman's precision work: build grounded flags that make the analyst faster and better-informed; do not turn adjustments into score parameters until sector normalization exists to make a weight generalize.
+
+---
+
 ### One-line summary for Freeman
 Catch is real and generalizes (~91% held-out); the 5.8% FP was a curated-control artifact (true ~17%), driven by missing sector normalization (financials shouldn't use these ratios; REITs/utilities/pipelines/staples need sector-relative thresholds); and the migration trajectory engine does not predict rating transitions (coincidence, not lead) — transition modeling should be grid-based, not velocity-based.
