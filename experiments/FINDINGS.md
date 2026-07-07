@@ -47,5 +47,24 @@ Across the 968 held-out healthy FPs (76/147 companies clean; 71 flagged; top-10 
 
 ---
 
+## 4. `coverage_adjusted<2x` A/B — weight adds NO catch, only FP (fresh hold-out)
+
+Session 2026-07-07. A/B of the Moody's Formula-2 adjusted-coverage rule (lease-interest leg: EBITDA / (interest + ⅓×operating-lease cost)), **weight 0 (OFF) vs 14 (ON, matching core `coverage<2x`)**, on a **fresh hold-out** — 169 distressed / 761 healthy companies joinable via SEC `company_tickers.json` but **excluded from both `cases.csv` and the OOS/FP diagnosis set** (genuinely untouched). Same label rule as the OOS test (distressed = LT rating reached Caa1/CCC+; healthy = never single-B or worse). Report: `experiments/coverage_adj_ab_report.txt`.
+
+| | catch | FP periods |
+|---|---|---|
+| OFF (w=0) | 120/140 (85.7%) | 6,633/27,437 (24.2%) |
+| ON (w=14) | 120/140 (85.7%) | 6,842/27,437 (24.9%) |
+| Δ | **+0 (0 new catches)** | **+209 periods** |
+
+- **Zero new catches** — every distressed name caught with the rule on was already caught with it off; it never pushed a missed issuer over threshold (including in lease-heavy sectors). Rule fired on 300/761 healthy companies (broad), all additive FP.
+- **FP rise by sector — not the lease-heavy trio.** Biggest increase is **Financials +143** (`OperatingLeaseCost` is tagged there, and financials are the dominant FP driver regardless). The lease-heavy trio barely moved — **Real Estate +12, Utilities +4, Energy +0** — because they are **already saturated** (FP 46% / 67% / 35% with the rule *off*, from the core rules).
+- **Decision: keep flag-first (weight 0).** Valuable as an audit flag (visibility into lease-adjusted coverage); must **not** score until the sector-normalization layer exists.
+
+### Pattern — 3rd confirmation (leverage, pension, coverage)
+All three Moody's Formula-2 adjustments are **directionally correct but amplify FP on structurally-levered / financial sectors WITHOUT adding catch**, because they fire on names the scorecard **already flags**. **Scoring-weight for every Moody's adjustment is therefore gated on the (unbuilt) sector-normalization layer.** Until it exists, adjustments ship **flag-first, weight 0** — real as audit signals, inert in scoring.
+
+---
+
 ### One-line summary for Freeman
 Catch is real and generalizes (~91% held-out); the 5.8% FP was a curated-control artifact (true ~17%), driven by missing sector normalization (financials shouldn't use these ratios; REITs/utilities/pipelines/staples need sector-relative thresholds); and the migration trajectory engine does not predict rating transitions (coincidence, not lead) — transition modeling should be grid-based, not velocity-based.
