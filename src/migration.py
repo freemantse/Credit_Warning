@@ -73,7 +73,10 @@ GROUPS: dict[str, list[str]] = {
                     "ocf_ebitda_conversion<0.7x", "moody_adjusted_fcf_negative", "rcf_net_debt<15%"],
     "leverage":    ["leverage>5x", "debt_to_assets>40%", "maturity_wall", "debt_to_equity>2x",
                     "asset_coverage<1.5x", "tangible_asset_coverage<1x",
-                    "liquidation_asset_coverage<0.7x", "maturity_coverage_near_term<1x"],
+                    "liquidation_asset_coverage<0.7x", "maturity_coverage_near_term<1x",
+                    # Moody's-adjustment leverage-family rules (added to score._ADDITIONAL_RULE_RATIOS
+                    # by the lease/pension changeset); grouped here to keep GROUPS a complete mirror.
+                    "leverage_adjusted>5x", "lease_debt_burden", "pension_debt_burden"],
     "qualitative": ["profitability", "revenue_yoy_growth<-5%"],
 }
 # Sanity: every scored rule is assigned to exactly one group.
