@@ -70,7 +70,10 @@ GROUP_ORDER = ["liquidity", "coverage", "leverage", "qualitative"]
 GROUPS: dict[str, list[str]] = {
     "liquidity":   ["liquidity<1x", "current_ratio<1.5x", "quick_ratio<1x"],
     "coverage":    ["coverage<2x", "cash_flow_to_debt<30%", "fcf_negative",
-                    "ocf_ebitda_conversion<0.7x", "moody_adjusted_fcf_negative", "rcf_net_debt<15%"],
+                    "ocf_ebitda_conversion<0.7x", "moody_adjusted_fcf_negative", "rcf_net_debt<15%",
+                    # Moody's Formula-2 adjusted coverage (lease-interest leg) — added to
+                    # score._ADDITIONAL_RULE_RATIOS; grouped here to keep GROUPS a complete mirror.
+                    "coverage_adjusted<2x"],
     "leverage":    ["leverage>5x", "debt_to_assets>40%", "maturity_wall", "debt_to_equity>2x",
                     "asset_coverage<1.5x", "tangible_asset_coverage<1x",
                     "liquidation_asset_coverage<0.7x", "maturity_coverage_near_term<1x",

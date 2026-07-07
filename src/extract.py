@@ -439,6 +439,10 @@ def leverage(facts: dict, period_end: str, filed_before: str | None = None) -> R
 # depreciation. For the leverage denominator (EBITDA), Formula 2 adds back the
 # depreciation component (2/3 of annual lease cost) — see spec/LEVERAGE.md Formula 2.
 _LEASE_EBITDA_DEPRECIATION_FRACTION = 2.0 / 3.0
+# The interest component (1/3 of annual lease cost) is added to the interest-expense
+# denominator for adjusted coverage — see spec/INTEREST_COVERAGE.md:173. The two
+# fractions are the same OperatingLeaseCost split (1/3 interest + 2/3 depreciation).
+_LEASE_INTEREST_FRACTION = 1.0 / 3.0
 
 
 def operating_lease_debt(
@@ -529,6 +533,68 @@ def leverage_adjusted(facts: dict, period_end: str, filed_before: str | None = N
     return RatioResult(
         name="leverage_adjusted",
         value=adj_net_debt / adj_ebitda,
+        inputs=inputs,
+        source_tags=tags,
+        period_end=period_end,
+        lease_source="xbrl",
+    )
+
+
+def interest_coverage_adjusted(facts: dict, period_end: str, filed_before: str | None = None) -> RatioResult:
+    """
+    Moody's-adjusted interest coverage (Formula 2, lease-interest leg ONLY) —
+    SUPPLEMENTS the raw Formula-1 `interest_coverage`; it never replaces it.
+
+        Adjusted Interest = interest_expense (Formula 1) + 1/3 × annual operating-lease cost
+        interest_coverage_adjusted = EBITDA / Adjusted Interest
+
+    Mirrors the code's Formula-1 base (EBITDA / interest, not the spec's EBIT
+    numerator): only the DENOMINATOR is adjusted this pass. The spec's EBIT switch
+    and the pension-interest / capitalized-interest legs are deferred.
+
+    The 1/3 lease-interest term is the counterpart to leverage_adjusted's 2/3
+    depreciation add-back — same OperatingLeaseCost tag, so 1/3 + 2/3 = the full
+    Moody's rent split.
+
+    UNLIKE leverage_adjusted (whose gate is the ROU liability, with lease cost
+    optional), here the lease-interest term IS the entire adjustment — so the gate
+    is `operating_lease_cost` ITSELF. If it isn't tagged the adjustment is
+    UNAVAILABLE and this raises MissingDataError → extract_all records a
+    MissingRatio and scoring falls back to Formula 1. It deliberately does NOT
+    default the lease cost to 0, which would silently return unadjusted coverage
+    mislabeled as "adjusted". When computable, lease_source="xbrl".
+
+    Raises MissingDataError if operating_lease_cost is untagged, or if adjusted
+    interest expense is 0.
+    """
+    lease_cost, cost_tag = _resolve_first_opt(facts, "operating_lease_cost", period_end, filed_before)
+    if lease_cost is None:
+        raise MissingDataError(
+            f"No operating-lease cost tagged for {period_end} — Moody's Formula-2 "
+            f"lease-interest adjustment unavailable (deterministic pass; no LLM fallback)"
+        )
+
+    ebit, ebit_inputs, ebit_tags = ebitda(facts, period_end, filed_before)
+    int_exp, int_tag = _resolve(facts, "interest_expense", period_end, filed_before)
+
+    lease_interest = _LEASE_INTEREST_FRACTION * lease_cost
+    adj_interest = int_exp + lease_interest
+    if adj_interest == 0:
+        raise MissingDataError(f"Adjusted interest expense is zero for {period_end}, cannot compute interest_coverage_adjusted")
+
+    inputs = {
+        **ebit_inputs,
+        "interest_expense": int_exp,
+        "operating_lease_cost": lease_cost,
+        "lease_interest_component": lease_interest,
+        "adjusted_interest_expense": adj_interest,
+    }
+    tags = {**ebit_tags, "interest_expense": int_tag}
+    if cost_tag:
+        tags["operating_lease_cost"] = cost_tag
+    return RatioResult(
+        name="interest_coverage_adjusted",
+        value=ebit / adj_interest,
         inputs=inputs,
         source_tags=tags,
         period_end=period_end,
@@ -1304,6 +1370,9 @@ _RATIO_FUNCTIONS = [
     # Moody's Formula-2 adjustment (post-2019 deterministic): SUPPLEMENTS `leverage`,
     # a MissingRatio when the ROU liability isn't tagged (falls back to Formula 1).
     leverage_adjusted,
+    # Moody's Formula-2 adjusted coverage (lease-interest leg): SUPPLEMENTS
+    # `interest_coverage`; MissingRatio when operating_lease_cost is untagged.
+    interest_coverage_adjusted,
     # Always-defined lease-inflation multiple (no EBITDA denominator) — the
     # companion signal that works even when leverage_adjusted's ratio is degenerate.
     lease_debt_burden,
@@ -1340,6 +1409,8 @@ RATIO_INPUTS: dict[str, list[str]] = {
     "leverage_adjusted":          ["total_debt", "cash", "operating_income", "depreciation",
                                    "operating_lease_liability_current",
                                    "operating_lease_liability_noncurrent", "operating_lease_cost"],
+    "interest_coverage_adjusted": ["operating_income", "depreciation", "interest_expense",
+                                   "operating_lease_cost"],
     "lease_debt_burden":          ["total_debt", "cash",
                                    "operating_lease_liability_current",
                                    "operating_lease_liability_noncurrent"],

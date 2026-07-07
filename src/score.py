@@ -131,6 +131,14 @@ DEFAULT_CONFIG: dict = {
         # RAD isn't even covered, so there is no representative set to test a weight
         # on — raise only once the LLM footnote layer lifts pension coverage.
         "pension_debt_burden":            {"weight": 0.0,  "healthy": 1.05, "severe": 1.20},
+        # Moody's-adjusted interest coverage (Formula 2, lease-interest leg):
+        # EBITDA / (interest + 1/3 × operating-lease cost) — PARALLEL to the core
+        # coverage<2x rule, never replacing it. Same lower-is-worse ramp (healthy 4×,
+        # severe 1×). FLAG-FIRST (weight 0.0): score-neutral, so existing scorecards
+        # are byte-for-byte unchanged. A nonzero weight adds stress to lease-heavy
+        # names (REIT/utility/pipeline — the OOS FP drivers), so it must be validated
+        # on a FRESH hold-out before being enabled.
+        "coverage_adjusted<2x":           {"weight": 0.0,  "healthy": 4.0,  "severe": 1.0},
     },
     # Points forced on these rules when EBITDA <= 0 (the ramp would flip sign).
     "ebitda_override": {"leverage>5x": 17.0, "coverage<2x": 14.0},
@@ -188,11 +196,13 @@ _ADDITIONAL_RULE_RATIOS = {
     "lease_debt_burden":              "lease_debt_burden",
     # Flag-only (weight 0) this pass — bespoke block in compute_score.
     "pension_debt_burden":            "pension_debt_burden",
+    "coverage_adjusted<2x":           "interest_coverage_adjusted",
 }
 
 # Additional rules with bespoke scoring logic in compute_score — the generic ramp
 # loop SKIPS these and sets their breakdown entries explicitly.
-_SPECIAL_ADDITIONAL_RULES = frozenset({"leverage_adjusted>5x", "lease_debt_burden", "pension_debt_burden"})
+_SPECIAL_ADDITIONAL_RULES = frozenset({"leverage_adjusted>5x", "lease_debt_burden", "pension_debt_burden",
+                                       "coverage_adjusted<2x"})
 
 # Co-condition threshold for lease_debt_burden Option-C scoring: a severe lease
 # burden only scores when interest coverage is below this (or FCF is negative).
@@ -638,6 +648,33 @@ def compute_score(
         # No scoring this pass: pdb_rule["weight"] is 0.0 (flag-only).
         pdb_pts = _ramp(pburden, pdb_rule["healthy"], pdb_rule["severe"], pdb_rule["weight"])
     breakdown["pension_debt_burden"] = pdb_pts
+
+    # ── Adjusted interest coverage (lease-interest leg) — FLAG-FIRST ──────────
+    # EBITDA / (interest + 1/3 × operating-lease cost). Parallel to core coverage<2x;
+    # never replaces it. Lower-is-worse ramp (healthy 4×, severe 1×). Weight 0.0 this
+    # pass → 0 pts (score-neutral); emits a Moody's-provenance flag where the adjusted
+    # ratio is available (operating_lease_cost tagged). A nonzero weight would add
+    # stress to lease-heavy names — validate on a fresh hold-out before enabling.
+    ica_rule = rules.get("coverage_adjusted<2x")
+    ica = ratios.get("interest_coverage_adjusted")
+    ica_pts = 0.0
+    if ica_rule is not None and isinstance(ica, RatioResult):
+        base = _val("interest_coverage")   # Formula-1 coverage, for the flag comparison
+        if ica.value <= ica_rule["severe"]:
+            level = "flag"
+        elif ica.value <= ica_rule["healthy"]:
+            level = "watch"
+        else:
+            level = None
+        if level:
+            base_str = f"{base:.1f}×" if base is not None else "n/a"
+            alerts.append(
+                f"Operating-lease interest capitalized under Moody's adjustment criteria: "
+                f"adjusted coverage {ica.value:.1f}× vs {base_str} unadjusted ({level})"
+            )
+        # No scoring this pass: ica_rule["weight"] is 0.0 (flag-first).
+        ica_pts = _ramp(ica.value, ica_rule["healthy"], ica_rule["severe"], ica_rule["weight"])
+    breakdown["coverage_adjusted<2x"] = ica_pts
 
     # ── LLM qualitative adjustment ───────────────────────────────────────────
     # High-severity findings each add `high_severity_per` pts, capped at
