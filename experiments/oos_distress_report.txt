@@ -1,0 +1,39 @@
+====================================================================================
+OUT-OF-SAMPLE DISTRESS VALIDATION — frozen DEFAULT_CONFIG, held-out LSEG names
+====================================================================================
+STEP 0 — labels (reported BEFORE scoring)
+  Distress tier = rating ≤ Caa1/CCC+ (rank ≥ 16); ambiguous = single-B (rank 13-15), excluded; healthy = never worse than BB-/Ba3 (rank ≤ 12).
+  DISTRESSED (reached Caa1+ ; event = first-entry date): 51
+  HEALTHY control (never touched single-B or worse):     147
+  EXCLUDED — ambiguous single-B middle:                  74
+  EXCLUDED — overlap with cases.csv (kept held-out):     11
+
+====================================================================================
+STEP 2 — OUT-OF-SAMPLE SCORECARD (frozen DEFAULT_CONFIG)
+====================================================================================
+  DISTRESSED: caught 32/35 evaluable → CATCH-RATE 91.4%
+     (dropped: data-gap 16, no-companyfacts 0 — excluded from denominator)
+     median lead-time: 47.3 months (n_caught=32)
+  HEALTHY:    968 stressed / 5812 evaluated periods → FP-RATE 16.7%
+     (76 companies fully clean; dropped: data-gap 0, no-companyfacts 0)
+
+====================================================================================
+STEP 3 — IN-SAMPLE vs OUT-OF-SAMPLE
+====================================================================================
+                catch-rate    FP-rate     
+  in-sample     95.9%         5.8%          (95 cases, hand-set config, no hold-out)
+  out-of-sample 91.4%         16.7%         (held-out LSEG names, same frozen config)
+  Δ             -4.5pp        +10.9pp     
+
+====================================================================================
+CAVEATS (do not over-read the delta):
+  • LABEL PROXY: distress-tier (Caa1+) ≠ the bankruptcy EVENTS the 95-case library
+    used. A Caa rating is severe stress but not always default → definitional mismatch;
+    catch here means 'flagged before the rating hit Caa1+', not 'before Chapter 11'.
+  • SURVIVORSHIP: LSEG universe skews larger/rated, and the form=='10-K' filter drops
+    delisted/foreign (20-F) names — biases toward survivors.
+  • LOOK-BACK BIAS: 'healthy = never distressed in-window' is defined using the FULL
+    rating history (future-inclusive), so healthy controls are survivor-selected.
+  • Distress event dates are rating-action dates (Step-0 evidence from the transition
+    work), not filings — the no-look-ahead filter still bounds scoring to pre-event 10-Ks.
+====================================================================================

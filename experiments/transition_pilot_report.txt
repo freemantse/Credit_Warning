@@ -1,0 +1,68 @@
+Step 1: transition companies mapping to a CIK: 239
+Step 2: companyfacts available (cached+fetched): 239 | failed: 0
+
+==================================================================================
+TRANSITION VALIDATION — first real validation (leak-free, verbatim machinery)
+==================================================================================
+Usable companies (≥4 10-K before ≥1 event): 228
+Independent events after 24mo per-direction dedup — downgrades: 314  upgrades: 296  (TRUE n)
+(loaded 4284 memoized verdicts from transition_pilot_results.json)
+
+==================================================================================
+HIT-RATE × LEAD-WINDOW
+==================================================================================
+
+[DOWNGRADE] n=314
+  L(mo)  eval  insuf  HIT(headline)   hit(vel)   hit(bound)  wrong-dir 
+  3      307   7      53 (17%)        117 (38%)  113 (37%)   24 (8%)   
+  6      304   10     50 (16%)        109 (36%)  104 (34%)   27 (9%)   
+  12     299   15     49 (16%)        101 (34%)  99 (33%)    33 (11%)  
+  24     289   25     44 (15%)        89 (31%)   119 (41%)   26 (9%)   
+
+[UPGRADE] n=296
+  L(mo)  eval  insuf  HIT(headline)   hit(vel)   hit(bound)  wrong-dir 
+  3      281   15     38 (14%)        81 (29%)   52 (19%)    32 (11%)  
+  6      281   15     36 (13%)        82 (29%)   50 (18%)    36 (13%)  
+  12     276   20     26 (9%)         77 (28%)   55 (20%)    38 (14%)  
+  24     263   33     25 (10%)        64 (24%)   43 (16%)    45 (17%)  
+
+==================================================================================
+LEAD-TIME (earliest direction-matched prefix before event)
+==================================================================================
+  downgrade: matched 173/314; median lead 39.5 mo; p25=21.8 p75=65.6
+  upgrade: matched 121/296; median lead 41.4 mo; p25=20.4 p75=65.0
+
+==================================================================================
+FALSE-ALARM CONTROL — stable anchors (no notch change ±24mo)
+==================================================================================
+  stable anchors evaluated: 2357 (insuf skipped 1709) | false alarms: 493 | FP-rate: 20.9%
+
+(saved 4932 verdicts → transition_pilot_results.json; re-run reuses them)
+
+==================================================================================
+CAVEATS: (1) SURVIVORSHIP — the form=='10-K' filter drops delisted/foreign
+(20-F) filers, biasing toward survivors. (2) CLUSTERING — handled by 24mo
+per-direction dedup. (3) ANNOUNCEMENT-DATE assumption (Step 0: evidence-based,
+not doc-confirmed) — a residual agency-lag risk is why the L-curve SHAPE, not
+the L=3mo point, is the real signal.
+==================================================================================
+
+====================================================================================================
+LIKE-FOR-LIKE: hit-rate vs its OWN stable-FP, and gap (hit − FP), per lead window
+  Directional FP: down-FP = stable anchors falsely signalling DOWN; up-FP = falsely UP.
+  FP is a single base rate per (definition, direction) — stable anchors have no lead window.
+  gap = hit-rate(L) − stable-FP, in percentage points. Signal ⟺ gap meaningfully > 0 (ideally rising with L).
+====================================================================================================
+  definition dir        stable-FP        L=3mo hit/gap     L=6mo hit/gap     L=12mo hit/gap    L=24mo hit/gap    
+  ---------------------------------------------------------------------------------------------------------------
+  trend      downgrade  11.5% (n=2357)   17% / +6pp        16% / +5pp        16% / +5pp        15% / +4pp        
+  trend      upgrade    9.4% (n=2357)    14% / +4pp        13% / +3pp        9% / +0pp         10% / +0pp        
+
+  velocity   downgrade  25.1% (n=2357)   38% / +13pp       36% / +11pp       34% / +9pp        31% / +6pp        
+  velocity   upgrade    26.1% (n=2357)   29% / +3pp        29% / +3pp        28% / +2pp        24% / -2pp        
+
+  boundary   downgrade  36.2% (n=2357)   37% / +1pp        34% / -2pp        33% / -3pp        41% / +5pp        
+  boundary   upgrade    16.3% (n=2357)   19% / +2pp        18% / +2pp        20% / +4pp        16% / +0pp        
+
+  [stable anchors evaluated per definition: n≈2357; event anchors: down n≈307, up n≈281]
+====================================================================================================
