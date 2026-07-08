@@ -120,6 +120,29 @@ _SECTION_HEADING_PATTERNS: dict[str, list[re.Pattern]] = {
         re.compile(r"^\s*(note\s+\d+[\s.–—:-]*)?basis of presentation\s*$", re.IGNORECASE),
         re.compile(r"substantial doubt", re.IGNORECASE),
     ],
+    # pension_footnote: the defined-benefit pension / retirement-benefits note
+    # carrying the "Funded Status" table (PBO, fair value of plan assets). Source
+    # for the LLM pension-fallback flag when the XBRL funded-status tags are absent
+    # (~81% of filers). Most-specific note titles first, then table-anchor phrases.
+    "pension_footnote": [
+        re.compile(r"^\s*(note\s+\d+[\s.–—:-]*)?pension and other post[\s-]?retirement benefit", re.IGNORECASE),
+        # Real note titles that end in "... Plans" carry the funded-status table
+        # but no "benefit" word — e.g. Flowers Foods' "Note 21. Postretirement
+        # Plans", or "Pension and Postretirement Plans" / "Retirement Plans".
+        # Without this the locator anchored on a later subheading ("Pension
+        # Benefits") sitting BELOW the table and truncated the slice.
+        re.compile(
+            r"^\s*(note\s+\d+[\s.–—:-]*)?(defined benefit\s+)?(employee\s+)?"
+            r"(pension|post[\s-]?retirement|retirement)"
+            r"( and (other )?post[\s-]?retirement)?( benefit)? plans?\s*$",
+            re.IGNORECASE,
+        ),
+        re.compile(r"^\s*(note\s+\d+[\s.–—:-]*)?(employee\s+)?(retirement|pension)( and other post[\s-]?retirement)? benefit(s| plans)", re.IGNORECASE),
+        re.compile(r"^\s*(note\s+\d+[\s.–—:-]*)?employee benefit plans?\s*$", re.IGNORECASE),
+        re.compile(r"defined benefit (pension )?plans?", re.IGNORECASE),
+        re.compile(r"projected benefit obligation", re.IGNORECASE),  # table anchor
+        re.compile(r"\bfunded status\b", re.IGNORECASE),             # table anchor
+    ],
 }
 
 # Density-scoring pattern for the chunk fallback (no headings found): combines all
@@ -155,6 +178,11 @@ _SECTION_DENSITY_PATTERNS: dict[str, re.Pattern] = {
     "going_concern_footnote": re.compile(
         r"going concern|substantial doubt|ability to continue|recurring losses|"
         r"basis of presentation",
+        re.IGNORECASE,
+    ),
+    "pension_footnote": re.compile(
+        r"projected benefit obligation|fair value of plan assets|funded status|"
+        r"net periodic benefit cost|defined benefit|pension",
         re.IGNORECASE,
     ),
 }
@@ -202,6 +230,11 @@ _SECTION_CONTENT_PATTERNS: dict[str, re.Pattern] = {
         r"substantial doubt|ability to continue|recurring losses|"
         r"negative (working capital|cash flows)|sufficient liquidity|"
         r"obtain additional financing",
+        re.IGNORECASE,
+    ),
+    "pension_footnote": re.compile(
+        r"projected benefit obligation|fair value of plan assets|funded status|"
+        r"net periodic benefit cost|defined benefit",
         re.IGNORECASE,
     ),
 }
@@ -257,6 +290,11 @@ _SECTION_END_PATTERNS: dict[str, re.Pattern] = {
     "risk_factors": _RISK_FACTORS_END_RE,
     "auditor_report": _AUDITOR_END_RE,
     "going_concern_footnote": _NOTE_OR_ITEM_BOUNDARY_RE,
+    # The pension note CONTAINS its own subheadings ("Pension Benefits", "Plan
+    # Assets", the funded-status rollforward). Slicing to the next heading cut it
+    # off before the funded-status table; run it to the next numbered note/Item
+    # instead so the whole note — PBO, plan assets, funded status — is in scope.
+    "pension_footnote": _NOTE_OR_ITEM_BOUNDARY_RE,
 }
 
 # Inline-XBRL wrapper tags (<ix:...>) carry no display text — strip the tags but

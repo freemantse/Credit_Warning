@@ -830,6 +830,214 @@ def extract_loss_provisions(
     return [p for p in out if p is not None and quote_in_text(p.evidence_quote, excerpt)]
 
 
+# ── Pension-fallback LLM flag (numeric, grounded, materiality-gated, weight 0) ──
+#
+# Fills the ~81% of filers whose XBRL funded-status tags are absent, per FINDINGS
+# §6: a GROUNDED ANALYST FLAG (verifiable cited number, never a guess, never a
+# scored parameter). Fires ONLY when the deterministic pension_debt is unavailable
+# (no duplication) AND the unfunded deficit is material vs. gross debt. Provenance
+# pension_source="llm" so an analyst sees the number came from LLM extraction of
+# the footnote, not from XBRL.
+
+# Tunable: fire only when unfunded pension ≥ this fraction of gross debt. Lean
+# permissive (0.10) — the flag is analyst-facing, not a scored trigger.
+PENSION_MATERIALITY_THRESHOLD = 0.10
+
+# Footnote figures are printed scaled ("amounts in thousands", "$ in millions")
+# while gross_debt is absolute dollars. The materiality ratio (unfunded / gross
+# debt) is only meaningful once BOTH are in dollars — otherwise a filer with a
+# $1.5B pension hole against $4B debt (a real 36% ratio) divides 1,475 by
+# 4.1e9 and falsely abstains. Resolve the scale, multiply to dollars, then gate.
+_UNIT_MULTIPLIER: dict[str, float] = {
+    "ones": 1.0, "dollars": 1.0, "": 1.0,
+    "thousands": 1e3, "thousand": 1e3,
+    "millions": 1e6, "million": 1e6,
+    "billions": 1e9, "billion": 1e9,
+}
+# Deterministic fallback when the LLM's units field is missing/unrecognised: the
+# scale statement most filings print near the table ("(amounts in thousands)",
+# "$ in millions", a bare "millions" column header).
+_SCALE_DECL_RE = re.compile(
+    r"(?:amounts?\s+in|dollars?\s+in|\$\s*in|\(in|\bin)\s+(thousands|millions|billions)"
+    r"|^\s*(thousands|millions|billions)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _resolve_unit_multiplier(units: str, excerpt: str) -> float | None:
+    """
+    Resolve the dollar multiplier for the footnote's printed figures.
+
+    Primary: the LLM's `units` field (it reads the scale label adjacent to the
+    very table it quotes — the most table-accurate source). Fallback: a
+    deterministic scan of the located footnote for a scale declaration. Returns
+    None when neither yields a scale — the caller then abstains rather than emit
+    an un-unit-checked materiality claim (no guess).
+    """
+    key = (units or "").strip().lower()
+    if key in _UNIT_MULTIPLIER and key not in ("", "ones", "dollars"):
+        return _UNIT_MULTIPLIER[key]
+    m = _SCALE_DECL_RE.search(excerpt)
+    if m:
+        return _UNIT_MULTIPLIER[(m.group(1) or m.group(2)).lower()]
+    # Explicit "ones"/"dollars" from the LLM is a positive signal, not absence.
+    if key in ("ones", "dollars"):
+        return 1.0
+    return None
+
+
+@dataclass
+class PensionFallback:
+    """LLM-extracted defined-benefit funded status, for filers the XBRL tags miss.
+
+    Every number is grounded: it must appear verbatim in its OWN evidence_quote
+    (_number_in_text) and each quote must appear in the located footnote
+    (quote_in_text). Ungrounded → the flag is not produced (no guess).
+
+    pbo/plan_assets/unfunded_pension are stored in DOLLARS (printed figure ×
+    unit multiplier) so materiality_ratio and any downstream comparison to debt
+    are apples-to-apples; the evidence quotes preserve the figures AS PRINTED.
+    """
+    pbo: float                       # projected benefit obligation, in dollars
+    plan_assets: float               # fair value of plan assets, in dollars
+    unfunded_pension: float          # max(0, PBO − plan assets), in dollars
+    materiality_ratio: float         # unfunded / gross_debt (both in dollars)
+    pbo_evidence_quote: str          # verbatim source for PBO (as printed)
+    plan_assets_evidence_quote: str  # verbatim source for plan assets (as printed)
+    source: str                      # e.g. "10-K 2024-12-31, Pension footnote"
+    source_url: str                  # EDGAR deep-link so the analyst verifies in one click
+    units: str = ""                  # reporting scale used to convert to dollars
+    pension_source: str = "llm"      # DISTINCT from deterministic "xbrl"
+
+
+PENSION_FALLBACK_SYSTEM = """You are a credit analyst reading the pension / employee-benefits footnote of a \
+10-K for ONE purpose: extract the defined-benefit plan's FUNDED STATUS as two \
+numbers — the Projected Benefit Obligation (PBO) and the Fair Value of Plan Assets \
+— at the most recent year-end, EACH with the verbatim sentence or table row it \
+comes from.
+
+Rules:
+  - Return ONLY numbers that appear VERBATIM in the text. Never compute, infer, or \
+round. If a number is not printed in the footnote, do not return it.
+  - Each number MUST be accompanied by its own evidence_quote: the exact text \
+(table row or sentence) containing that number, copied verbatim.
+  - Report both numbers in the SAME units exactly as printed (e.g. both in \
+thousands). Do not convert.
+  - Report the reporting SCALE of those numbers in a "units" field, read from the \
+statement or table scale label (e.g. "amounts in thousands", "$ in millions", \
+"millions"). Use exactly one of: "ones", "thousands", "millions", "billions". This \
+is how the reader converts your printed numbers to dollars — get it right.
+  - Use the PENSION plan's funded status. If the filing has only other \
+post-retirement (OPEB) plans and no defined-benefit pension, or no funded-status \
+table at all, return an EMPTY array [].
+  - A fabricated number is far worse than an empty answer. When unsure, return [].
+
+Output a JSON array with AT MOST ONE object:
+[{"pbo": <number>, "pbo_evidence_quote": "<verbatim>", "plan_assets": <number>, \
+"plan_assets_evidence_quote": "<verbatim>", "units": "<ones|thousands|millions|billions>"}]"""
+
+
+def _validate_pension_fallback(
+    raw: list, total_debt: float, source: str, source_url: str, excerpt: str,
+) -> PensionFallback | None:
+    """
+    Ground the extracted PBO and plan assets, compute the unfunded deficit, and
+    apply the materiality gate. Returns None (flag unavailable — no guess) if
+    EITHER number fails grounding, or the deficit is immaterial vs. gross debt.
+    """
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        pbo = _to_float(item.get("pbo"))
+        plan_assets = _to_float(item.get("plan_assets"))
+        pq = str(item.get("pbo_evidence_quote", "") or "").strip()
+        aq = str(item.get("plan_assets_evidence_quote", "") or "").strip()
+        if pbo is None or plan_assets is None or not pq or not aq:
+            continue
+        # Grounding (the §6 trust mechanism): each number verbatim in its OWN quote,
+        # and each quote actually present in the located footnote. Grounds on the
+        # PRINTED figures (_number_in_text tolerates the 1e3/1e6 scale gap itself).
+        if not _number_in_text(pbo, pq) or not _number_in_text(plan_assets, aq):
+            continue
+        if not quote_in_text(pq, excerpt) or not quote_in_text(aq, excerpt):
+            continue
+        # Convert printed figures to dollars so the ratio vs. gross_debt is valid.
+        mult = _resolve_unit_multiplier(str(item.get("units", "") or ""), excerpt)
+        if mult is None:
+            return None                          # scale unknown → can't unit-check (no guess)
+        pbo_usd, assets_usd = pbo * mult, plan_assets * mult
+        unfunded = max(0.0, pbo_usd - assets_usd)  # overfunded floored, mirrors pension_debt
+        ratio = unfunded / total_debt if total_debt else 0.0
+        if ratio < PENSION_MATERIALITY_THRESHOLD:
+            return None                          # immaterial → don't fire (no alert-fatigue)
+        return PensionFallback(
+            pbo=pbo_usd, plan_assets=assets_usd, unfunded_pension=unfunded,
+            materiality_ratio=round(ratio, 4),
+            pbo_evidence_quote=pq[:300], plan_assets_evidence_quote=aq[:300],
+            source=source, source_url=source_url,
+            units=(str(item.get("units", "") or "").strip().lower() or "detected"),
+        )
+    return None
+
+
+def extract_pension_fallback(
+    section_text: str,
+    facts: dict,
+    period_end: str,
+    filing_label: str,
+    *,
+    source_url: str = "",
+    filed_before: str | None = None,
+    client: anthropic.Anthropic | None = None,
+) -> PensionFallback | None:
+    """
+    LLM pension-funded-status flag for filers the XBRL tags miss.
+
+    Deterministic-first (no duplication): if `pension_debt(facts, period_end)` is
+    available, the XBRL path wins and this returns None WITHOUT an LLM call.
+    Materiality-gated: needs gross_debt to assess unfunded/debt; if gross_debt is
+    unavailable/zero it does not fire. Grounding is enforced in
+    _validate_pension_fallback — an ungrounded number is never stored.
+
+    Uses the OpenRouter path (build_client/resolve_model), same as run_covenants.
+    Returns a PensionFallback (pension_source="llm") or None (unavailable/immaterial).
+    """
+    from src.extract import pension_debt, gross_debt, MissingDataError
+
+    # Deterministic wins — do not run the LLM fallback when XBRL already has it.
+    if pension_debt(facts, period_end, filed_before) is not None:
+        return None
+    # Materiality gate needs gross debt; can't assess materiality without it.
+    try:
+        total_debt, _, _ = gross_debt(facts, period_end, filed_before)
+    except MissingDataError:
+        return None
+    if not total_debt or total_debt <= 0:
+        return None
+
+    excerpt = (section_text or "")[:MAX_SECTION_CHARS]
+    if not excerpt.strip():
+        return None
+    if client is None:
+        client = build_client(max_retries=8)   # honours USE_OPENROUTER
+
+    user_prompt = (
+        f"Filing: {filing_label}\n\n"
+        f"Pension footnote text:\n{excerpt}\n\n"
+        "Return your answer as a JSON array only — no other text."
+    )
+    message = client.messages.create(
+        model=resolve_model(),
+        max_tokens=4000,
+        temperature=0,
+        system=PENSION_FALLBACK_SYSTEM,
+        messages=[{"role": "user", "content": user_prompt}],
+    )
+    warn_if_truncated(message, filing_label)
+    raw = parse_json_array(message.content[0].text)
+    return _validate_pension_fallback(raw, total_debt, filing_label, source_url, excerpt)
+
+
 # ── Going-concern pass (LLM_EXTRACTOR_PORT Stage 2b) ─────────────────────────
 # Net-new pass. Reads the 2a auditor-report + going-concern-footnote (Tier-1
 # primary) and MD&A + risk-factors (Tier-2). Implements GOING_CONCERN_PROMPT.md
