@@ -49,6 +49,12 @@ TAGS: dict[str, list[str]] = {
         "us-gaap/InterestExpenseDebt",       # debt-only interest
         "us-gaap/InterestExpenseBorrowings",  # interest on borrowings
         "us-gaap/InterestExpenseDebtExcludingAmortization", # debt interest ex-amortisation
+        # Accrual income-statement interest classified as non-operating (common for
+        # industrials, e.g. Curtiss-Wright, whose real $43M interest is tagged ONLY
+        # here). Placed ABOVE InterestPaidNet because it is an ACCRUAL figure and
+        # should outrank the cash-paid proxy (which carries the cash-vs-accrual
+        # wedge), but BELOW the primary comprehensive tags so it never preempts them.
+        "us-gaap/InterestExpenseNonoperating", # non-operating interest expense (accrual)
         "us-gaap/InterestPaidNet",            # last resort: cash interest paid (cash flow stmt)
         # LAST-RESORT only. FinanceLeaseInterestExpense is a finance-lease-only
         # FRAGMENT (never a filer's comprehensive interest), tagged widely post-ASC
