@@ -224,11 +224,18 @@ TAGS: dict[str, list[str]] = {
     # We subtract it: FCF = OCF - capex.
     "capex": [
         "us-gaap/PaymentsToAcquirePropertyPlantAndEquipment",  # most common PP&E capex tag
-        "us-gaap/CapitalExpendituresIncurredButNotYetPaid",    # accrued but unpaid capex
         "us-gaap/PaymentsToAcquireProductiveAssets",           # broader productive asset tag
         "us-gaap/PaymentsForCapitalImprovements",              # capital improvements (e.g. REITs)
         "us-gaap/PaymentsToAcquireOtherPropertyPlantAndEquipment", # other PP&E purchases
         "us-gaap/PaymentsToAcquireMachineryAndEquipment",      # machinery & equipment only
+        # LAST-RESORT only. CapitalExpendituresIncurredButNotYetPaid is a NON-CASH
+        # accrual (capex incurred but not yet paid — a supplemental disclosure, not
+        # a cash-flow-statement outflow), typically tiny or zero. It must never
+        # outrank a real cash-capex tag: at position #2 it caused the Ryder-class
+        # ordering bug (12/71 panel filers ~85-100% undercount — the tiny accrual
+        # won first-match over PaymentsToAcquireProductiveAssets etc.). Kept only as
+        # a better-than-nothing fallback when NO real cash-capex tag resolves.
+        "us-gaap/CapitalExpendituresIncurredButNotYetPaid",    # accrued but unpaid capex (non-cash; last resort)
     ],
 
     # ── CapEx additive component: equipment acquired to lease OUT to customers ───
