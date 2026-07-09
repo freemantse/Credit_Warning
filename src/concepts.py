@@ -47,10 +47,19 @@ TAGS: dict[str, list[str]] = {
         "us-gaap/InterestExpense",           # most common
         "us-gaap/InterestAndDebtExpense",    # combined debt + lease interest
         "us-gaap/InterestExpenseDebt",       # debt-only interest
-        "us-gaap/FinanceLeaseInterestExpense", # finance lease interest (post-ASC 842)
         "us-gaap/InterestExpenseBorrowings",  # interest on borrowings
         "us-gaap/InterestExpenseDebtExcludingAmortization", # debt interest ex-amortisation
         "us-gaap/InterestPaidNet",            # last resort: cash interest paid (cash flow stmt)
+        # LAST-RESORT only. FinanceLeaseInterestExpense is a finance-lease-only
+        # FRAGMENT (never a filer's comprehensive interest), tagged widely post-ASC
+        # 842. At position #4 it preempted the comprehensive fallbacks for filers
+        # lacking InterestExpense/InterestAndDebtExpense/InterestExpenseDebt →
+        # 10 filers (AEP, Lowe's, Delta, CVS, Target, …) read ~$10-80M instead of
+        # ~$1.5B+, understating the interest_coverage denominator (coverage<2x rule)
+        # and overstating coverage. It was never in INTEREST_COVERAGE.md's chain
+        # (InterestExpense → InterestAndDebtExpense → net-interest → LLM), so this
+        # demotion also restores spec compliance. Kept only as better-than-nothing.
+        "us-gaap/FinanceLeaseInterestExpense", # finance-lease fragment (post-ASC 842; last resort)
     ],
 
     # ── Depreciation & Amortisation ──────────────────────────────────────────
