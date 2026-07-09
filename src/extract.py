@@ -932,6 +932,50 @@ def interest_coverage(facts: dict, period_end: str, filed_before: str | None = N
     )
 
 
+def capex_total(
+    facts: dict, period_end: str, filed_before: str | None = None
+) -> tuple[float, dict, dict] | None:
+    """
+    Total capital expenditure as a COMPONENT SUM, mirroring the gross_debt waterfall.
+
+    Components:
+      P = own-use capex — first-match over the "capex" tag list (the primary line;
+          its members are instead-of ALTERNATIVES — PP&E, or ProductiveAssets, or
+          CapitalImprovements, … — so first-match, not sum, avoids double-counting
+          a filer that tags several equivalents).
+      E = equipment acquired to lease to others (capex_equipment_on_lease) — a
+          genuinely DISJOINT cash-flow line for rental-model filers, so it is ADDED.
+
+    total = P + E, with an absent component treated as 0 (no such spend). The
+    first-match within P is the "instead-of" guard; E is the only "in-addition-to"
+    component, kept in its own concept precisely so it is summed rather than
+    treated as an alternative.
+
+    Returns (total, inputs, tags) exposing the components (capex_ppe,
+    capex_equipment_on_lease) alongside the summed "capex", the way gross_debt
+    surfaces its A/B/C. Returns None when NEITHER component resolves, so the caller
+    records a MissingRatio (never a fabricated 0).
+    """
+    primary, p_tag = _resolve_first_opt(facts, "capex", period_end, filed_before)
+    lease, l_tag = _resolve_first_opt(facts, "capex_equipment_on_lease", period_end, filed_before)
+    if primary is None and lease is None:
+        return None
+    p_val = primary if primary is not None else 0.0
+    l_val = lease if lease is not None else 0.0
+    total = p_val + l_val
+    inputs = {
+        "capex_ppe": p_val,                       # own-use capex component (P)
+        "capex_equipment_on_lease": l_val,        # equipment-leased-to-others component (E)
+        "capex": total,                            # summed total (legacy key retained)
+    }
+    tags: dict = {}
+    if p_tag:
+        tags["capex_ppe"] = p_tag
+    if l_tag:
+        tags["capex_equipment_on_lease"] = l_tag
+    return total, inputs, tags
+
+
 def free_cash_flow(facts: dict, period_end: str, filed_before: str | None = None) -> RatioResult:
     """
     Free cash flow = operating_cashflow - capex.
@@ -941,16 +985,24 @@ def free_cash_flow(facts: dict, period_end: str, filed_before: str | None = None
     and investment than it brought in — a stress signal (scored via FCF margin in score.py).
 
     Note: EDGAR reports capex (PaymentsToAcquirePropertyPlantAndEquipment) as a
-    POSITIVE outflow number, so we subtract it from OCF.
+    POSITIVE outflow number, so we subtract it from OCF. capex is the COMPONENT
+    SUM (own-use PP&E + equipment-on-lease) via capex_total(), not a single tag.
     """
     ocf, ocf_tag = _resolve(facts, "operating_cashflow", period_end, filed_before)
-    capex, capex_tag = _resolve(facts, "capex", period_end, filed_before)
+    cx = capex_total(facts, period_end, filed_before)
+    if cx is None:
+        # Preserve the pre-waterfall behavior: nothing tagged → MissingRatio, never 0.
+        raise MissingDataError(
+            f"No capex components resolved for period_end={period_end!r}. Tried: "
+            f"capex (own-use PP&E), capex_equipment_on_lease"
+        )
+    capex, cx_inputs, cx_tags = cx
 
     return RatioResult(
         name="free_cash_flow",
         value=ocf - capex,
-        inputs={"operating_cashflow": ocf, "capex": capex},
-        source_tags={"operating_cashflow": ocf_tag, "capex": capex_tag},
+        inputs={"operating_cashflow": ocf, **cx_inputs},
+        source_tags={"operating_cashflow": ocf_tag, **cx_tags},
         period_end=period_end,
     )
 

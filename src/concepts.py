@@ -231,6 +231,20 @@ TAGS: dict[str, list[str]] = {
         "us-gaap/PaymentsToAcquireMachineryAndEquipment",      # machinery & equipment only
     ],
 
+    # ── CapEx additive component: equipment acquired to lease OUT to customers ───
+    # Filers with a rental / equipment-financing model (e.g. Caterpillar, Ryder,
+    # U-Haul) report capex in TWO cash-flow lines: own-use PP&E (the "capex" list
+    # above) PLUS equipment bought to lease to others. These are DISJOINT lines in
+    # the cash flow statement, so first-match on "capex" alone undercounts total
+    # capex (verified on Caterpillar: PP&E $2,821M + EquipmentOnLease $1,465M =
+    # $4,286M = LSEG). capex_total() SUMS this on top of the primary "capex"
+    # component; absent (the common case) → 0 → sum unchanged. Kept SEPARATE from
+    # "capex" (not merged into that first-match list) precisely so it is ADDED, not
+    # treated as an instead-of alternative.
+    "capex_equipment_on_lease": [
+        "us-gaap/PaymentsToAcquireEquipmentOnLease",
+    ],
+
     # ── Net Income ───────────────────────────────────────────────────────────
     # Stored in the database for completeness and potential future use.
     # Not directly used in any stress-score calculation today.
