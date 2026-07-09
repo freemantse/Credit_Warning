@@ -945,27 +945,32 @@ def capex_total(
           a filer that tags several equivalents).
       E = equipment acquired to lease to others (capex_equipment_on_lease) — a
           genuinely DISJOINT cash-flow line for rental-model filers, so it is ADDED.
+      R = REIT real-estate development/acquisition (capex_real_estate_development)
+          — a DISJOINT investing line for REITs, so it is ADDED.
 
-    total = P + E, with an absent component treated as 0 (no such spend). The
-    first-match within P is the "instead-of" guard; E is the only "in-addition-to"
-    component, kept in its own concept precisely so it is summed rather than
+    total = P + E + R, with an absent component treated as 0 (no such spend). The
+    first-match within P is the "instead-of" guard; E and R are the "in-addition-to"
+    components, each kept in its own concept precisely so it is summed rather than
     treated as an alternative.
 
     Returns (total, inputs, tags) exposing the components (capex_ppe,
-    capex_equipment_on_lease) alongside the summed "capex", the way gross_debt
-    surfaces its A/B/C. Returns None when NEITHER component resolves, so the caller
-    records a MissingRatio (never a fabricated 0).
+    capex_equipment_on_lease, capex_real_estate_dev) alongside the summed "capex",
+    the way gross_debt surfaces its A/B/C. Returns None when NO component resolves,
+    so the caller records a MissingRatio (never a fabricated 0).
     """
     primary, p_tag = _resolve_first_opt(facts, "capex", period_end, filed_before)
     lease, l_tag = _resolve_first_opt(facts, "capex_equipment_on_lease", period_end, filed_before)
-    if primary is None and lease is None:
+    redev, r_tag = _resolve_first_opt(facts, "capex_real_estate_development", period_end, filed_before)
+    if primary is None and lease is None and redev is None:
         return None
     p_val = primary if primary is not None else 0.0
     l_val = lease if lease is not None else 0.0
-    total = p_val + l_val
+    r_val = redev if redev is not None else 0.0
+    total = p_val + l_val + r_val
     inputs = {
         "capex_ppe": p_val,                       # own-use capex component (P)
         "capex_equipment_on_lease": l_val,        # equipment-leased-to-others component (E)
+        "capex_real_estate_dev": r_val,           # REIT real-estate development component (R)
         "capex": total,                            # summed total (legacy key retained)
     }
     tags: dict = {}
@@ -973,6 +978,8 @@ def capex_total(
         tags["capex_ppe"] = p_tag
     if l_tag:
         tags["capex_equipment_on_lease"] = l_tag
+    if r_tag:
+        tags["capex_real_estate_dev"] = r_tag
     return total, inputs, tags
 
 

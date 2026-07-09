@@ -225,6 +225,12 @@ TAGS: dict[str, list[str]] = {
     "capex": [
         "us-gaap/PaymentsToAcquirePropertyPlantAndEquipment",  # most common PP&E capex tag
         "us-gaap/PaymentsToAcquireProductiveAssets",           # broader productive asset tag
+        # INSTEAD-OF variant of ProductiveAssets — some filers tag the "Other"
+        # form as their sole productive-assets capex line (e.g. Matson FY2021,
+        # which has no ProductiveAssets/PP&E that year). Positioned BELOW
+        # ProductiveAssets so first-match prefers ProductiveAssets when both exist
+        # (never sums them — a filer tagging both would take the higher one only).
+        "us-gaap/PaymentsToAcquireOtherProductiveAssets",      # "other" productive assets (instead-of variant)
         "us-gaap/PaymentsForCapitalImprovements",              # capital improvements (e.g. REITs)
         "us-gaap/PaymentsToAcquireOtherPropertyPlantAndEquipment", # other PP&E purchases
         "us-gaap/PaymentsToAcquireMachineryAndEquipment",      # machinery & equipment only
@@ -250,6 +256,19 @@ TAGS: dict[str, list[str]] = {
     # treated as an instead-of alternative.
     "capex_equipment_on_lease": [
         "us-gaap/PaymentsToAcquireEquipmentOnLease",
+    ],
+
+    # ── CapEx additive component: REIT real-estate development / acquisition ─────
+    # REITs report their real capex as real-estate development/acquisition spend,
+    # a DISJOINT investing line from own-use PP&E (ProductiveAssets). Verified
+    # additive: Cousins FY2025 ProductiveAssets $267.2M + AndDevelopRealEstate
+    # $247.8M = $515.1M = LSEG exactly; BRT Apartments' only capex line is
+    # DevelopRealEstateAssets $7.45M = LSEG exactly. First-match within this
+    # component (not sum) — the two tags are cross-filer synonyms, a single filer
+    # uses one. SUMMED on top of "capex" in capex_total(); absent → 0.
+    "capex_real_estate_development": [
+        "us-gaap/PaymentsToAcquireAndDevelopRealEstate",   # Cousins-style (acquire + develop)
+        "us-gaap/PaymentsToDevelopRealEstateAssets",       # BRT-style (develop)
     ],
 
     # ── Net Income ───────────────────────────────────────────────────────────
