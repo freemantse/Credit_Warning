@@ -41,6 +41,34 @@ from src.sector_routing import get_sector, sector_trusted
 # define their own such sets and consume the same get_sector/sector_trusted loader.
 INTANGIBLES_CAPEX_SECTORS = frozenset({"Software", "Semiconductors", "Diversified Technology"})
 
+# Sector gate for the utility construction-in-progress capex PRIMARY (capex_total). The
+# GATE SHAPE DIFFERS from the intangibles gate above: this is NOT an additive component
+# but a sector-conditional PRIMARY-PREFERRED alternative. For these buckets,
+# us-gaap/PaymentsForConstructionInProcess is the filer's COMPREHENSIVE capex outflow
+# (construction work in progress) and it CONTAINS the PP&E/ProductiveAssets line as a
+# subset — so it REPLACES the normal "capex" primary rather than being summed (adding it
+# would double-count; verified on AEP). The set mirrors the classifier's
+# MOODYS_INFRASTRUCTURE tuple (Moody's Infrastructure & Project Finance group), justified
+# per bucket:
+#   • "Regulated Electric and Gas Utilities" — INCLUDE. Verified anchor (AEP): construction
+#     ≈ whole LSEG capex; ProductiveAssets is a subset inside it. Core regulated utility
+#     reporting capex as CWIP.
+#   • "Regulated Electric and Gas Networks" — INCLUDE. Regulated T&D networks under the
+#     same regulated-utility CWIP convention; capex is construction of network plant — the
+#     identical instead-of rationale.
+#   • "Unregulated Utilities and Power Companies" — INCLUDE. Merchant power / IPPs build
+#     generation plant and likewise report construction-in-progress as their capex line;
+#     same plant-construction economics, so the instead-of semantics hold.
+# The gate is low-risk beyond the AEP anchor: it fires only when the tag actually resolves
+# AND the sector is TRUSTED, it swaps ONLY the P component (E/R/I additive parts untouched),
+# and out-of-sector filers never touch the tag (byte-identical). The all-71 sweep confirms
+# which buckets have filers and that no MATCHing filer regresses.
+UTILITY_CONSTRUCTION_SECTORS = frozenset({
+    "Regulated Electric and Gas Utilities",
+    "Unregulated Utilities and Power Companies",
+    "Regulated Electric and Gas Networks",
+})
+
 
 # ── Data container ───────────────────────────────────────────────────────────
 
@@ -952,7 +980,15 @@ def capex_total(
       P = own-use capex — first-match over the "capex" tag list (the primary line;
           its members are instead-of ALTERNATIVES — PP&E, or ProductiveAssets, or
           CapitalImprovements, … — so first-match, not sum, avoids double-counting
-          a filer that tags several equivalents).
+          a filer that tags several equivalents). SECTOR-GATED PRIMARY ALTERNATIVE:
+          for TRUSTED utilities (Moody's bucket in UTILITY_CONSTRUCTION_SECTORS),
+          the comprehensive capex line is construction-in-progress
+          (capex_utility_construction / PaymentsForConstructionInProcess), so it is
+          PREFERRED as P INSTEAD OF the normal "capex" list — NOT summed (it already
+          CONTAINS ProductiveAssets/PP&E as a subset; summing would double-count).
+          If the utility did not tag construction, P falls back to the normal list.
+          For non-utilities the construction tag stays entirely OUT of the chain
+          (it's a small add-on there — Matson — so leaving it out is byte-identical).
       E = equipment acquired to lease to others (capex_equipment_on_lease) — a
           genuinely DISJOINT cash-flow line for rental-model filers, so it is ADDED.
       R = REIT real-estate development/acquisition (capex_real_estate_development)
@@ -968,27 +1004,47 @@ def capex_total(
     spend). The first-match within P is the "instead-of" guard; E, R, I are the
     "in-addition-to" components, each kept in its own concept so it is summed.
 
-    SECTOR GATE (first sector-conditional rule in src/): the issuer's cik is read from
-    the companyfacts top-level "cik" (so the uniform ratio-fn signature is unchanged and
-    no cik threading is needed); get_sector(cik) consults data/sector_routing.csv. The
-    intangibles component is summed only when the sector is TRUSTED (sector_trusted) AND
-    its Moody's bucket is in INTANGIBLES_CAPEX_SECTORS. A missing/low-confidence/
-    llm_fallback sector → gate does not fire → identical to current (ungated) behavior.
+    SECTOR GATES (sector-conditional rules in src/): the issuer's cik is read from the
+    companyfacts top-level "cik" (so the uniform ratio-fn signature is unchanged and no
+    cik threading is needed); get_sector(cik) consults data/sector_routing.csv. Two gates
+    fire here, both only when the sector is TRUSTED (sector_trusted) and mutually exclusive
+    (an issuer sits in exactly one Moody's bucket):
+      • UTILITY_CONSTRUCTION_SECTORS → the PRIMARY component P prefers the
+        construction-in-progress line instead of the normal "capex" list (see P above).
+      • INTANGIBLES_CAPEX_SECTORS → the additive component I (capitalized software) is
+        summed on top.
+    A missing/low-confidence/llm_fallback sector → neither gate fires → identical to
+    current (ungated) behavior.
 
     Returns (total, inputs, tags) exposing the components (capex_ppe,
     capex_equipment_on_lease, capex_real_estate_dev, capex_intangibles) alongside the
-    summed "capex"; tags carry a "sector_gated" flag when the intangibles gate fired.
-    Returns None when NO component resolves, so the caller records a MissingRatio.
+    summed "capex"; tags carry a "sector_gated" flag (the bucket name) when either gate
+    fired. Returns None when NO component resolves, so the caller records a MissingRatio.
     """
-    primary, p_tag = _resolve_first_opt(facts, "capex", period_end, filed_before)
+    sec = get_sector(facts.get("cik"))
+    trusted = sector_trusted(sec)
+
+    # Component P — own-use capex primary. SECTOR-GATED PRIMARY ALTERNATIVE: for trusted
+    # utilities the comprehensive capex line is construction-in-progress, PREFERRED over
+    # the normal "capex" list (instead-of, NOT summed — it already contains PP&E). Only
+    # resolved when the gate fires; falls through to the normal list if the utility did
+    # not tag it, so out-of-sector filers are byte-identical to the pre-gate behavior.
+    primary, p_tag, gate_note = None, None, None
+    if trusted and sec.moodys_methodology in UTILITY_CONSTRUCTION_SECTORS:
+        primary, p_tag = _resolve_first_opt(facts, "capex_utility_construction", period_end, filed_before)
+        if primary is not None:
+            gate_note = sec.moodys_methodology   # provenance: utility construction primary preferred
+    if primary is None:
+        primary, p_tag = _resolve_first_opt(facts, "capex", period_end, filed_before)
+
     lease, l_tag = _resolve_first_opt(facts, "capex_equipment_on_lease", period_end, filed_before)
     redev, r_tag = _resolve_first_opt(facts, "capex_real_estate_development", period_end, filed_before)
 
-    # Component I — capitalized software, sector-gated. Only resolve the tag when the
-    # gate fires, so out-of-sector filers are byte-identical to the pre-gate behavior.
-    intang, i_tag, gate_note = None, None, None
-    sec = get_sector(facts.get("cik"))
-    if sector_trusted(sec) and sec.moodys_methodology in INTANGIBLES_CAPEX_SECTORS:
+    # Component I — capitalized software, sector-gated (ADDITIVE). Only resolve the tag
+    # when the gate fires, so out-of-sector filers are byte-identical. Mutually exclusive
+    # with the utility gate above (distinct Moody's buckets), so both write "sector_gated".
+    intang, i_tag = None, None
+    if trusted and sec.moodys_methodology in INTANGIBLES_CAPEX_SECTORS:
         intang, i_tag = _resolve_first_opt(facts, "capex_intangibles", period_end, filed_before)
         gate_note = sec.moodys_methodology   # provenance: which bucket opened the gate
 

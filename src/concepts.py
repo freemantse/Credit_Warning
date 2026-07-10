@@ -286,6 +286,23 @@ TAGS: dict[str, list[str]] = {
         "us-gaap/PaymentsToDevelopRealEstateAssets",       # BRT-style (develop)
     ],
 
+    # ── CapEx SECTOR-GATED PRIMARY: utility construction-in-progress (utilities only) ──
+    # PaymentsForConstructionInProcess is a SECTOR-SPLIT tag, which is why it is NOT in
+    # the "capex" primary list above. For regulated/power/network utilities it is the
+    # filer's COMPREHENSIVE capex outflow (construction work in progress) — it CONTAINS
+    # the PP&E/ProductiveAssets figure as a subset, so it is used INSTEAD OF the normal
+    # primary, never summed on top (verified on AEP: construction ≈ $8,453M ≈ whole-LSEG
+    # capex, vs ProductiveAssets $3,453M which is a subset already inside it; consistently
+    # ~1.5% under LSEG across all 5 years — the documented tag-vs-LSEG wedge). For
+    # NON-utilities the same tag is a small ADD-ON (Matson FY2021: $14.9M on top of its
+    # $310.4M productive-assets line), so the gate keeps it entirely OUT of the chain for
+    # them — leaving non-utility filers byte-identical. capex_total() consumes this as a
+    # sector-conditional PRIMARY-PREFERRED alternative when UTILITY_CONSTRUCTION_SECTORS
+    # fires (see src/extract.py), falling back to the normal "capex" list if absent.
+    "capex_utility_construction": [
+        "us-gaap/PaymentsForConstructionInProcess",
+    ],
+
     # ── CapEx SECTOR-GATED component: capitalized software (tech sectors only) ──────
     # PaymentsToAcquireIntangibleAssets is capitalized software (genuine capex) for
     # software/semis/diversified-tech filers, but ACQUIRED IP (not capex) for
