@@ -111,17 +111,26 @@ def test_save_findings_upserts_with_conflict_target_and_source_url():
     assert "ignore_duplicates" not in upsert.call_args[1]
 
 
-def test_get_issuers_deduplicates():
-    # The ratios table has one row per (cik, period_end, ratio_name), so each
-    # tracked company appears many times. get_issuers() must collapse those to
-    # one entry per distinct CIK.
-    raw = [{"cik": "AAPL"}, {"cik": "MSFT"}, {"cik": "AAPL"}]
+def test_get_issuers_maps_company_identity():
+    # get_issuers() now queries the `companies` table (one row per company — cik is
+    # the PRIMARY KEY, inherently unique), NOT the ratios table, so issuers whose
+    # ratio extraction failed still appear. It maps each row to {cik, name, ticker}
+    # (ticker = first current ticker, "" if none), sorted by cik. No dedup in code —
+    # uniqueness is the companies PK's job.
+    raw = [
+        {"cik": "0000000320", "name": "Apple Inc.", "tickers": ["AAPL"]},
+        {"cik": "0000000789", "name": "Microsoft Corp", "tickers": ["MSFT", "MSFT.X"]},
+        {"cik": "0000000010", "name": "No-Ticker Co", "tickers": []},
+    ]
     mock_client = make_mock_client(data=raw)
     with patch("src.store._client", return_value=mock_client):
         issuers = store.get_issuers()
 
-    assert len(issuers) == 2
-    assert {i["cik"] for i in issuers} == {"AAPL", "MSFT"}
+    # one identity row per company, sorted by cik
+    assert [i["cik"] for i in issuers] == ["0000000010", "0000000320", "0000000789"]
+    assert issuers[1] == {"cik": "0000000320", "name": "Apple Inc.", "ticker": "AAPL"}
+    assert issuers[2]["ticker"] == "MSFT"      # first current ticker
+    assert issuers[0]["ticker"] == ""          # no tickers → empty string
 
 
 def test_get_periods_returns_sorted():

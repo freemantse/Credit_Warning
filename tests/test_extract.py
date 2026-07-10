@@ -11,14 +11,15 @@ from src.extract import (
 from src.concepts import MissingDataError
 
 # All values in USD, designed so ratios have clean expected results:
-#   net_debt = 4_000_000 - 1_000_000 = 3_000_000
+#   gross_debt = 500_000 (ShortTermBorrowings, component A) + 4_000_000
+#                (LongTermDebt, component C) = 4_500_000   (component waterfall)
+#   net_debt = gross_debt 4_500_000 - cash 1_000_000 = 3_500_000
 #   EBITDA = 1_500_000 + 500_000 = 2_000_000
-#   leverage = 3_000_000 / 2_000_000 = 1.5
+#   leverage = 3_500_000 / 2_000_000 = 1.75
 #   interest_coverage = 2_000_000 / 400_000 = 5.0
 #   FCF = 1_800_000 - 300_000 = 1_500_000
 #   FCF margin = 1_500_000 / 10_000_000 = 0.15
 #   liquidity = 1_000_000 / 500_000 = 2.0
-#   gross_debt = 4_000_000 + 500_000 = 4_500_000
 #   cash_flow_to_debt = 1_800_000 / 4_500_000 = 0.4
 #   debt_to_assets = 4_500_000 / 20_000_000 = 0.225
 #   current_ratio = 6_000_000 / 4_000_000 = 1.5
@@ -48,8 +49,12 @@ FACTS = {
 def test_leverage():
     result = leverage(FACTS, PERIOD)
     assert isinstance(result, RatioResult)
-    assert abs(result.value - 1.5) < 1e-9
-    assert result.inputs["total_debt"] == 4_000_000
+    # net_debt uses the component-waterfall gross_debt (4.5M incl. short-term), not
+    # LongTermDebt alone: (4.5M - 1M) / 2M = 1.75.
+    assert abs(result.value - 1.75) < 1e-9
+    assert result.inputs["total_debt"] == 4_500_000        # waterfall total (A+B+C)
+    assert result.inputs["long_term_noncurrent"] == 4_000_000
+    assert result.inputs["short_term_components"] == 500_000
     assert result.inputs["cash"] == 1_000_000
     assert result.inputs["operating_income"] == 1_500_000
     assert result.inputs["depreciation"] == 500_000
@@ -80,8 +85,10 @@ def test_liquidity():
 
 def test_source_tags_populated():
     result = leverage(FACTS, PERIOD)
-    assert "total_debt" in result.source_tags
-    assert "LongTermDebt" in result.source_tags["total_debt"]
+    # gross_debt exposes per-component tags; the long-term tranche resolved via
+    # us-gaap/LongTermDebt is recorded under the "long_term_noncurrent" component.
+    assert "long_term_noncurrent" in result.source_tags
+    assert "LongTermDebt" in result.source_tags["long_term_noncurrent"]
 
 
 def test_extract_all_returns_all_ratios():
@@ -93,9 +100,13 @@ def test_extract_all_returns_all_ratios():
 
 
 def test_extract_all_records_missing_not_crashes():
-    # Remove total_debt concept to force a missing error on leverage only.
+    # Remove EVERY debt component to force gross_debt (and thus leverage) to fail.
+    # The component waterfall derives debt from short-term borrowings too, so deleting
+    # only LongTermDebt would still leave ShortTermBorrowings (component A) and
+    # leverage would compute — the missing case requires no debt component at all.
     facts_no_debt = copy.deepcopy(FACTS)
     del facts_no_debt["facts"]["us-gaap"]["LongTermDebt"]
+    del facts_no_debt["facts"]["us-gaap"]["ShortTermBorrowings"]
     results = extract_all(facts_no_debt, PERIOD)
     # leverage requires total_debt → should be a MissingRatio
     assert isinstance(results["leverage"], MissingRatio)
@@ -104,10 +115,11 @@ def test_extract_all_records_missing_not_crashes():
 
 
 def test_missing_ratio_pinpoints_missing_input():
-    # Removing total_debt should leave the other three leverage inputs resolved and
-    # flag exactly total_debt as missing, with the tags that were tried.
+    # Removing all debt components leaves the other three leverage inputs resolved
+    # and flags exactly total_debt as missing, with the tags that were tried.
     facts_no_debt = copy.deepcopy(FACTS)
     del facts_no_debt["facts"]["us-gaap"]["LongTermDebt"]
+    del facts_no_debt["facts"]["us-gaap"]["ShortTermBorrowings"]
     miss = extract_all(facts_no_debt, PERIOD)["leverage"]
     assert isinstance(miss, MissingRatio)
 
@@ -141,30 +153,34 @@ def test_missing_period_raises():
 # ── New ratios: cash_flow_to_debt, debt_to_assets, current_ratio ──
 
 def test_gross_debt_includes_short_term():
+    # Component waterfall: A (short-term, summed) + B (current LTD) + C (non-current).
     value, inputs, tags = gross_debt(FACTS, PERIOD)
-    assert value == 4_500_000
-    assert inputs["total_debt"] == 4_000_000
-    assert inputs["short_term_debt"] == 500_000
-    assert "short_term_debt" in tags
+    assert value == 4_500_000                          # A 500K + C 4M
+    assert inputs["total_debt"] == 4_500_000           # waterfall TOTAL (not LTD alone)
+    assert inputs["short_term_components"] == 500_000  # component A (ShortTermBorrowings)
+    assert inputs["long_term_noncurrent"] == 4_000_000 # component C
+    assert inputs["current_portion_ltd"] == 0.0        # component B absent
+    assert "short_term_components" in tags
+    assert "LongTermDebt" in tags["long_term_noncurrent"]
 
 
 def test_gross_debt_treats_missing_short_term_as_zero():
-    # No short-term-debt tag at all → gross debt == long-term debt, ST recorded as 0.
+    # No short-term-debt tag → component A is 0, gross debt == non-current LTD.
     facts = copy.deepcopy(FACTS)
     del facts["facts"]["us-gaap"]["ShortTermBorrowings"]
     value, inputs, tags = gross_debt(facts, PERIOD)
     assert value == 4_000_000
-    assert inputs["short_term_debt"] == 0.0
-    # No source tag recorded for the absent short-term debt.
-    assert "short_term_debt" not in tags
+    assert inputs["short_term_components"] == 0.0
+    # No source tag recorded for the absent short-term components.
+    assert "short_term_components" not in tags
 
 
 def test_cash_flow_to_debt():
     result = cash_flow_to_debt(FACTS, PERIOD)
     assert isinstance(result, RatioResult)
-    assert abs(result.value - 0.4) < 1e-9
+    assert abs(result.value - 0.4) < 1e-9               # 1.8M / gross_debt 4.5M
     assert result.inputs["operating_cashflow"] == 1_800_000
-    assert result.inputs["total_debt"] == 4_000_000
+    assert result.inputs["total_debt"] == 4_500_000     # waterfall total
 
 
 def test_debt_to_assets():
