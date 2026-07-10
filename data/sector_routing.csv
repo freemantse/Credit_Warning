@@ -1,0 +1,301 @@
+cik,name,sic,moodys_methodology,sp_sector,methodology_confidence,methodology_source,is_financial,notes,classifier_commit
+0000001750,AAR CORP,3720,Aerospace and Defense,Aerospace And Defense,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000001800,ABBOTT LABORATORIES,2834,Pharmaceuticals,Pharmaceuticals,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000002488,ADVANCED MICRO DEVICES INC,3674,Semiconductors,Technology Hardware And Semiconductors,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000002969,"Air Products & Chemicals, Inc.",2810,Chemicals,Commodity Chemicals,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000003453,"Matson, Inc.",4400,Shipping,Transportation Cyclical,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000003499,ALEXANDERS INC,6798,REITs and Other Commercial Real Estate Firms,Homebuilders And Real Estate Developers,high,sic_table,True,Financial-sector issuer (SIC 60–67): industrial corporate scorecard does not apply; route to the FIG/Insurance framework.,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000003570,"Cheniere Energy, Inc.",4924,Regulated Electric and Gas Utilities,Regulated Utilities,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000004127,"SKYWORKS SOLUTIONS, INC.",3674,Semiconductors,Technology Hardware And Semiconductors,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000004281,Howmet Aerospace Inc.,3350,Steel,Metals Production And Processing,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000004447,HESS CORP,2911,Integrated Oil and Gas,Refining And Marketing,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000004457,U-Haul Holding Co /NV/,7510,Business and Consumer Services,Business And Consumer Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000004904,AMERICAN ELECTRIC POWER CO INC,4911,Regulated Electric and Gas Utilities,Regulated Utilities,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000004962,AMERICAN EXPRESS CO,6199,Finance Companies,Financial Services Finance Companies,low,llm_fallback,True,Ambiguous SIC; classified by LLM from business description; Financial-sector issuer (SIC 60–67): industrial corporate scorecard does not apply; route to the FIG/Insurance framework.,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000004977,AFLAC INC,6321,Insurers,Insurers (Insurance criteria),medium,sic_table,True,Financial-sector issuer (SIC 60–67): industrial corporate scorecard does not apply; route to the FIG/Insurance framework.,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000005272,"AMERICAN INTERNATIONAL GROUP, INC.",6331,Insurers,Insurers (Insurance criteria),medium,sic_table,True,Financial-sector issuer (SIC 60–67): industrial corporate scorecard does not apply; route to the FIG/Insurance framework.,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000005513,Unum Group,6321,Insurers,Insurers (Insurance criteria),medium,sic_table,True,Financial-sector issuer (SIC 60–67): industrial corporate scorecard does not apply; route to the FIG/Insurance framework.,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000006201,American Airlines Group Inc.,4512,Passenger Airlines,Transportation Cyclical,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000006281,ANALOG DEVICES INC,3674,Semiconductors,Technology Hardware And Semiconductors,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000006845,"APOGEE ENTERPRISES, INC.",3231,Building Materials,Building Materials,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000006951,APPLIED MATERIALS INC /DE,3674,Semiconductors,Technology Hardware And Semiconductors,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000006955,ENERPAC TOOL GROUP CORP,3590,Manufacturing,Capital Goods,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000007084,Archer-Daniels-Midland Co,2070,Consumer Packaged Goods,Consumer Staples And Branded Nondurables,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000007332,SOUTHWESTERN ENERGY CO,1311,Independent Exploration and Production,Oil And Gas Exploration And Production,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000007431,ARMSTRONG WORLD INDUSTRIES INC,3089,Chemicals,Specialty Chemicals,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000007536,"ARROW ELECTRONICS, INC.",5065,Distribution and Supply Chain Services,Business And Consumer Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000007789,ASSOCIATED BANC-CORP,6022,Banks,Banks (Financial Institutions criteria),medium,sic_table,True,Financial-sector issuer (SIC 60–67): industrial corporate scorecard does not apply; route to the FIG/Insurance framework.,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000008063,ASTRONICS CORP,3728,Aerospace and Defense,Aerospace And Defense,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000008670,AUTOMATIC DATA PROCESSING INC,7374,Software,Technology Software And Services,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000008818,Avery Dennison Corp,2670,Paper and Forest Products,Forest And Paper Products,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000008858,AVNET INC,5065,Distribution and Supply Chain Services,Business And Consumer Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000008947,AZZ INC,3470,Manufacturing,Capital Goods,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000009326,BALCHEM CORP,2800,Chemicals,Commodity Chemicals,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000009389,BALL Corp,3411,Packaging Manufacturers,Containers And Packaging,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000010456,BAXTER INTERNATIONAL INC,3841,Medical Products and Devices,Health Care Equipment,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000010795,BECTON DICKINSON & CO,3841,Medical Products and Devices,Health Care Equipment,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000011544,BERKLEY W R CORP,6331,Insurers,Insurers (Insurance criteria),medium,sic_table,True,Financial-sector issuer (SIC 60–67): industrial corporate scorecard does not apply; route to the FIG/Insurance framework.,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000012208,"BIO-RAD LABORATORIES, INC.",3826,Diversified Technology,Technology Hardware And Semiconductors,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000012659,H&R BLOCK INC,7200,Business and Consumer Services,Business And Consumer Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000012927,BOEING CO,3721,Aerospace and Defense,Aerospace And Defense,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000013372,NSTAR ELECTRIC CO,4911,Regulated Electric and Gas Utilities,Regulated Utilities,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000014272,BRISTOL MYERS SQUIBB CO,2834,Pharmaceuticals,Pharmaceuticals,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000014707,CALERES INC,3140,Retail and Apparel,Consumer Durables,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000014846,BRT Apartments Corp.,6798,REITs and Other Commercial Real Estate Firms,Homebuilders And Real Estate Developers,high,sic_table,True,Financial-sector issuer (SIC 60–67): industrial corporate scorecard does not apply; route to the FIG/Insurance framework.,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000014930,BRUNSWICK CORP,3510,Manufacturing,Capital Goods,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000015615,MASTEC INC,1623,Construction,Engineering And Construction,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000016040,CABOT CORP,2890,Chemicals,Specialty Chemicals,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000016058,CACI INTERNATIONAL INC /DE/,7373,Business and Consumer Services,Business And Consumer Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000016732,CAMPBELL'S Co,2000,Consumer Packaged Goods,Consumer Staples And Branded Nondurables,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000016875,CANADIAN PACIFIC KANSAS CITY LTD/CN,4011,Surface Transportation and Logistics,"Railroad, Package Express, And Logistics",medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000016918,"CONSTELLATION BRANDS, INC.",2080,Soft Beverages,Consumer Staples And Branded Nondurables,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000017313,CAPITAL SOUTHWEST CORP,,Finance Companies,Financial Services Finance Companies,low,llm_fallback,False,Ambiguous SIC; classified by LLM from business description,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000017843,CARPENTER TECHNOLOGY CORP,3312,Steel,Metals Production And Processing,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000018230,CATERPILLAR INC,3531,Manufacturing,Capital Goods,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000018498,GENESCO INC,5661,Retail and Apparel,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000018926,"Lumen Technologies, Inc.",4813,Telecommunications Service Providers,Telecommunications,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000019584,CHEMED CORP,8082,Business and Consumer Services,Health Care Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000019617,JPMORGAN CHASE & CO,6021,Banks,Banks (Financial Institutions criteria),medium,sic_table,True,Financial-sector issuer (SIC 60–67): industrial corporate scorecard does not apply; route to the FIG/Insurance framework.,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000019745,CHESAPEAKE UTILITIES CORP,4923,Natural Gas Pipelines,Midstream Energy,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000020212,Churchill Downs Inc,7948,Gaming,Leisure And Sports,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000020286,CINCINNATI FINANCIAL CORP,6331,Insurers,Insurers (Insurance criteria),medium,sic_table,True,Financial-sector issuer (SIC 60–67): industrial corporate scorecard does not apply; route to the FIG/Insurance framework.,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000020520,"Frontier Communications Parent, Inc.",4813,Telecommunications Service Providers,Telecommunications,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000021344,COCA COLA CO,2080,Soft Beverages,Consumer Staples And Branded Nondurables,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000021535,COHU INC,3825,Diversified Technology,Technology Hardware And Semiconductors,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000022356,COMMERCE BANCSHARES INC /MO/,6022,Banks,Banks (Financial Institutions criteria),medium,sic_table,True,Financial-sector issuer (SIC 60–67): industrial corporate scorecard does not apply; route to the FIG/Insurance framework.,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000022444,COMMERCIAL METALS Co,3312,Steel,Metals Production And Processing,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000023194,COMSTOCK RESOURCES INC,1311,Independent Exploration and Production,Oil And Gas Exploration And Production,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000023197,COMTECH TELECOMMUNICATIONS CORP /DE/,3663,Diversified Technology,Technology Hardware And Semiconductors,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000023217,CONAGRA BRANDS INC.,2000,Consumer Packaged Goods,Consumer Staples And Branded Nondurables,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000023795,"CTO Realty Growth, Inc.",6798,REITs and Other Commercial Real Estate Firms,Homebuilders And Real Estate Developers,high,sic_table,True,Financial-sector issuer (SIC 60–67): industrial corporate scorecard does not apply; route to the FIG/Insurance framework.,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000024741,CORNING INC /NY,3357,Steel,Metals Production And Processing,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000025232,COUSINS PROPERTIES INC,6798,REITs and Other Commercial Real Estate Firms,Homebuilders And Real Estate Developers,high,sic_table,True,Financial-sector issuer (SIC 60–67): industrial corporate scorecard does not apply; route to the FIG/Insurance framework.,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000025445,"Crane NXT, Co.",3490,Manufacturing,Capital Goods,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000026172,CUMMINS INC,3510,Manufacturing,Capital Goods,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000026324,CURTISS WRIGHT CORP,3590,Manufacturing,Capital Goods,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000026780,DANA Inc,3714,Automotive Suppliers,Auto Suppliers,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000027419,TARGET CORP,5331,Retail and Apparel,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000027904,"DELTA AIR LINES, INC.",4512,Passenger Airlines,Transportation Cyclical,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000027996,DELUXE CORP,2780,Media,Media And Entertainment,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000028917,"DILLARD'S, INC.",5311,Retail and Apparel,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000029332,DIXIE GROUP INC,2273,Retail and Apparel,Consumer Staples And Branded Nondurables,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000029534,DOLLAR GENERAL CORP,5331,Retail and Apparel,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000029989,OMNICOM GROUP INC.,7311,Business and Consumer Services,Business And Consumer Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000030305,DUCOMMUN INC /DE/,3728,Aerospace and Defense,Aerospace And Defense,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000030697,Wendy's Co,5810,Restaurants,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000031235,EASTMAN KODAK CO,3861,Medical Products and Devices,Health Care Equipment,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000033185,EQUIFAX INC,7320,Business and Consumer Services,Business And Consumer Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000033213,EQT Corp,1311,Independent Exploration and Production,Oil And Gas Exploration And Production,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000034088,EXXON MOBIL CORP,2911,Integrated Oil and Gas,Refining And Marketing,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000034782,1ST SOURCE CORP,6022,Banks,Banks (Financial Institutions criteria),medium,sic_table,True,Financial-sector issuer (SIC 60–67): industrial corporate scorecard does not apply; route to the FIG/Insurance framework.,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000034903,FEDERAL REALTY INVESTMENT TRUST,6798,REITs and Other Commercial Real Estate Firms,Homebuilders And Real Estate Developers,high,sic_table,True,Financial-sector issuer (SIC 60–67): industrial corporate scorecard does not apply; route to the FIG/Insurance framework.,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000035527,FIFTH THIRD BANCORP,6022,Banks,Banks (Financial Institutions criteria),medium,sic_table,True,Financial-sector issuer (SIC 60–67): industrial corporate scorecard does not apply; route to the FIG/Insurance framework.,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000038777,FRANKLIN RESOURCES INC,6282,Securities Industry Service Providers,Financial Market Infrastructure,medium,sic_table,True,Financial-sector issuer (SIC 60–67): industrial corporate scorecard does not apply; route to the FIG/Insurance framework.,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000039899,TEGNA INC,4833,Media,Media And Entertainment,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000039911,GAP INC,5651,Retail and Apparel,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000040211,GATX CORP,4700,Surface Transportation and Logistics,"Railroad, Package Express, And Logistics",medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000040987,GENUINE PARTS CO,5013,Distribution and Supply Chain Services,Business And Consumer Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000041719,Magnera Corp,2621,Paper and Forest Products,Forest And Paper Products,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000042582,GOODYEAR TIRE & RUBBER CO /OH/,3011,Automotive Suppliers,Auto Suppliers,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000043196,"GRAY MEDIA, INC",4833,Media,Media And Entertainment,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000043920,"GREIF, INC",3412,Manufacturing,Capital Goods,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000045012,HALLIBURTON CO,1389,Oilfield Services,Oilfield Services And Equipment,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000045876,ENVIRI LLC,8900,Business and Consumer Services,Business And Consumer Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000046080,"HASBRO, INC.",3944,Consumer Packaged Goods,Consumer Durables,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000046765,"Helmerich & Payne, Inc.",1381,Oilfield Services,Contract Drilling,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000047129,HERTZ CORP,7510,Business and Consumer Services,Business And Consumer Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000048287,HNI CORP,2522,Consumer Durables,Consumer Durables,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000049754,"Dine Brands Global, Inc.",5812,Restaurants,Retail And Restaurants,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000050493,INGLES MARKETS INC,5411,Retail and Apparel,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000050725,GRIFFON CORP,3442,Manufacturing,Capital Goods,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000051434,INTERNATIONAL PAPER CO /NEW/,2621,Paper and Forest Products,Forest And Paper Products,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000051644,"INTERPUBLIC GROUP OF COMPANIES, INC.",7311,Business and Consumer Services,Business And Consumer Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000052988,JACOBS SOLUTIONS INC.,1600,Construction,Engineering And Construction,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000055785,KIMBERLY CLARK CORP,2670,Paper and Forest Products,Forest And Paper Products,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000056047,KIRBY CORP,4400,Shipping,Transportation Cyclical,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000056873,KROGER CO,5411,Retail and Apparel,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000058361,"LEE ENTERPRISES, Inc",2711,Media,Media And Entertainment,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000058492,LEGGETT & PLATT INC,2510,Consumer Durables,Consumer Durables,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000060519,LOUISIANA-PACIFIC CORP,2400,Paper and Forest Products,Forest And Paper Products,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000060667,LOWES COMPANIES INC,5211,Retail and Apparel,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000062234,MARCUS CORP,7830,Media,Media And Entertainment,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000062709,"MARSH & MCLENNAN COMPANIES, INC.",6411,Insurers,Insurers (Insurance criteria),medium,sic_table,True,Financial-sector issuer (SIC 60–67): industrial corporate scorecard does not apply; route to the FIG/Insurance framework.,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000063276,MATTEL INC /DE/,3942,Consumer Packaged Goods,Consumer Durables,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000063296,MATTHEWS INTERNATIONAL CORP,3360,Steel,Metals Production And Processing,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000063908,MCDONALDS CORP,5812,Restaurants,Retail And Restaurants,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000064803,CVS HEALTH Corp,5912,Retail and Apparel,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000066382,"MILLERKNOLL, INC.",2520,Consumer Durables,Consumer Durables,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000067215,DYCOM INDUSTRIES INC,1623,Construction,Engineering And Construction,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000067716,MDU RESOURCES GROUP INC,1400,Mining,Mining,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000069488,MYERS INDUSTRIES INC,3089,Chemicals,Specialty Chemicals,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000069733,"NATHANS FAMOUS, INC.",5812,Restaurants,Retail And Restaurants,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000070318,TENET HEALTHCARE CORP,8062,Business and Consumer Services,Health Care Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000071691,NEW YORK TIMES CO,2711,Media,Media And Entertainment,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000075252,ACCENDRA HEALTH INC/VA/,5047,Distribution and Supply Chain Services,Business And Consumer Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000075288,OXFORD INDUSTRIES INC,2320,Retail and Apparel,Consumer Staples And Branded Nondurables,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000075677,PACKAGING CORP OF AMERICA,2650,Packaging Manufacturers,Containers And Packaging,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000077543,TUTOR PERINI CORP,1540,Homebuilding and Property Development,Engineering And Construction,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000078239,PVH CORP. /DE/,2320,Retail and Apparel,Consumer Staples And Branded Nondurables,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000078890,BRINKS CO,4731,Surface Transportation and Logistics,"Railroad, Package Express, And Logistics",medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000079282,"BROWN & BROWN, INC.",6411,Insurers,Insurers (Insurance criteria),medium,sic_table,True,Financial-sector issuer (SIC 60–67): industrial corporate scorecard does not apply; route to the FIG/Insurance framework.,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000081362,QUAKER CHEMICAL CORP,2990,Integrated Oil and Gas,Refining And Marketing,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000084129,"NEW RITE AID, LLC",5912,Retail and Apparel,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000085961,RYDER SYSTEM INC,7510,Business and Consumer Services,Business And Consumer Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000088121,SEABOARD CORP /DE/,5150,Distribution and Supply Chain Services,Business And Consumer Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000089089,SERVICE CORP INTERNATIONAL,7200,Business and Consumer Services,Business And Consumer Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000089800,SHERWIN WILLIAMS CO,5200,Retail and Apparel,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000092380,SOUTHWEST AIRLINES CO,4512,Passenger Airlines,Transportation Cyclical,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000093410,CHEVRON CORP,2911,Integrated Oil and Gas,Refining And Marketing,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000094845,LEVI STRAUSS & CO,2300,Retail and Apparel,Consumer Staples And Branded Nondurables,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000096021,SYSCO CORP,5140,Distribution and Supply Chain Services,Business And Consumer Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000096223,Jefferies Financial Group Inc.,6211,Securities Industry Service Providers,Financial Market Infrastructure,medium,sic_table,True,Financial-sector issuer (SIC 60–67): industrial corporate scorecard does not apply; route to the FIG/Insurance framework.,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000098222,TIDEWATER INC,4400,Shipping,Transportation Cyclical,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000100517,"United Airlines Holdings, Inc.",4512,Passenger Airlines,Transportation Cyclical,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000100726,UNIFI INC,2200,Retail and Apparel,Consumer Staples And Branded Nondurables,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000100885,UNION PACIFIC CORP,4011,Surface Transportation and Logistics,"Railroad, Package Express, And Logistics",medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000102037,UNIVERSAL CORP /VA/,5150,Distribution and Supply Chain Services,Business And Consumer Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000102752,VSE CORP,8711,Business and Consumer Services,Business And Consumer Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000103379,V F CORP,2320,Retail and Apparel,Consumer Staples And Branded Nondurables,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000104169,Walmart Inc.,5331,Retail and Apparel,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000104889,Graham Holdings Co,8200,Business and Consumer Services,Business And Consumer Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000105016,WATSCO INC,5070,Distribution and Supply Chain Services,Business And Consumer Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000105319,"WW INTERNATIONAL, INC.",7200,Business and Consumer Services,Business And Consumer Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000105634,"EMCOR Group, Inc.",1731,Construction,Engineering And Construction,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000107140,"JOHN WILEY & SONS, INC.",2731,Media,Media And Entertainment,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000108385,WORLD ACCEPTANCE CORP,6141,Finance Companies,Financial Services Finance Companies,medium,sic_table,True,Financial-sector issuer (SIC 60–67): industrial corporate scorecard does not apply; route to the FIG/Insurance framework.,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000109198,TJX COMPANIES INC /DE/,5651,Retail and Apparel,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000110471,WOLVERINE WORLD WIDE INC /DE/,3140,Retail and Apparel,Consumer Durables,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000215466,"Coeur Mining, Inc.",1040,Mining,Mining,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000277948,CSX CORP,4011,Surface Transportation and Logistics,"Railroad, Package Express, And Logistics",medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000310522,FEDERAL NATIONAL MORTGAGE ASSOCIATION FANNIE MAE,6111,Finance Companies,Financial Services Finance Companies,medium,sic_table,True,Financial-sector issuer (SIC 60–67): industrial corporate scorecard does not apply; route to the FIG/Insurance framework.,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000316709,SCHWAB CHARLES CORP,6211,Securities Industry Service Providers,Financial Market Infrastructure,medium,sic_table,True,Financial-sector issuer (SIC 60–67): industrial corporate scorecard does not apply; route to the FIG/Insurance framework.,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000320187,"NIKE, Inc.",3021,Consumer Durables,Consumer Durables,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000350698,"AUTONATION, INC.",5500,Retail and Apparel,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000352915,UNIVERSAL HEALTH SERVICES INC,8062,Business and Consumer Services,Health Care Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000354190,Arthur J. Gallagher & Co.,6411,Insurers,Insurers (Insurance criteria),medium,sic_table,True,Financial-sector issuer (SIC 60–67): industrial corporate scorecard does not apply; route to the FIG/Insurance framework.,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000354950,"HOME DEPOT, INC.",5211,Retail and Apparel,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000354963,SHENANDOAH TELECOMMUNICATIONS CO/VA/,4813,Telecommunications Service Providers,Telecommunications,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000357294,HOVNANIAN ENTERPRISES INC,1531,Homebuilding and Property Development,Homebuilders And Real Estate Developers,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000701985,"Bath & Body Works, Inc.",5990,Retail and Apparel,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000702165,NORFOLK SOUTHERN CORP,4011,Surface Transportation and Logistics,"Railroad, Package Express, And Logistics",medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000703351,"BRINKER INTERNATIONAL, INC",5812,Restaurants,Retail And Restaurants,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000712034,ACCO BRANDS Corp,2780,Media,Media And Entertainment,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000715787,INTERFACE INC,2273,Retail and Apparel,Consumer Staples And Branded Nondurables,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000716006,Yellow Corp,4213,Surface Transportation and Logistics,"Railroad, Package Express, And Logistics",medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000719413,HECLA MINING CO/DE/,1400,Mining,Mining,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000719955,WILLIAMS SONOMA INC,5700,Retail and Apparel,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000720005,RAYMOND JAMES FINANCIAL INC,6211,Securities Industry Service Providers,Financial Market Infrastructure,medium,sic_table,True,Financial-sector issuer (SIC 60–67): industrial corporate scorecard does not apply; route to the FIG/Insurance framework.,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000720672,STIFEL FINANCIAL CORP,6211,Securities Industry Service Providers,Financial Market Infrastructure,medium,sic_table,True,Financial-sector issuer (SIC 60–67): industrial corporate scorecard does not apply; route to the FIG/Insurance framework.,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000721371,CARDINAL HEALTH INC,5122,Distribution and Supply Chain Services,Business And Consumer Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000723254,CINTAS CORP,2320,Retail and Apparel,Consumer Staples And Branded Nondurables,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000723531,PAYCHEX INC,8700,Business and Consumer Services,Business And Consumer Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000723603,CULP INC,2211,Retail and Apparel,Consumer Staples And Branded Nondurables,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000723612,"AVIS BUDGET GROUP, INC.",7510,Business and Consumer Services,Business And Consumer Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000728535,HUNT J B TRANSPORT SERVICES INC,4213,Surface Transportation and Logistics,"Railroad, Package Express, And Logistics",medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000730464,Covista Inc.,8200,Business and Consumer Services,Business And Consumer Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000745308,ST JOE Co,6552,REITs and Other Commercial Real Estate Firms,Homebuilders And Real Estate Developers,medium,sic_table,True,Financial-sector issuer (SIC 60–67): industrial corporate scorecard does not apply; route to the FIG/Insurance framework.,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000745732,"ROSS STORES, INC.",5651,Retail and Apparel,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000746514,NEW ENGLAND REALTY ASSOCIATES LIMITED PARTNERSHIP,6513,REITs and Other Commercial Real Estate Firms,Homebuilders And Real Estate Developers,medium,sic_table,True,Financial-sector issuer (SIC 60–67): industrial corporate scorecard does not apply; route to the FIG/Insurance framework.,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000746515,EXPEDITORS INTERNATIONAL OF WASHINGTON INC,4731,Surface Transportation and Logistics,"Railroad, Package Express, And Logistics",medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000749251,GARTNER INC,8741,Business and Consumer Services,Business And Consumer Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000764065,CLEVELAND-CLIFFS INC.,1000,Mining,Mining,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000764180,"ALTRIA GROUP, INC.",2111,Consumer Packaged Goods,Consumer Staples And Branded Nondurables,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000764478,BEST BUY CO INC,5731,Retail and Apparel,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000766421,"ALASKA AIR GROUP, INC.",4512,Passenger Airlines,Transportation Cyclical,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000785161,Encompass Health Corp,8060,Business and Consumer Services,Health Care Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000789570,MGM Resorts International,7011,Business and Consumer Services,Leisure And Sports,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000790051,CARLISLE COMPANIES INC,3060,Consumer Durables,Consumer Durables,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000793074,WERNER ENTERPRISES INC,4213,Surface Transportation and Logistics,"Railroad, Package Express, And Logistics",medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000794170,"Toll Brothers, Inc.",1531,Homebuilding and Property Development,Homebuilders And Real Estate Developers,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000794367,"Macy's, Inc.",5311,Retail and Apparel,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000794619,AMERICAN WOODMARK CORP,2430,Paper and Forest Products,Forest And Paper Products,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000795266,KB HOME,1531,Homebuilding and Property Development,Homebuilders And Real Estate Developers,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000799167,MARTEN TRANSPORT LTD,4213,Surface Transportation and Logistics,"Railroad, Package Express, And Logistics",medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000799288,"LANDS' END, INC.",5651,Retail and Apparel,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000799292,"M/I HOMES, INC.",1531,Homebuilding and Property Development,Homebuilders And Real Estate Developers,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000812011,VAIL RESORTS INC,7990,Gaming,Leisure And Sports,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000812074,"O-I Glass, Inc. /DE/",3221,Building Materials,Building Materials,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000813762,ICAHN ENTERPRISES L.P.,2911,Integrated Oil and Gas,Refining And Marketing,high,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000815097,Carnival Corp Ltd.,4400,Shipping,Transportation Cyclical,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000815556,FASTENAL CO,5200,Retail and Apparel,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000821026,"Andersons, Inc.",5150,Distribution and Supply Chain Services,Business And Consumer Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000827187,Sleep Number Corp,2510,Consumer Durables,Consumer Durables,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000831259,FREEPORT-MCMORAN INC,1000,Mining,Mining,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000837465,Callaway Golf Co,3949,Consumer Packaged Goods,Consumer Durables,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000845877,FEDERAL AGRICULTURAL MORTGAGE CORP,6111,Finance Companies,Financial Services Finance Companies,medium,sic_table,True,Financial-sector issuer (SIC 60–67): industrial corporate scorecard does not apply; route to the FIG/Insurance framework.,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000851968,MOHAWK INDUSTRIES INC,2273,Retail and Apparel,Consumer Staples And Branded Nondurables,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000861459,GRANITE CONSTRUCTION INC,1600,Construction,Engineering And Construction,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000866787,AUTOZONE INC,5531,Retail and Apparel,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000868857,AECOM,8711,Business and Consumer Services,Business And Consumer Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000873860,ONITY GROUP INC.,6162,Finance Companies,Financial Services Finance Companies,medium,sic_table,True,Financial-sector issuer (SIC 60–67): industrial corporate scorecard does not apply; route to the FIG/Insurance framework.,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000876427,"MONRO, INC.",7500,Business and Consumer Services,Business And Consumer Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000876523,EZCORP INC,5900,Retail and Apparel,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000878927,"OLD DOMINION FREIGHT LINE, INC.",4213,Surface Transportation and Logistics,"Railroad, Package Express, And Logistics",medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000884219,"Pursuit Attractions & Hospitality, Inc.",7990,Gaming,Leisure And Sports,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000884887,ROYAL CARIBBEAN CRUISES LTD,4400,Shipping,Transportation Cyclical,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000885508,STRATUS PROPERTIES INC,6552,REITs and Other Commercial Real Estate Firms,Homebuilders And Real Estate Developers,medium,sic_table,True,Financial-sector issuer (SIC 60–67): industrial corporate scorecard does not apply; route to the FIG/Insurance framework.,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000886158,"20230930-DK-Butterfly-1, Inc.",5700,Retail and Apparel,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000891482,FULL HOUSE RESORTS INC,7011,Business and Consumer Services,Leisure And Sports,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000896156,ETHAN ALLEN INTERIORS INC,2511,Consumer Durables,Consumer Durables,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000898173,O REILLY AUTOMOTIVE INC,5531,Retail and Apparel,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000900075,COPART INC,5500,Retail and Apparel,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000906553,BOYD GAMING CORP,7011,Business and Consumer Services,Leisure And Sports,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000911147,CENTURY CASINOS INC /CO/,7011,Business and Consumer Services,Leisure And Sports,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000912728,FORWARD AIR CORP,4731,Surface Transportation and Logistics,"Railroad, Package Express, And Logistics",medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000912766,"LAUREATE EDUCATION, INC.",8200,Business and Consumer Services,Business And Consumer Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000916076,MARTIN MARIETTA MATERIALS INC,1400,Mining,Mining,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000916365,TRACTOR SUPPLY CO /DE/,5200,Retail and Apparel,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000918646,EAGLE MATERIALS INC,3241,Building Materials,Building Materials,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000921738,"PENN Entertainment, Inc.",7011,Business and Consumer Services,Leisure And Sports,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000922358,FERRELLGAS PARTNERS L P,5900,Retail and Apparel,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000929351,STARZ ENTERTAINMENT CORP /CN/,7812,Media,Media And Entertainment,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0000940942,"Hub Group, Inc.",4731,Surface Transportation and Logistics,"Railroad, Package Express, And Logistics",medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001001838,SOUTHERN COPPER CORP/,1000,Mining,Mining,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001009829,JAKKS PACIFIC INC,3944,Consumer Packaged Goods,Consumer Durables,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001016281,CARRIAGE SERVICES INC,7200,Business and Consumer Services,Business And Consumer Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001019849,"PENSKE AUTOMOTIVE GROUP, INC.",5500,Retail and Apparel,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001022321,GENESIS ENERGY LP,4610,Midstream Energy,Midstream Energy,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001035983,COMFORT SYSTEMS USA INC,1731,Construction,Engineering And Construction,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001037976,JONES LANG LASALLE INC,6531,REITs and Other Commercial Real Estate Firms,Homebuilders And Real Estate Developers,medium,sic_table,True,Financial-sector issuer (SIC 60–67): industrial corporate scorecard does not apply; route to the FIG/Insurance framework.,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001048268,"IES Holdings, Inc.",1731,Construction,Engineering And Construction,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001050915,"QUANTA SERVICES, INC.",1731,Construction,Engineering And Construction,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001052752,GETTY REALTY CORP /MD/,6500,REITs and Other Commercial Real Estate Firms,Homebuilders And Real Estate Developers,medium,sic_table,True,Financial-sector issuer (SIC 60–67): industrial corporate scorecard does not apply; route to the FIG/Insurance framework.,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001064728,PEABODY ENERGY CORP,1221,Mining,Mining,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001065059,CENTRUS ENERGY CORP,1400,Mining,Mining,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001065280,NETFLIX INC,7841,Media,Media And Entertainment,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001070423,PLAINS ALL AMERICAN PIPELINE LP,4610,Midstream Energy,Midstream Energy,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001086600,ALLIANCE RESOURCE PARTNERS LP,1221,Mining,Mining,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001116132,"TAPESTRY, INC.",3100,Retail and Apparel,Consumer Durables,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001124198,FLUOR CORP,1600,Construction,Engineering And Construction,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001164727,NEWMONT Corp /DE/,1040,Mining,Mining,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001171486,NATURAL RESOURCE PARTNERS LP,1221,Mining,Mining,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001201792,AMERICAN PUBLIC EDUCATION INC,8200,Business and Consumer Services,Business And Consumer Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001227654,COMPASS MINERALS INTERNATIONAL INC,1400,Mining,Mining,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001290677,"Turning Point Brands, Inc.",2100,Consumer Packaged Goods,Consumer Staples And Branded Nondurables,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001315257,Koppers Holdings Inc.,2400,Paper and Forest Products,Forest And Paper Products,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001319161,Warner Music Group Corp.,7900,Gaming,Leisure And Sports,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001326380,GameStop Corp.,5734,Retail and Apparel,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001333986,"Equitable Holdings, Inc.",6411,Insurers,Insurers (Insurance criteria),medium,sic_table,True,Financial-sector issuer (SIC 60–67): industrial corporate scorecard does not apply; route to the FIG/Insurance framework.,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001335258,"Live Nation Entertainment, Inc.",7900,Gaming,Leisure And Sports,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001345016,YELP INC,7200,Business and Consumer Services,Business And Consumer Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001370946,Owens Corning,3290,Building Materials,Building Materials,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001385280,"Cinemark Holdings, Inc.",7830,Media,Media And Entertainment,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001411579,"AMC ENTERTAINMENT HOLDINGS, INC.",7830,Media,Media And Entertainment,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001413329,Philip Morris International Inc.,2111,Consumer Packaged Goods,Consumer Staples And Branded Nondurables,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001437578,BRIGHT HORIZONS FAMILY SOLUTIONS INC.,8351,Business and Consumer Services,Business And Consumer Services,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001502034,"GNC HOLDINGS, INC.",5400,Retail and Apparel,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001519751,"Fortune Brands Innovations, Inc.",2430,Paper and Forest Products,Forest And Paper Products,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001528849,RH,5712,Retail and Apparel,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001552000,MPLX LP,4610,Midstream Energy,Midstream Energy,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001552797,"Delek Logistics Partners, LP",4610,Midstream Energy,Midstream Energy,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001575515,"Sprouts Farmers Market, Inc.",5411,Retail and Apparel,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001610682,USD Partners LP,4013,Surface Transportation and Logistics,"Railroad, Package Express, And Logistics",medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001633931,TopBuild Corp,1700,Construction,Engineering And Construction,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001646972,"Albertsons Companies, Inc.",5411,Retail and Apparel,Retail And Restaurants,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001670592,"YETI Holdings, Inc.",3949,Consumer Packaged Goods,Consumer Durables,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001674335,"JELD-WEN Holding, Inc.",2430,Paper and Forest Products,Forest And Paper Products,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001691303,"WARRIOR MET COAL, INC.",1220,Mining,Mining,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001704715,"Alpha Metallurgical Resources, Inc.",1221,Mining,Mining,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001726978,"Goosehead Insurance, Inc.",6411,Insurers,Insurers (Insurance criteria),medium,sic_table,True,Financial-sector issuer (SIC 60–67): industrial corporate scorecard does not apply; route to the FIG/Insurance framework.,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001755672,"Corteva, Inc.",0100,Protein and Agriculture,"Agribusiness, Commodity Foods, And Agricultural Cooperatives",medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
+0001915657,HF Sinclair Corp,4610,Midstream Energy,Midstream Energy,medium,sic_table,False,,ed5ae6973ecf46bfca236a0a88676a3e6396594c
