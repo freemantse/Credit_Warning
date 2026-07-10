@@ -286,6 +286,17 @@ TAGS: dict[str, list[str]] = {
         "us-gaap/PaymentsToDevelopRealEstateAssets",       # BRT-style (develop)
     ],
 
+    # ── CapEx SECTOR-GATED component: capitalized software (tech sectors only) ──────
+    # PaymentsToAcquireIntangibleAssets is capitalized software (genuine capex) for
+    # software/semis/diversified-tech filers, but ACQUIRED IP (not capex) for
+    # pharma/consumer. So capex_total() sums it ONLY when the sector router places the
+    # issuer in INTANGIBLES_CAPEX_SECTORS (see src/extract.py). Verified: ADP PP&E +
+    # intangibles = LSEG to the dollar (63-72% low without it), Skyworks 11-14%;
+    # blanket-adding would overshoot Bristol-Myers +31% / Campbell's +34% — hence the gate.
+    "capex_intangibles": [
+        "us-gaap/PaymentsToAcquireIntangibleAssets",
+    ],
+
     # ── Net Income ───────────────────────────────────────────────────────────
     # Stored in the database for completeness and potential future use.
     # Not directly used in any stress-score calculation today.

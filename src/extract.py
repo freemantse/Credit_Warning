@@ -30,6 +30,16 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from src.concepts import resolve_tag, resolve_one_tag, MissingDataError, TAGS
+from src.sector_routing import get_sector, sector_trusted
+
+# Sector gate for the capitalized-software capex component (capex_total). These are the
+# classifier's Moody's bucket-name constants where PaymentsToAcquireIntangibleAssets is
+# capitalized software = genuine capex (verified: ADP/Skyworks reconcile to LSEG). For
+# every other bucket the tag is acquired IP, not capex (blanket-adding overshoots
+# Bristol-Myers +31% / Campbell's +34%), so it is NOT summed there. First of several
+# sector-conditional gates; revenue tag-ordering and utility construction-capex will
+# define their own such sets and consume the same get_sector/sector_trusted loader.
+INTANGIBLES_CAPEX_SECTORS = frozenset({"Software", "Semiconductors", "Diversified Technology"})
 
 
 # ── Data container ───────────────────────────────────────────────────────────
@@ -948,29 +958,52 @@ def capex_total(
       R = REIT real-estate development/acquisition (capex_real_estate_development)
           — a DISJOINT investing line for REITs, so it is ADDED.
 
-    total = P + E + R, with an absent component treated as 0 (no such spend). The
-    first-match within P is the "instead-of" guard; E and R are the "in-addition-to"
-    components, each kept in its own concept precisely so it is summed rather than
-    treated as an alternative.
+      I = capitalized software (capex_intangibles) — SECTOR-GATED. Added ONLY for
+          issuers the sector router places in INTANGIBLES_CAPEX_SECTORS (software /
+          semis / diversified-tech), where PaymentsToAcquireIntangibleAssets is
+          capitalized software (real capex). For everyone else it is left out (it's
+          acquired IP there, not capex — blanket-adding overshoots pharma/consumer).
+
+    total = P + E + R + I, with an absent/ungated component treated as 0 (no such
+    spend). The first-match within P is the "instead-of" guard; E, R, I are the
+    "in-addition-to" components, each kept in its own concept so it is summed.
+
+    SECTOR GATE (first sector-conditional rule in src/): the issuer's cik is read from
+    the companyfacts top-level "cik" (so the uniform ratio-fn signature is unchanged and
+    no cik threading is needed); get_sector(cik) consults data/sector_routing.csv. The
+    intangibles component is summed only when the sector is TRUSTED (sector_trusted) AND
+    its Moody's bucket is in INTANGIBLES_CAPEX_SECTORS. A missing/low-confidence/
+    llm_fallback sector → gate does not fire → identical to current (ungated) behavior.
 
     Returns (total, inputs, tags) exposing the components (capex_ppe,
-    capex_equipment_on_lease, capex_real_estate_dev) alongside the summed "capex",
-    the way gross_debt surfaces its A/B/C. Returns None when NO component resolves,
-    so the caller records a MissingRatio (never a fabricated 0).
+    capex_equipment_on_lease, capex_real_estate_dev, capex_intangibles) alongside the
+    summed "capex"; tags carry a "sector_gated" flag when the intangibles gate fired.
+    Returns None when NO component resolves, so the caller records a MissingRatio.
     """
     primary, p_tag = _resolve_first_opt(facts, "capex", period_end, filed_before)
     lease, l_tag = _resolve_first_opt(facts, "capex_equipment_on_lease", period_end, filed_before)
     redev, r_tag = _resolve_first_opt(facts, "capex_real_estate_development", period_end, filed_before)
-    if primary is None and lease is None and redev is None:
+
+    # Component I — capitalized software, sector-gated. Only resolve the tag when the
+    # gate fires, so out-of-sector filers are byte-identical to the pre-gate behavior.
+    intang, i_tag, gate_note = None, None, None
+    sec = get_sector(facts.get("cik"))
+    if sector_trusted(sec) and sec.moodys_methodology in INTANGIBLES_CAPEX_SECTORS:
+        intang, i_tag = _resolve_first_opt(facts, "capex_intangibles", period_end, filed_before)
+        gate_note = sec.moodys_methodology   # provenance: which bucket opened the gate
+
+    if primary is None and lease is None and redev is None and intang is None:
         return None
     p_val = primary if primary is not None else 0.0
     l_val = lease if lease is not None else 0.0
     r_val = redev if redev is not None else 0.0
-    total = p_val + l_val + r_val
+    i_val = intang if intang is not None else 0.0
+    total = p_val + l_val + r_val + i_val
     inputs = {
         "capex_ppe": p_val,                       # own-use capex component (P)
         "capex_equipment_on_lease": l_val,        # equipment-leased-to-others component (E)
         "capex_real_estate_dev": r_val,           # REIT real-estate development component (R)
+        "capex_intangibles": i_val,               # capitalized software (I), sector-gated
         "capex": total,                            # summed total (legacy key retained)
     }
     tags: dict = {}
@@ -980,6 +1013,10 @@ def capex_total(
         tags["capex_equipment_on_lease"] = l_tag
     if r_tag:
         tags["capex_real_estate_dev"] = r_tag
+    if i_tag:
+        tags["capex_intangibles"] = i_tag
+    if gate_note:
+        tags["sector_gated"] = gate_note          # audit: intangibles gate fired via this bucket
     return total, inputs, tags
 
 
