@@ -7,7 +7,7 @@ confidence/source policy (untrusted sector does not fire). Pure, no network.
 import pytest
 
 import src.extract as extract
-from src.extract import capex_total
+from src.extract import capex_total, revenue_value, _revenue_tag_order
 from src.sector_routing import Sector
 
 PERIOD = "2024-12-31"
@@ -154,3 +154,77 @@ def test_utility_gate_untrusted_does_not_fire(monkeypatch):
     total, inputs, tags = capex_total(UTIL_FACTS, PERIOD)
     assert total == 100_000_000
     assert "sector_gated" not in tags
+
+
+# ── Revenue tag-ordering gate (fix (b)) ─────────────────────────────────────────
+# A THIRD gate shape: a first-match ORDERING preference, not a component. us-gaap/Revenues
+# sits at position #2 of the revenue list. For SPECIFIC_TOPLINE_SECTORS (retail/industrial
+# buckets where Revenues is a minor "other revenue" line) it is DEMOTED so the specific
+# sales tag wins; everyone else keeps the current order. Facts: a minor Revenues line
+# ($100M) alongside the true top-line SalesRevenueNet ($900M), Caleres/Apogee-shaped.
+REV_FACTS = {
+    "cik": 14707,   # placeholder; the sector is monkeypatched, not looked up by cik
+    "facts": {"us-gaap": {
+        "Revenues": {"units": {"USD": [
+            {"end": PERIOD, "val": 100_000_000, "filed": "2025-02-01", "form": "10-K"}]}},
+        "SalesRevenueNet": {"units": {"USD": [
+            {"end": PERIOD, "val": 900_000_000, "filed": "2025-02-01", "form": "10-K"}]}},
+    }},
+}
+
+
+def _rsec(moodys, cik="0000014707", confidence="medium", source="sic_table"):
+    return Sector(cik=cik, moodys_methodology=moodys, sp_sector="",
+                  is_financial=False, confidence=confidence, source=source,
+                  classifier_commit="test")
+
+
+def test_revenue_specific_topline_sector_demotes(monkeypatch):
+    # Retail and Apparel (trusted) → Revenues demoted → the specific SalesRevenueNet wins.
+    _patch_sector(monkeypatch, _rsec("Retail and Apparel"))
+    val, tag = revenue_value(REV_FACTS, PERIOD)
+    assert val == 900_000_000
+    assert tag == "us-gaap/SalesRevenueNet"
+    # Revenues is pushed to the very end of the resolution order.
+    assert _revenue_tag_order(REV_FACTS)[-1] == "us-gaap/Revenues"
+
+
+def test_revenue_building_materials_also_demotes(monkeypatch):
+    # Building Materials (Apogee's bucket) is the other demote bucket.
+    _patch_sector(monkeypatch, _rsec("Building Materials"))
+    val, tag = revenue_value(REV_FACTS, PERIOD)
+    assert val == 900_000_000
+
+
+def test_revenue_comprehensive_sector_keeps_revenues(monkeypatch):
+    # Insurers → NOT a demote bucket → current order → Revenues (position #2) wins.
+    _patch_sector(monkeypatch, _rsec("Insurers"))
+    val, tag = revenue_value(REV_FACTS, PERIOD)
+    assert val == 100_000_000
+    assert tag == "us-gaap/Revenues"
+
+
+def test_revenue_carveout_wins_over_bucket(monkeypatch):
+    # cik in REVENUE_COMPREHENSIVE_OVERRIDE (Dillard's) even though its bucket is a demote
+    # bucket → carve-out pins comprehensive → Revenues still wins.
+    dillards = dict(REV_FACTS, cik=28917)   # 0000028917 is in the override
+    _patch_sector(monkeypatch, _rsec("Retail and Apparel", cik="0000028917"))
+    val, tag = revenue_value(dillards, PERIOD)
+    assert val == 100_000_000
+    assert tag == "us-gaap/Revenues"
+
+
+def test_revenue_missing_sector_degrades(monkeypatch):
+    # No routing row → current order → Revenues wins (byte-identical to ungated).
+    _patch_sector(monkeypatch, None)
+    val, tag = revenue_value(REV_FACTS, PERIOD)
+    assert val == 100_000_000
+    assert tag == "us-gaap/Revenues"
+
+
+def test_revenue_untrusted_sector_does_not_demote(monkeypatch):
+    # Demote bucket but untrusted (low/llm_fallback) → gate does not fire → Revenues wins.
+    _patch_sector(monkeypatch, _rsec("Retail and Apparel", confidence="low", source="llm_fallback"))
+    val, tag = revenue_value(REV_FACTS, PERIOD)
+    assert val == 100_000_000
+    assert tag == "us-gaap/Revenues"

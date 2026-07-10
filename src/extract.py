@@ -69,6 +69,67 @@ UTILITY_CONSTRUCTION_SECTORS = frozenset({
     "Regulated Electric and Gas Networks",
 })
 
+# Sector gate for revenue tag-ordering (revenue_value). A THIRD gate shape: neither an
+# additive component nor a primary-alternative, but a first-match ORDERING preference.
+# us-gaap/Revenues sits at position #2 of the "revenue" tag list (concepts.TAGS). That
+# position is a SECTOR-SPLIT: the role of Revenues vs the specific sales/contract tag is
+# bidirectional, so no single fixed order satisfies everyone (measured on the 71-cached
+# LSEG panel — a blanket demotion helps a few filers and breaks many more):
+#   • FIX side — for a narrow set of retail/industrial buckets, Revenues is only a minor
+#     "other revenue" line and the specific tag (SalesRevenueNet / SalesRevenueGoodsNet /
+#     RevenueFromContractWithCustomer*) is the TRUE top-line. First-match then returns
+#     Revenues and undercounts badly (Caleres FY2019 Revenues $85.5M vs the real
+#     $2,834.8M; Apogee FY2015 $72.7M vs $933.9M). Only here do we DEMOTE Revenues.
+#   • BREAK side — for most other buckets (insurers, banks, restaurants, business
+#     services, manufacturing, chemicals, CPG, software, …), Revenues IS the comprehensive
+#     top-line and the specific tag is a SEGMENT SUBSET (Berkley FY2025 Revenues $14.71B =
+#     LSEG vs contract-tag $556M; U-Haul $4.5B vs $31M; ADP SalesRevenueNet excludes PEO
+#     pass-through; Wendy's SalesRevenueGoodsNet = company-operated sales only). Demoting
+#     Revenues there would break them, so they KEEP the current order.
+#
+# SPECIFIC_TOPLINE_SECTORS is DERIVED FROM EVIDENCE, not assumption: only buckets that
+# contain a CLEAN-FIX filer (demotion helps ≥1 period and hurts 0) on the panel, and that
+# contain NO break filer. The verified members:
+#   • "Retail and Apparel"  — Caleres (4 periods MISMATCH→MATCH); Dillard's/Genesco/Target
+#     (same bucket) are order-insensitive, so no break.
+#   • "Building Materials"  — Apogee (4 periods MISMATCH→MATCH); sole panel filer.
+# DEFAULT for every other bucket = CURRENT behavior (Revenues keeps position #2). This is
+# deliberately conservative: an unproven bucket is how the blanket demotion broke things,
+# so we do NOT keep a separate "comprehensive" set that could drift — comprehensive is the
+# default, and only the two evidence-backed FIX buckets deviate. (Excluded on purpose:
+# "Regulated Electric and Gas Utilities" — Cheniere is a lone FY2011 pre-LNG FIX period,
+# not enough to demote a bucket where Revenues is usually the legitimate top-line; left as
+# a known residual.)
+SPECIFIC_TOPLINE_SECTORS = frozenset({
+    "Retail and Apparel",
+    "Building Materials",
+})
+
+# Mixed-filer carve-out, consulted BEFORE the bucket rule. cik → reason. A filer whose
+# PRIMARY Moody's bucket is a SPECIFIC_TOPLINE (demote) bucket, but whose us-gaap/Revenues
+# is actually the true comprehensive top-line (the specific sales tag being a SUBSET), is
+# PINNED to comprehensive here so the bucket rule cannot demote it. This is REQUIRED, not
+# just defensive: "Retail and Apparel" is a MIXED bucket — Caleres is a clean FIX, but
+# Dillard's and Target report merchandise sales in SalesRevenueNet and their credit-card /
+# service-charge income only in Revenues, so Revenues = LSEG exactly and demoting it would
+# regress them (MATCH → CLOSE, verified on the panel). They are carved out. U-Haul/AMERCO
+# is the classic mixed filer (insurance subs make Revenues its $4.5B top-line vs a $31M
+# contract-tag subset); it already sits in "Business and Consumer Services" (NOT a demote
+# bucket) so it is protected by the default, and is pinned here as a forward-guard should
+# its classification or the demote set ever change. All ciks verified against
+# data/sector_routing.csv.
+REVENUE_COMPREHENSIVE_OVERRIDE: dict[str, str] = {
+    "0000028917": "Dillard's (Retail and Apparel): us-gaap/Revenues (merchandise sales + "
+                  "credit-card service charges) is the true top-line = LSEG; SalesRevenueNet "
+                  "is merchandise-only (~2% low). Demoting would regress MATCH→CLOSE.",
+    "0000027419": "Target (Retail and Apparel): us-gaap/Revenues (sales + credit-card "
+                  "revenues) is the comprehensive top-line = LSEG; SalesRevenueNet is "
+                  "merchandise-only (~2-3% low). Demoting would regress MATCH→CLOSE.",
+    "0000004457": "U-Haul/AMERCO: insurance & financing subs make us-gaap/Revenues the "
+                  "true consolidated top-line ($4.5B) vs the contract-tag subset ($31M); "
+                  "already in a non-demote bucket, pinned comprehensive as a forward-guard.",
+}
+
 
 # ── Data container ───────────────────────────────────────────────────────────
 
@@ -287,6 +348,50 @@ def _resolve_first_opt(facts: dict, concept: str, period_end: str, filed_before:
         return _resolve(facts, concept, period_end, filed_before)
     except MissingDataError:
         return None, None
+
+
+def _revenue_tag_order(facts: dict) -> list[str]:
+    """
+    Sector-gated first-match order for the `revenue` concept (see the module-level
+    SPECIFIC_TOPLINE_SECTORS / REVENUE_COMPREHENSIVE_OVERRIDE comment for the why).
+
+    Returns TAGS["revenue"] UNCHANGED for everyone by default (Revenues keeps its
+    position #2). ONLY when the issuer's cik is NOT pinned comprehensive by the
+    carve-out, the sector is TRUSTED, and its Moody's bucket is in
+    SPECIFIC_TOPLINE_SECTORS, us-gaap/Revenues is DEMOTED to the end of the list so the
+    specific sales/contract top-line tag wins first-match. Missing/low-confidence/
+    llm_fallback sector, or a bucket outside the set → unchanged (current behavior).
+    """
+    base = TAGS["revenue"]
+    cik = str(facts.get("cik") or "").strip().zfill(10)
+    if cik in REVENUE_COMPREHENSIVE_OVERRIDE:      # carve-out wins over the bucket rule
+        return list(base)
+    sec = get_sector(facts.get("cik"))
+    if sector_trusted(sec) and sec.moodys_methodology in SPECIFIC_TOPLINE_SECTORS:
+        # Demote Revenues to last-resort, preserving the relative order of the rest.
+        return [t for t in base if t != "us-gaap/Revenues"] + ["us-gaap/Revenues"]
+    return list(base)
+
+
+def revenue_value(facts: dict, period_end: str, filed_before: str | None = None) -> tuple[float, str]:
+    """
+    Resolve `revenue` with the sector-gated tag ordering (_revenue_tag_order).
+
+    The SINGLE production chokepoint for revenue: fcf_margin, ebitda_margin, and
+    revenue_yoy_growth all route through here so the ordering gate applies uniformly.
+    Same (value, winning_tag) contract as _resolve(..., "revenue", ...), and raises
+    MissingDataError identically when no revenue tag resolves — so callers are unchanged
+    apart from the swapped call. The cik is read from the companyfacts top-level "cik"
+    (no signature threading), exactly like the capex gates.
+    """
+    order = _revenue_tag_order(facts)
+    for tag_path in order:
+        value = resolve_one_tag(facts, tag_path, period_end, filed_before)
+        if value is not None:
+            return value, tag_path
+    raise MissingDataError(
+        f"Concept 'revenue' not found for period_end={period_end!r}. Tried: {', '.join(order)}"
+    )
 
 
 def net_debt(facts: dict, period_end: str, filed_before: str | None = None) -> tuple[float, dict, dict]:
@@ -1120,7 +1225,7 @@ def fcf_margin(facts: dict, period_end: str, filed_before: str | None = None) ->
     """
     # Re-use the free_cash_flow function — avoids fetching OCF and capex twice.
     fcf_result = free_cash_flow(facts, period_end, filed_before)
-    rev, rev_tag = _resolve(facts, "revenue", period_end, filed_before)
+    rev, rev_tag = revenue_value(facts, period_end, filed_before)
 
     if rev == 0:
         raise MissingDataError(f"Revenue is zero for {period_end}, cannot compute FCF margin")
@@ -1154,7 +1259,7 @@ def ebitda_margin(facts: dict, period_end: str, filed_before: str | None = None)
     Raises MissingDataError if revenue is zero (e.g. pre-revenue companies).
     """
     ebit, ebit_inputs, ebit_tags = ebitda(facts, period_end, filed_before)
-    rev, rev_tag = _resolve(facts, "revenue", period_end, filed_before)
+    rev, rev_tag = revenue_value(facts, period_end, filed_before)
 
     if rev == 0:
         raise MissingDataError(f"Revenue is zero for {period_end}, cannot compute EBITDA margin")
@@ -1317,10 +1422,10 @@ def revenue_yoy_growth(facts, period_end, filed_before=None):
     Returns growth as a decimal fraction (e.g. -0.05 = -5% decline).
     """
     from datetime import date, timedelta
-    rev, rev_tag = _resolve(facts, "revenue", period_end, filed_before)
+    rev, rev_tag = revenue_value(facts, period_end, filed_before)
     prior_date = (date.fromisoformat(period_end) - timedelta(days=365)).isoformat()
     try:
-        prior_rev, prior_tag = _resolve(facts, "revenue", prior_date, filed_before)
+        prior_rev, prior_tag = revenue_value(facts, prior_date, filed_before)
     except MissingDataError:
         # Try ±15 days around the prior year date to handle fiscal year shifts
         found = False
@@ -1328,7 +1433,7 @@ def revenue_yoy_growth(facts, period_end, filed_before=None):
             for sign in (1, -1):
                 try_date = (date.fromisoformat(prior_date) + timedelta(days=sign*delta)).isoformat()
                 try:
-                    prior_rev, prior_tag = _resolve(facts, "revenue", try_date, filed_before)
+                    prior_rev, prior_tag = revenue_value(facts, try_date, filed_before)
                     found = True
                     break
                 except MissingDataError:
