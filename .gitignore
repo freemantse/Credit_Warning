@@ -20,3 +20,24 @@ node_modules/
 # Docs
 docs/
 design_and_architecture.md
+
+# ── Licensed / vendor data — NEVER commit (LSEG/Refinitiv, agency ratings, methodology lists) ──
+LSEG_validation_companies.xlsx
+LSEG_*.xlsx
+LSEG_*.csv
+gaap_78_panel.csv
+GAAP_data_pull_request.xlsx
+List of Rating Methodologies*.xlsx
+ratings_history*.csv
+ratings_lookup_scaffold.csv
+ratings_lookup_scaffold.xlsx
+distress_events.csv
+universe_xref.csv
+sample_sec_financials*.csv
+# Belt-and-braces: no vendor pull is ever a spreadsheet we want in git
+*.xlsx
+*.xls
+
+# ── Nested standalone repos — keep out of the parent (prevents repo-in-repo) ──
+joywin-moody-adjust/
+joywin-methodology-classifier/
