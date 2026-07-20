@@ -12,9 +12,38 @@ For each tracked company it:
     concentration ("maturity wall") rule — all traceable to source tags.
   - Qualitative risk signals from the located MD&A prose and footnotes (LLM review of
     management tone, covenants, litigation).
-  - All rule weights and thresholds are **tunable and backtestable** from the UI — see
-    the Backtest page below.
+  - All rule weights and thresholds live in one backend config (`DEFAULT_CONFIG` in
+    `src/score.py`); when the migration model is trained they are **replaced by
+    model-learned weights**. They are not editable from the UI.
 - Tracks that score over time to reveal deterioration trends, and flags covenant proximity.
+
+## Contents
+
+- [Core design principle](#core-design-principle)
+- [Architecture](#architecture)
+  - [Request flow](#request-flow)
+  - [Rating-migration model (offline)](#rating-migration-model-offline)
+    - [In plain language](#in-plain-language)
+    - [Forward-looking market features (distance-to-default)](#forward-looking-market-features-distance-to-default)
+    - [The pipeline](#the-pipeline)
+    - [Known limitations & data constraints](#known-limitations--data-constraints)
+- [Stress score rationale](#stress-score-rationale)
+  - [Why additive rules](#why-additive-rules)
+  - [The eight core rules and their weights](#the-eight-core-rules-and-their-weights)
+  - [How a rule scores: the ramp](#how-a-rule-scores-the-ramp)
+  - [Two robustness rules](#two-robustness-rules)
+  - [The LLM contribution is capped](#the-llm-contribution-is-capped)
+  - [Where the weights come from](#where-the-weights-come-from)
+- [Tech stack](#tech-stack)
+- [Prerequisites](#prerequisites)
+- [Setup](#setup)
+- [Running locally](#running-locally)
+  - [CLI tools (no web server needed)](#cli-tools-no-web-server-needed)
+  - [Rating-migration model (training & prediction)](#rating-migration-model-training--prediction)
+  - [Data files (`data/`)](#data-files-data)
+  - [Tests](#tests)
+- [Deployment (Vercel)](#deployment-vercel)
+  - [Automatic issuer refresh (Vercel Cron)](#automatic-issuer-refresh-vercel-cron)
 
 ### Core design principle
 
@@ -200,6 +229,97 @@ would.
 
 ---
 
+## Stress score rationale
+
+The stress score is a **deterministic, additive 0–100 penalty model** (`src/score.py`,
+`compute_score`). Every point is traceable to a named rule and its raw inputs, so any score
+can be fully explained and audited back to source XBRL tags. Higher = more credit stress;
+**a score ≥ 50 (`STRESS_THRESHOLD`) is treated as "stressed"** everywhere in the system.
+
+### Why additive rules
+
+Rather than one summary ratio or an opaque model, the score is a sum of independent rule
+penalties. This is a deliberate design choice:
+
+- **Auditability.** Each rule fires independently and records the points it contributed in
+  a `breakdown` dict, so the dashboard can show *why* an issuer scored what it did — no
+  black box.
+- **No single ratio catches distress.** Leverage, cash generation, liquidity, solvency, and
+  refinancing risk fail in different ways and at different times; a distressed issuer usually
+  trips several rules at once. Summing independent signals is robust to any one ratio being
+  missing or temporarily flattering.
+- **Graceful with missing data.** A missing ratio contributes 0 (it is never penalised and
+  never assumed), so incomplete XBRL never fabricates or inflates a score.
+
+### The eight core rules and their weights
+
+Points are grouped by what they measure. Debt serviceability dominates, led by the two
+strongest empirical distress predictors — **leverage** and **cash-flow-to-debt**. Thresholds
+are calibrated to rating-agency grids and distress research, so a speculative-grade reading
+already carries roughly half a rule's points.
+
+| Group (max) | Rule | Max pts | Healthy → Severe | What it captures |
+|---|---|---|---|---|
+| **Debt serviceability (46)** | Leverage (net debt / EBITDA) | 17 | 3.0× → 6.0× | Debt burden vs. earnings — the single strongest distress predictor |
+| | Cash-flow-to-debt (FFO / debt) | 15 | 30% → 10% | Ability to repay debt from operating cash flow |
+| | Interest coverage (EBITDA / interest) | 14 | 4.0× → 1.0× | Can earnings service the interest bill |
+| **Earnings / cash (24)** | Profitability (EBITDA margin) | 14 | 10% → −5% | Core earnings power |
+| | Free cash flow (FCF margin) | 10 | 0% → −10% | Cash generation after capex |
+| **Liquidity (9)** | Liquidity (cash / short-term debt) | 9 | 1.0× → 0.25× | Near-term ability to meet obligations |
+| **Solvency (9)** | Debt-to-assets (gearing) | 9 | 40% → 65% | Balance-sheet leverage |
+| **Refinancing (6)** | Maturity wall | 6 | 30% → 80% | Debt-maturity concentration / rollover risk |
+
+Combined, the eight rules cap at **94 points**; the capped LLM signals (below) supply the
+remaining headroom to 100.
+
+### How a rule scores: the ramp
+
+Each rule maps its ratio onto points with a linear ramp (`_ramp`): **0 points while the
+ratio is at or healthier than the `healthy` threshold**, rising continuously to the rule's
+maximum as the ratio worsens toward `severe`, and clamped at the maximum beyond it. The
+direction (higher-is-worse vs. lower-is-worse) is inferred from the sign of
+`severe − healthy`, so the same formula handles leverage (rising is bad) and coverage
+(falling is bad) alike.
+
+### Two robustness rules
+
+These guard against the failure mode where a deeply distressed issuer reads as *healthy*:
+
+- **Sign-aware EBITDA override.** Leverage (`net_debt / EBITDA`) and coverage
+  (`EBITDA / interest`) both flip sign when EBITDA is negative, which would let a
+  money-losing issuer score 0 on those ramps. When EBITDA ≤ 0 we force both rules to full
+  penalty. We branch on the *EBITDA sign*, not the ratio sign — so a negative leverage
+  caused by a net-cash position with **positive** EBITDA correctly scores 0 (that's strength,
+  not distress).
+- **Distress escalation floor.** If ≥ 4 core rules are "severe" (≥ 80% of their max), the
+  final score is floored at **60 (High Risk)** regardless of the sum, so compounding distress
+  can't slip under the threshold.
+
+### The LLM contribution is capped
+
+Qualitative signals from the LLM review (high-severity findings, covenant proximity, loss
+provisions) can add points, but the **combined LLM contribution is capped at 15**. This is
+deliberate: the LLM can nudge a score at the margin but **cannot by itself push an issuer
+past the 50-point stress threshold** — only the deterministic, auditable ratios can do that.
+
+### Where the weights come from
+
+The weights are **backend config, not a UI control.** `DEFAULT_CONFIG` in `src/score.py`
+holds the calibrated defaults above and is the single source of truth. It is overridden in
+exactly one way:
+
+- **The migration model.** When the ML model has been trained, the eight core weights are
+  **replaced by model-learned weights** derived from it (`src/model/train.derive_score_config`),
+  persisted to the `score_config` table in Supabase, and read back by the API as the active
+  config. The defaults are the pre-training fallback.
+
+Changing the weights by hand means editing `DEFAULT_CONFIG` (or writing the `score_config`
+row). The Backtest page does **not** edit weights — it replays the case library point-in-time
+using whatever the active config already is (you can vary the stress `--threshold` and
+history depth, not the rule weights).
+
+---
+
 ## Tech stack
 
 **Backend (Python):** FastAPI, Uvicorn, Supabase client, Anthropic (Claude), Requests,
@@ -293,11 +413,10 @@ python3 -m src.ingest --name "Sears Holdings"
 The **Backtest page** (`/backtest`) also lets you do this without the CLI:
 - **Manage the case library** — add a company (by ticker or CIK) or remove one;
   changes persist to the Supabase `cases` table.
-- **Tune the scoring parameters** — edit the rule weights, ramp thresholds, stress
-  threshold, and escalation floor, then **Run Backtest** to *test* them (a transient
-  run that does not touch the portfolio), or **Apply to portfolio** to persist them
-  as the active config the live dashboard scores with. Defaults reproduce the
-  built-in behavior; "Reset to defaults" restores them.
+- **Run the backtest** — set the point-in-time history depth (snapshots per case) and
+  **Run Backtest** to replay the case library and get a scorecard. The run always uses the
+  **active** stress-score config; the rule weights themselves are not editable here (they
+  live in `DEFAULT_CONFIG` / the trained `score_config` — see Stress score rationale).
 
 ### Rating-migration model (training & prediction)
 
